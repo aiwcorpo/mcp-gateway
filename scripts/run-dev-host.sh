@@ -25,6 +25,8 @@ export MCP_OIDC_JWKS_URI=http://localhost:18080/realms/corp/protocol/openid-conn
 export MCP_OIDC_TOKEN_URI=http://localhost:18080/realms/corp/protocol/openid-connect/token
 export MCP_OIDC_CLIENT_ID=mcp-gateway
 export MCP_OIDC_CLIENT_SECRET="$KC_CLIENT_MCP_GATEWAY_SECRET"
+# Keycloak of the dev stack speaks plain http (token exchange only).
+export MCP_ALLOW_PLAIN_HTTP=true
 export MCP_BROKER_URL="${MCP_BROKER_URL:-https://localhost:18100}"
 export MCP_BROKER_TLS_NAME="${MCP_BROKER_TLS_NAME:-mcp-credential-broker.internal}"
 export MCP_SERVER_JIRA_MCP_URL="${MCP_SERVER_JIRA_MCP_URL:-https://localhost:18446/mcp}"

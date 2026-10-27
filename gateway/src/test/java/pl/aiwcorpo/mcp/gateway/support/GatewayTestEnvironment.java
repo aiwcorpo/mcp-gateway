@@ -115,6 +115,9 @@ public final class GatewayTestEnvironment {
         registry.add("spring.data.redis.username", () -> "gateway");
         registry.add("spring.data.redis.password", () -> REDIS_GATEWAY_PASSWORD);
         registry.add("gateway.servers.mcp-jira.internal-url", () -> "https://127.0.0.1:" + jira.port() + "/mcp");
+        registry.add("gateway.servers.mcp-jira.tools.delete_issue.risk", () -> "DESTRUCTIVE");
+        registry.add("gateway.allowed-origins", () -> "https://allowed.test");
+        registry.add("gateway.redis.health-interval", () -> "1s");
         registry.add("gateway.servers.mcp-confluence.system", () -> "confluence");
         registry.add("gateway.servers.mcp-confluence.internal-url", () -> "https://127.0.0.1:" + wrongName.port() + "/mcp");
         registry.add("gateway.servers.mcp-confluence.credential.required", () -> "false");

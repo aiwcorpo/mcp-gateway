@@ -25,7 +25,8 @@ odstępstwa: [STATUS.md](STATUS.md). Kontrakty: `mcp-contracts` 2.0.2.
     `sub` tokenu; obcy `sub` -> 404 jak sesja nieznana), `DELETE` kończy sesję, `GET` -> 405;
   - metody: `tools/list`, `tools/call`, `ping`; nazwy narzędzi dla klienta `<system>__<tool>` (C5).
 - **OAuth RS (C1):** JWT z JWKS IdP, `iss`, `aud` zawiera `mcp-gateway`, wymagane `sub`, `azp`,
-  `preferred_username`; brak lub zły token -> `401` z `WWW-Authenticate: Bearer resource_metadata="..."`;
+  `preferred_username` (każde najwyżej 255 znaków, `sub` bez prefiksu `system:`), `iat`, czas życia
+  `exp - iat` najwyżej 60 min; brak lub zły token -> `401` z `WWW-Authenticate: Bearer resource_metadata="..."`;
   dokument RFC 9728 pod `/.well-known/oauth-protected-resource/s/<serverId>/mcp`. Nic nie jest anonimowe poza
   metadanymi.
 - **Autoryzacja (tymczasowa, M1):** `READ_ONLY` wymaga grupy `mcp-<system>-read`, `UPDATE` grupy
@@ -33,12 +34,14 @@ odstępstwa: [STATUS.md](STATUS.md). Kontrakty: `mcp-contracts` 2.0.2.
   dostaje implementację Cedar z `PolicyStore`. Narzędzie spoza konfiguracji jest ukryte i daje `tool_disabled`.
 - **Poświadczenia (C4):** `POST /v1/credentials/resolve` po mTLS (certyfikat CN `mcp-gateway`, nazwa brokera
   z konfiguracji) z JWT C2 `aud=mcp-credential-broker` i `tool`; `409` -> `credential_required` z `connectUrl`;
-  `503`, brak połączenia, timeout -> `upstream_unavailable`; inne odpowiedzi -> `internal_error`. Serwer nie
+  każde `5xx`, brak połączenia, timeout -> `upstream_unavailable`; `4xx` inne niż `409` i odpowiedź spoza C4
+  (np. wartość poświadczenia spoza widocznego ASCII) -> `internal_error`, bez zapisu do cache. Serwer nie
   dostaje wywołania bez poświadczenia. Dla systemów `token-exchange` gateway wymienia token użytkownika w IdP
   na `aud=mcp-credential-broker` i wysyła go jako `subjectToken`.
 - **Cache poświadczeń:** w pamięci, klucz (`sub`, system, scopes), najwyżej `min(cacheTtlSeconds, 60 s,
   expiresAt)`. Subskrypcja Redis `credential.invalidated` usuwa wpisy (sub, system) od razu. Dopóki subskrypcja
-  nie jest potwierdzona (start, awaria Redis, reconnect), cache jest wyczyszczony i pomijany.
+  nie jest potwierdzona (start, awaria Redis, reconnect), cache jest wyczyszczony i pomijany. TCP keepalive i
+  `PING` co 5 s na połączeniu subskrypcji wykrywają połączenie półotwarte (bez zdarzenia rozłączenia).
 - **Do serwera (C2, C3):** nowy JWT ES256 na każde żądanie HTTP (`exp - iat` = 30 s, `jti` UUIDv7),
   `tool` tylko przy `tools/call`; `grp` tylko grupy `mcp-*`; wariant użytkownika do `initialize`/`tools/list`
   (sesje są per użytkownik), wariant serwisowy tylko w `GET /v1/systems` brokera przy starcie. Nagłówki do
@@ -46,7 +49,8 @@ odstępstwa: [STATUS.md](STATUS.md). Kontrakty: `mcp-contracts` 2.0.2.
   `Mcp-Session-Id`, `MCP-Protocol-Version`; z żądania klienta nie jest kopiowany żaden nagłówek. Sesje do serwera
   mają klucz zawierający `sub`, nigdy nie są współdzielone; po `404` sesji gateway robi `initialize` ponownie.
   Certyfikat serwera musi mieć SAN `<serverId>.internal` niezależnie od adresu połączenia. Odpowiedź serwera
-  (JSON albo SSE) czytana z twardym limitem bajtów (4 MiB).
+  (JSON albo SSE) czytana z twardym limitem bajtów (4 MiB) i jednym limitem czasu na nagłówki i ciało (30 s).
+  Komunikat błędu JSON-RPC serwera nie trafia do klienta: gateway oddaje stały tekst dla kodu.
 - **JWKS wewnętrzny:** `https://<nazwa TLS>:8443/.well-known/jwks.json`, dwa `kid` (aktywny i następny).
   Klucze z pliku JWKS (`MCP_INTERNAL_JWT_KEYS_FILE`, `MCP_INTERNAL_JWT_ACTIVE_KID`) albo, bez pliku, dwa klucze
   generowane przy starcie. `kid` z prefiksem `test-` i opublikowane klucze testowe `mcp-contracts`
@@ -81,7 +85,8 @@ Zmienne środowiska (nazwy z `mcp-platform-dev`, usługa `mcp-gateway` profilu `
 | `MCP_REDIS_HOST`, `MCP_REDIS_PORT`, `MCP_REDIS_USER`, `MCP_REDIS_PASSWORD`, `MCP_REDIS_KEY_PREFIX` | Redis (ACL `gateway`, `gw:*`, `credential.invalidated`) |
 | `MCP_SERVER_JIRA_URL` albo `MCP_SERVER_JIRA_MCP_URL` | adres `mcp-jira`; do pierwszego dopisywane jest `/mcp` |
 | `MCP_POLICY_REVISION` | `prv` w C2 do czasu paczki polityk (M2), domyślnie `00000000000000-0000000` |
-| `MCP_ALLOWED_ORIGINS` | dozwolone `Origin` (lista); żądanie z innym `Origin` -> 403, bez `Origin` przechodzi |
+| `MCP_ALLOWED_ORIGINS` | dozwolone `Origin` (lista); żądanie (POST, GET, DELETE) z innym `Origin` -> 403, bez `Origin` przechodzi |
+| `MCP_ALLOW_PLAIN_HTTP` | tylko dev: `http` dla endpointu tokenów IdP (token exchange); bez flagi token exchange jest wyłączony, broker i serwery zawsze `https` |
 
 Konfiguracja statyczna serwera (M1, w miejscu rejestru C5) jest w `application.yml`:
 
@@ -118,8 +123,9 @@ docker build -t mcp-gateway-test-server:dev -f test-server/Dockerfile .
 | `InternalJwtVerifierVectorTest` (test-server) | odbiorca C2 serwera testowego daje wynik i powód z każdego z 43 wektorów `test-vectors/jwt` |
 | `InternalTokenIssuerTest` | JWT gateway'a zgodny z `internal-jwt.schema.json` i przyjmowany przez odbiorcę; `tool` tylko przy `tools/call`; wariant serwisowy tylko na `GET /v1/systems`; odrzucenie kluczy `test-` i opublikowanych kluczy testowych |
 | `CredentialCacheTest`, `CredentialServiceTest` | TTL, `expiresAt`, unieważnienie (sub, system), wyścig resolve/unieważnienie, pomijanie cache bez subskrypcji, typ poświadczenia, token exchange |
-| `StreamableHttpClientTest` | limit bajtów odpowiedzi (SSE bez znaku nowej linii, JSON), wybór odpowiedzi z SSE po `id` |
-| `GatewayIntegrationTest` | prawdziwy gateway z IdP, brokerem i serwerem testowym po mTLS: 401 + RFC 9728, sesje i ich właściciel, obie ery protokołu, nagłówki klienta nie docierają do serwera, `credential_required`, `upstream_unavailable` (503 i zerwane połączenie), unieważnienie <= 1 s, TTL, SAN serwera, JWKS tylko na porcie wewnętrznym, audyt zgodny ze schematem C8, brak sekretów w logach |
+| `StreamableHttpClientTest` | limit bajtów odpowiedzi (SSE bez znaku nowej linii, JSON), limit czasu na milczący strumień SSE, wybór odpowiedzi z SSE po `id` |
+| `GroupToolAuthorizerTest` | trzy poziomy ryzyka: `-read`, `-write`, DESTRUCTIVE zawsze odmowa |
+| `GatewayIntegrationTest` | prawdziwy gateway z IdP, brokerem i serwerem testowym po mTLS: 401 + RFC 9728, sesje i ich właściciel, obie ery protokołu, nagłówki klienta nie docierają do serwera, `credential_required`, `upstream_unavailable` (503 i zerwane połączenie), unieważnienie <= 1 s, TTL, SAN serwera, JWKS tylko na porcie wewnętrznym, audyt zgodny ze schematem C8, brak sekretów w logach; DESTRUCTIVE i UPDATE bez `-write`, poświadczenie spoza ASCII (bez wartości w logu), odpowiedzi brokera spoza C4, wstrzymanie kontenera Redis (cache pomijany, powrót po subskrypcji), tokeny C1 za długie i z `sub` `system:`, limit 1 MiB, `Origin` |
 
 ## Uruchomienie lokalne w `mcp-platform-dev` (ws-01)
 

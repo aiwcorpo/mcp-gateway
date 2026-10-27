@@ -15,6 +15,7 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 
 /** All gateway settings; environment variable names are in application.yml and README. */
 @Validated
@@ -32,7 +33,9 @@ public record GatewayProperties(
         @Valid @NotNull Redis redis,
         @Valid @NotNull Sessions sessions,
         @Valid @NotNull Upstream upstream,
-        @DefaultValue("00000000000000-0000000") String policyRevision,
+        @DefaultValue("00000000000000-0000000") @Pattern(regexp = "^[0-9]{14}-[0-9a-f]{7}$") String policyRevision,
+        /* Dev only: allows http for the IdP token endpoint (token exchange); never for the broker or servers. */
+        @DefaultValue("false") boolean allowPlainHttp,
         @DefaultValue List<String> allowedOrigins,
         @Valid @NotEmpty Map<String, Server> servers) {
 
@@ -46,7 +49,9 @@ public record GatewayProperties(
             String clientId,
             String clientSecret,
             @DefaultValue("mcp-credential-broker") String exchangeAudience,
-            @DefaultValue("mcp-credential-broker-audience") String exchangeScope) {
+            @DefaultValue("mcp-credential-broker-audience") String exchangeScope,
+            /* Longest accepted C1 token lifetime (exp - iat); C1 says at most 60 min. */
+            @DefaultValue("60m") Duration maxTokenLifetime) {
 
         public String advertisedAuthorizationServer() {
             return authorizationServer == null || authorizationServer.isBlank() ? issuer : authorizationServer;
@@ -87,7 +92,9 @@ public record GatewayProperties(
             String username,
             String password,
             @DefaultValue("gw:") String keyPrefix,
-            @DefaultValue("credential.invalidated") String invalidationChannel) {
+            @DefaultValue("credential.invalidated") String invalidationChannel,
+            /* PING interval on the invalidation subscription (half-open connection detection). */
+            @DefaultValue("5s") Duration healthInterval) {
     }
 
     public record Sessions(
@@ -96,6 +103,7 @@ public record GatewayProperties(
     }
 
     public record Upstream(
+            /* Total time for one request, headers and body (SSE included). */
             @DefaultValue("30s") Duration timeout,
             @DefaultValue("4194304") int maxResponseBytes) {
     }

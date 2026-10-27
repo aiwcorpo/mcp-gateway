@@ -21,9 +21,9 @@ konfiguracją statyczną. Kontrakty: `mcp-contracts` 2.0.2. M2-M4 nie są zaczę
 ```
 ./mvnw -B install
 test-server: Tests run: 43, Failures: 0, Errors: 0   (InternalJwtVerifierVectorTest, wszystkie wektory C2 2.0.2)
-gateway:     Tests run: 42, Failures: 0, Errors: 0
-  GatewayIntegrationTest 22, InternalTokenIssuerTest 7, CredentialCacheTest 6, CredentialServiceTest 4,
-  StreamableHttpClientTest 3
+gateway:     Tests run: 54, Failures: 0, Errors: 0
+  GatewayIntegrationTest 30, InternalTokenIssuerTest 7, CredentialCacheTest 6, CredentialServiceTest 4,
+  StreamableHttpClientTest 4, GroupToolAuthorizerTest 3
 ```
 
 Punkty DoD briefu istotne dla M1:
@@ -71,6 +71,30 @@ $ make jira-auth
 W logach trzech procesów 0 wystąpień `alice-pat`. Unieważnienie z prawdziwego brokera: dwa wywołania z cache (0
 zdarzeń `credential_resolve` brokera), `make pat USER=alice` (broker publikuje `credential.invalidated` przy
 zastąpieniu, CC-046), następne wywołanie -> 1 zdarzenie `credential_resolve`.
+
+## Przegląd M1 (2026-10-27): znaleziska i poprawki
+
+Przegląd bez kontekstu: 0 CRITICAL, 0 HIGH, 4 MEDIUM, 13 LOW, wszystkie bez zmiany kontraktu.
+
+| Znalezisko | Status |
+| --- | --- |
+| MEDIUM-1 wartość poświadczenia ze znakiem > U+00FF trafia do logu (wyjątek JDK z wartością nagłówka) | poprawione: `BrokerClient` przyjmuje tylko widoczne ASCII (0x21-0x7E), inaczej `internal_error` bez zapisu do cache; `RuntimeException` z wywołania serwera łapany, logowana tylko klasa, `internal_error` z audytem; test `credentialOutsideVisibleAsciiIsRejectedAndNeverLogged` (log bez wartości) |
+| MEDIUM-2 brak limitu czasu czytania ciała (SSE) | poprawione: jeden budżet `gateway.upstream.timeout` (30 s) na nagłówki i ciało, po nim strumień zamykany, `upstream_unavailable`; test z milczącym SSE |
+| MEDIUM-3 brak testów DESTRUCTIVE i UPDATE z samym `-read` | poprawione: `delete_issue` DESTRUCTIVE w konfiguracji testowej (ukryte, `tool_disabled` także z `mcp-jira-destructive`), `add_comment` z samym `-read` -> `access_denied` z `mcp-jira-write`, bez resolve; `GroupToolAuthorizerTest` |
+| MEDIUM-4 brak testu maszyny stanów `InvalidationListener`, połączenie półotwarte | poprawione: TCP keepalive, `PING` co `gateway.redis.health-interval` (5 s) na połączeniu subskrypcji, przy błędzie zamknięcie i nowa subskrypcja; test z `docker pause` kontenera Redis: `live` false, cache pusty i pomijany, po powrocie cache dopiero po subskrypcji |
+| LOW-1 komunikat błędu JSON-RPC serwera do klienta | poprawione: stały tekst per kod (`-32700`, `-32600`, `-32601`, `-32602`, reszta) |
+| LOW-2 odpowiedzi brokera i IdP bez limitu | poprawione: `BoundedInputStream` 64 KiB (resolve, `/v1/systems`, token exchange) |
+| LOW-3 brak limitu sesji na `sub` | znane, M4 (razem z rate limit) |
+| LOW-4 C1 bez `iat` i limitu czasu życia | poprawione: wymagany `iat`, `exp - iat` <= `gateway.oidc.max-token-lifetime` (60 min); sprawdzenie `typ` (Keycloak) nie, bo zależy od IdP (D4) |
+| LOW-5 długości claimów C1, `sub` z `system:` | poprawione: 401 dla `sub`/`azp`/`preferred_username` > 255 znaków i `sub` z prefiksem `system:`; test |
+| LOW-6 `Origin` tylko dla POST | poprawione: POST, GET, DELETE; test pozytywny i negatywny |
+| LOW-7 metadane RFC 9728 z `Host` bez `MCP_PUBLIC_URL` | znane, M4 (wymóg `MCP_PUBLIC_URL` poza dev razem z konfiguracją produkcyjną) |
+| LOW-8 `/actuator/prometheus` bez uwierzytelnienia na porcie wewnętrznym | znane, M4 (mTLS scrapera albo osobny port metryk) |
+| LOW-9 token exchange po `http` | poprawione: `http` tylko z `MCP_ALLOW_PLAIN_HTTP=true` (dev); bez flagi token exchange wyłączony z ostrzeżeniem przy starcie |
+| LOW-10 luki w audycie (zły `tools/call`, filtr `tools/list`) | zły `tools/call` -> `tool_call` z `errorCode: invalid_argument` (test); decyzje filtra `tools/list` bez zdarzeń (znane, M2 razem z Cedar) |
+| LOW-11 README o 5xx brokera, brak testów ścieżek `internal_error` | poprawione: README zgodne z kodem (każde 5xx -> `upstream_unavailable`); test 401 i 200 bez `value` -> `internal_error` bez `tools/call` |
+| LOW-12 wyciek połączeń pub/sub, trwałe wyłączenie cache po wyjątku | poprawione: połączenie zamykane po nieudanej subskrypcji; po wyjątku bez rozłączenia ponowna subskrypcja przywraca `live` |
+| LOW-13 testy limitu 1 MiB, wzorzec `prv`, `tool` na `mcp-jira` | poprawione: test 413, `policy-revision` sprawdzany wzorcem przy starcie; test `tool` na prawdziwym `mcp-jira` należy do ws-10/ws-04 |
 
 ## Odstępstwa i rzeczy niedokończone
 

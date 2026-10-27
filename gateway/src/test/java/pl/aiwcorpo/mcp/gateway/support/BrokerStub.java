@@ -31,7 +31,7 @@ public final class BrokerStub implements AutoCloseable {
     public record Received(String method, String path, String body, String requestId, String rejectReason, String tool) {
     }
 
-    public enum Mode { GRANT, REQUIRED, UNAVAILABLE, DROP }
+    public enum Mode { GRANT, REQUIRED, UNAVAILABLE, DROP, REJECT, BAD_BODY }
 
     private final HttpsServer server;
     private final InternalJwtVerifier verifier;
@@ -124,6 +124,8 @@ public final class BrokerStub implements AutoCloseable {
                         + "\"connectUrl\":\"http://localhost:18090/connections?system=jira\"}");
                 case UNAVAILABLE -> send(exchange, 503, "{\"error\":\"upstream_unavailable\"}");
                 case DROP -> throw new IOException("connection dropped on purpose");
+                case REJECT -> send(exchange, 401, "{\"error\":\"unauthenticated\"}");
+                case BAD_BODY -> send(exchange, 200, "{\"scheme\":\"Bearer\",\"type\":\"user-secret\",\"cacheTtlSeconds\":60}");
             }
         }
     }

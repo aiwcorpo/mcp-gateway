@@ -1,6 +1,7 @@
 package pl.aiwcorpo.mcp.gateway.broker;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -12,6 +13,7 @@ import java.util.Base64;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import pl.aiwcorpo.mcp.gateway.upstream.BoundedInputStream;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -20,6 +22,8 @@ import tools.jackson.databind.json.JsonMapper;
  * {@code subjectToken} of resolve for token-exchange systems. The raw C1 token never goes to the broker.
  */
 public class TokenExchangeClient {
+
+    private static final int MAX_BODY = 64 * 1024;
 
     private final URI tokenUri;
     private final String clientId;
@@ -64,14 +68,18 @@ public class TokenExchangeClient {
         String basic = Base64.getEncoder().encodeToString((URLEncoder.encode(clientId, StandardCharsets.UTF_8) + ":"
                 + URLEncoder.encode(clientSecret, StandardCharsets.UTF_8)).getBytes(StandardCharsets.UTF_8));
         try {
-            HttpResponse<String> response = http.send(HttpRequest.newBuilder(tokenUri).timeout(timeout)
+            HttpResponse<InputStream> response = http.send(HttpRequest.newBuilder(tokenUri).timeout(timeout)
                     .header("Authorization", "Basic " + basic)
                     .header("Content-Type", "application/x-www-form-urlencoded")
-                    .POST(HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString());
+                    .POST(HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofInputStream());
+            byte[] bytes;
+            try (InputStream in = new BoundedInputStream(response.body(), MAX_BODY)) {
+                bytes = in.readAllBytes();
+            }
             if (response.statusCode() != 200) {
                 return null;
             }
-            String token = json.readTree(response.body()).path("access_token").asString(null);
+            String token = json.readTree(bytes).path("access_token").asString(null);
             return token == null || token.isEmpty() ? null : token;
         } catch (IOException | JacksonException e) {
             return null;

@@ -14,6 +14,7 @@ import io.lettuce.core.RedisChannelHandler;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisConnectionStateListener;
 import io.lettuce.core.RedisURI;
+import io.lettuce.core.SocketOptions;
 import io.lettuce.core.pubsub.RedisPubSubAdapter;
 import io.lettuce.core.pubsub.StatefulRedisPubSubConnection;
 import tools.jackson.core.JacksonException;
@@ -24,6 +25,8 @@ import tools.jackson.databind.json.JsonMapper;
  * Subscribes to {@code credential.invalidated} (C4.3) and drops cache entries of (sub, system). While the
  * subscription is not confirmed (start-up, Redis outage, reconnect) {@link #live()} is false: the cache is
  * cleared and bypassed, because a missed event could keep a revoked credential for up to its TTL.
+ * A periodic PING on the subscription connection detects half-open connections (no RST, no disconnect event):
+ * a failed PING drops the connection and subscribes again on a new one.
  */
 public final class InvalidationListener implements SmartLifecycle {
 
@@ -34,16 +37,18 @@ public final class InvalidationListener implements SmartLifecycle {
     private final String channel;
     private final CredentialCache cache;
     private final JsonMapper json;
+    private final Duration healthInterval;
     private final AtomicBoolean live = new AtomicBoolean();
     private RedisClient client;
-    private StatefulRedisPubSubConnection<String, String> connection;
+    private volatile StatefulRedisPubSubConnection<String, String> connection;
     private volatile boolean running;
 
-    public InvalidationListener(RedisURI uri, String channel, CredentialCache cache, JsonMapper json) {
+    public InvalidationListener(RedisURI uri, String channel, CredentialCache cache, JsonMapper json, Duration healthInterval) {
         this.uri = uri;
         this.channel = channel;
         this.cache = cache;
         this.json = json;
+        this.healthInterval = healthInterval;
     }
 
     public boolean live() {
@@ -53,11 +58,15 @@ public final class InvalidationListener implements SmartLifecycle {
     @Override
     public void start() {
         client = RedisClient.create(uri);
-        client.setOptions(ClientOptions.builder().autoReconnect(true).pingBeforeActivateConnection(false).build());
+        client.setOptions(ClientOptions.builder()
+                .autoReconnect(true)
+                .pingBeforeActivateConnection(false)
+                .socketOptions(SocketOptions.builder().keepAlive(true).connectTimeout(Duration.ofSeconds(2)).build())
+                .build());
         client.addListener(new RedisConnectionStateListener() {
             @Override
             public void onRedisConnected(RedisChannelHandler<?, ?> handler, SocketAddress address) {
-                // live again only after Lettuce has re-subscribed (subscribed callback)
+                // live again only after the subscription is confirmed (subscribed callback)
             }
 
             @Override
@@ -71,37 +80,55 @@ public final class InvalidationListener implements SmartLifecycle {
             }
         });
         running = true;
-        connectInBackground();
+        Thread.ofVirtual().name("credential-invalidation").start(this::loop);
     }
 
-    private void connectInBackground() {
-        Thread.ofVirtual().name("credential-invalidation-subscribe").start(() -> {
-            while (running && connection == null) {
+    private void loop() {
+        while (running) {
+            StatefulRedisPubSubConnection<String, String> current = connection;
+            if (current == null) {
+                subscribe();
+            } else {
                 try {
-                    StatefulRedisPubSubConnection<String, String> pubSub = client.connectPubSub();
-                    pubSub.addListener(new RedisPubSubAdapter<>() {
-                        @Override
-                        public void message(String ch, String message) {
-                            onMessage(message);
-                        }
-
-                        @Override
-                        public void subscribed(String ch, long count) {
-                            if (channel.equals(ch)) {
-                                cache.clear();
-                                live.set(true);
-                                log.info("Subscribed to {}; credential cache enabled", channel);
-                            }
-                        }
-                    });
-                    pubSub.sync().subscribe(channel);
-                    connection = pubSub;
+                    current.sync().ping();
+                    if (!live.get() && current.isOpen()) {
+                        // an error event without a disconnect; subscribe again to get a fresh confirmation
+                        current.sync().subscribe(channel);
+                    }
                 } catch (RuntimeException e) {
-                    lost("subscribe failed: " + e.getClass().getSimpleName());
-                    sleep(Duration.ofSeconds(2));
+                    lost("ping failed: " + e.getClass().getSimpleName());
+                    drop(current);
                 }
             }
-        });
+            sleep(connection == null ? Duration.ofSeconds(1) : healthInterval);
+        }
+    }
+
+    private void subscribe() {
+        StatefulRedisPubSubConnection<String, String> pubSub = null;
+        try {
+            pubSub = client.connectPubSub();
+            pubSub.addListener(new RedisPubSubAdapter<>() {
+                @Override
+                public void message(String ch, String message) {
+                    onMessage(message);
+                }
+
+                @Override
+                public void subscribed(String ch, long count) {
+                    if (channel.equals(ch)) {
+                        cache.clear();
+                        live.set(true);
+                        log.info("Subscribed to {}; credential cache enabled", channel);
+                    }
+                }
+            });
+            pubSub.sync().subscribe(channel);
+            connection = pubSub;
+        } catch (RuntimeException e) {
+            lost("subscribe failed: " + e.getClass().getSimpleName());
+            drop(pubSub);
+        }
     }
 
     void onMessage(String message) {
@@ -126,13 +153,25 @@ public final class InvalidationListener implements SmartLifecycle {
         cache.clear();
     }
 
+    private void drop(StatefulRedisPubSubConnection<String, String> pubSub) {
+        if (pubSub == null) {
+            return;
+        }
+        if (connection == pubSub) {
+            connection = null;
+        }
+        try {
+            pubSub.closeAsync();
+        } catch (RuntimeException e) {
+            // already closed
+        }
+    }
+
     @Override
     public void stop() {
         running = false;
         live.set(false);
-        if (connection != null) {
-            connection.close();
-        }
+        drop(connection);
         if (client != null) {
             client.shutdown(Duration.ZERO, Duration.ofSeconds(2));
         }

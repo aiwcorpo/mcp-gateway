@@ -1,5 +1,6 @@
 package pl.aiwcorpo.mcp.gateway.config;
 
+import java.time.Duration;
 import java.util.List;
 
 import org.springframework.context.annotation.Bean;
@@ -41,8 +42,11 @@ public class SecurityConfiguration {
         OAuth2TokenValidator<Jwt> audience = jwt -> jwt.getAudience() != null && jwt.getAudience().contains(oidc.audience())
                 ? OAuth2TokenValidatorResult.success()
                 : OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "audience", null));
-        OAuth2TokenValidator<Jwt> claims = jwt -> present(jwt.getSubject()) && present(jwt.getClaimAsString("azp"))
-                && present(jwt.getClaimAsString("preferred_username")) && jwt.getExpiresAt() != null
+        // The claims are copied into C2 and C8, whose schemas bound them; "system:" is the service variant's sub.
+        OAuth2TokenValidator<Jwt> claims = jwt -> bounded(jwt.getSubject()) && !jwt.getSubject().startsWith("system:")
+                && bounded(jwt.getClaimAsString("azp")) && bounded(jwt.getClaimAsString("preferred_username"))
+                && jwt.getExpiresAt() != null && jwt.getIssuedAt() != null
+                && !Duration.between(jwt.getIssuedAt(), jwt.getExpiresAt()).minus(oidc.maxTokenLifetime()).isPositive()
                 ? OAuth2TokenValidatorResult.success()
                 : OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "required claims", null));
         decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
@@ -79,7 +83,7 @@ public class SecurityConfiguration {
         return http.build();
     }
 
-    private static boolean present(String value) {
-        return value != null && !value.isBlank();
+    private static boolean bounded(String value) {
+        return value != null && !value.isBlank() && value.length() <= 255;
     }
 }

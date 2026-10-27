@@ -29,6 +29,7 @@ class StreamableHttpClientTest {
     private final AtomicReference<String> contentType = new AtomicReference<>();
     private final AtomicReference<byte[]> chunk = new AtomicReference<>();
     private volatile long chunks;
+    private volatile boolean silent;
     private HttpServer server;
     private StreamableHttpClient client;
 
@@ -40,16 +41,24 @@ class StreamableHttpClientTest {
             exchange.getResponseHeaders().set("Content-Type", contentType.get());
             exchange.sendResponseHeaders(200, 0);
             try (OutputStream out = exchange.getResponseBody()) {
+                if (silent) {
+                    out.write(": keepalive\n".getBytes(StandardCharsets.UTF_8));
+                    out.flush();
+                    Thread.sleep(10_000);
+                    return;
+                }
                 for (long i = 0; i < chunks; i++) {
                     out.write(chunk.get());
                 }
             } catch (java.io.IOException e) {
                 // the gateway closes the stream once the limit is hit
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
         });
         server.start();
         client = new StreamableHttpClient(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/mcp"),
-                HttpClient.newHttpClient(), JSON, Duration.ofSeconds(10), LIMIT);
+                HttpClient.newHttpClient(), JSON, Duration.ofSeconds(1), LIMIT);
     }
 
     @AfterEach
@@ -69,6 +78,19 @@ class StreamableHttpClientTest {
                     assertThat(e.kind()).isEqualTo(UpstreamException.Kind.PROTOCOL);
                     assertThat(e.getMessage()).isEqualTo("response too large");
                 });
+    }
+
+    @Test
+    void silentEventStreamEndsAtTheTotalDeadline() {
+        contentType.set("text/event-stream");
+        silent = true;
+        long started = System.nanoTime();
+        assertThatThrownBy(() -> client.post(request(), IntNode.valueOf(1)))
+                .isInstanceOfSatisfying(UpstreamException.class, e -> {
+                    assertThat(e.kind()).isEqualTo(UpstreamException.Kind.UNAVAILABLE);
+                    assertThat(e.getMessage()).isEqualTo("response not complete in time");
+                });
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(3));
     }
 
     @Test

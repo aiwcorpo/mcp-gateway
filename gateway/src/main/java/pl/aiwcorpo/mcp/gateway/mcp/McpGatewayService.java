@@ -104,6 +104,7 @@ public class McpGatewayService {
         String clientName = params.path("name").asString(null);
         JsonNode arguments = params.has("arguments") ? params.get("arguments") : json.createObjectNode();
         if (clientName == null || !arguments.isObject()) {
+            finish(ctx, null, null, started, 0, "allow", null, "invalid_argument", null);
             throw new RpcFailure(-32602, "tools/call needs a string name and object arguments.", 400);
         }
         int argsLength = json.writeValueAsString(arguments).getBytes(StandardCharsets.UTF_8).length;
@@ -164,13 +165,17 @@ public class McpGatewayService {
             String message = e.kind() == UpstreamException.Kind.UNAVAILABLE
                     ? "The MCP server is unavailable. Try again later." : "The call could not be completed.";
             return finish(ctx, tool, credential, started, argsLength, "allow", null, null, errors.error(code, message));
+        } catch (RuntimeException e) {
+            // Only the class: JDK messages can quote header values, i.e. the credential.
+            log.error("tools/call rid={} to {} failed: {}", ctx.requestId(), server.serverId(), e.getClass().getName());
+            return finish(ctx, tool, credential, started, argsLength, "allow", null, null,
+                    errors.error("internal_error", "The call could not be completed."));
         }
         if (response.has("error")) {
             JsonNode error = response.get("error");
             finish(ctx, tool, credential, started, argsLength, "allow", null, "internal_error", null);
             int code = error.path("code").isInt() ? error.path("code").asInt() : -32603;
-            String message = error.path("message").asString("The MCP server returned an error.");
-            throw new RpcFailure(code, message.length() > 500 ? message.substring(0, 500) : message, 200);
+            throw new RpcFailure(code, safeMessage(code), 200);
         }
         JsonNode result = response.path("result");
         if (!result.isObject()) {
@@ -188,7 +193,22 @@ public class McpGatewayService {
                     ctx.server().serverId(), e.kind(), e.getMessage());
             throw new RpcFailure(-32603, e.kind() == UpstreamException.Kind.UNAVAILABLE
                     ? "upstream_unavailable: the MCP server is unavailable." : "internal_error", 502);
+        } catch (RuntimeException e) {
+            log.error("{} rid={} to {} failed: {}", request.path("method").asString(), ctx.requestId(),
+                    ctx.server().serverId(), e.getClass().getName());
+            throw new RpcFailure(-32603, "internal_error", 502);
         }
+    }
+
+    /** Fixed texts: the server's own message may carry backend content, and C10 forbids passing it on. */
+    private static String safeMessage(int code) {
+        return switch (code) {
+            case -32700 -> "Parse error.";
+            case -32600 -> "Invalid request.";
+            case -32601 -> "Method not found.";
+            case -32602 -> "Invalid params.";
+            default -> "The MCP server returned an error.";
+        };
     }
 
     private ObjectNode request(String method) {

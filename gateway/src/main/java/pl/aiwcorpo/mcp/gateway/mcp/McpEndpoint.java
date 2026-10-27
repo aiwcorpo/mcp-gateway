@@ -110,7 +110,10 @@ public class McpEndpoint {
     }
 
     @GetMapping("/s/{serverId}/mcp")
-    public ResponseEntity<String> get(@PathVariable String serverId) {
+    public ResponseEntity<String> get(@PathVariable String serverId, HttpServletRequest request) {
+        if (!originAllowed(request)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
         // No standalone SSE stream: legacy clients may get 405 (2025-03-26+), modern ones must (2026-07-28).
         return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).header(HttpHeaders.ALLOW, "POST, DELETE").build();
     }
@@ -122,6 +125,9 @@ public class McpEndpoint {
         String sessionId = request.getHeader("Mcp-Session-Id");
         if (servers.find(serverId).isEmpty()) {
             return plain(HttpStatus.NOT_FOUND, requestId);
+        }
+        if (!originAllowed(request)) {
+            return plain(HttpStatus.FORBIDDEN, requestId);
         }
         if (sessionId == null) {
             return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).header(HttpHeaders.ALLOW, "POST")

@@ -1,6 +1,7 @@
 package pl.aiwcorpo.mcp.gateway.broker;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -12,12 +13,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
 import pl.aiwcorpo.mcp.gateway.jwt.InternalTokenIssuer;
+import pl.aiwcorpo.mcp.gateway.upstream.BoundedInputStream;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -30,6 +33,8 @@ public class BrokerClient {
     private static final Set<String> SCHEMES = Set.of("Bearer", "Basic", "Token", "ApiKey");
     private static final Set<String> TYPES = Set.of("user-oauth", "user-secret", "token-exchange", "service-account");
     private static final int MAX_BODY = 64 * 1024;
+    /* The value becomes an HTTP header: only visible ASCII, otherwise the JDK rejects it with the value in the message. */
+    private static final Pattern VISIBLE_ASCII = Pattern.compile("^[\\x21-\\x7e]{1,8192}$");
 
     private final URI baseUrl;
     private final HttpClient http;
@@ -48,13 +53,13 @@ public class BrokerClient {
     /** {@code POST /v1/credentials/resolve}; {@code tool} is the server-side tool name (C2, CC-038). */
     public Resolution resolve(GatewayUser user, String system, List<String> scopes, String subjectToken, String tool,
                               String requestId) {
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("system", system);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("system", system);
         if (!scopes.isEmpty()) {
-            body.put("scopes", scopes);
+            payload.put("scopes", scopes);
         }
         if (subjectToken != null) {
-            body.put("subjectToken", subjectToken);
+            payload.put("subjectToken", subjectToken);
         }
         HttpRequest request = HttpRequest.newBuilder(baseUrl.resolve("/v1/credentials/resolve"))
                 .timeout(timeout)
@@ -62,11 +67,19 @@ public class BrokerClient {
                 .header("X-Request-Id", requestId)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body)))
+                .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(payload)))
                 .build();
-        HttpResponse<byte[]> response;
+        int status;
+        byte[] body;
         try {
-            response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            status = response.statusCode();
+            try (InputStream in = new BoundedInputStream(response.body(), MAX_BODY)) {
+                body = in.readAllBytes();
+            }
+        } catch (BoundedInputStream.LimitExceededException e) {
+            log.error("broker resolve rid={}: response over {} bytes", requestId, MAX_BODY);
+            return new Resolution.Failed("broker_response_too_large");
         } catch (IOException e) {
             log.warn("broker resolve rid={} failed: {}", requestId, e.getClass().getSimpleName());
             return new Resolution.Unavailable("broker_unreachable");
@@ -74,13 +87,9 @@ public class BrokerClient {
             Thread.currentThread().interrupt();
             return new Resolution.Unavailable("interrupted");
         }
-        int status = response.statusCode();
-        if (response.body().length > MAX_BODY) {
-            return new Resolution.Failed("broker_response_too_large");
-        }
         return switch (status) {
-            case 200 -> granted(response.body(), requestId);
-            case 409 -> required(response.body(), system, requestId);
+            case 200 -> granted(body, requestId);
+            case 409 -> required(body, system, requestId);
             case 503 -> new Resolution.Unavailable("broker_503");
             default -> {
                 if (status >= 500) {
@@ -100,11 +109,14 @@ public class BrokerClient {
                 .header("X-Request-Id", requestId)
                 .header("Accept", "application/json")
                 .GET().build();
-        HttpResponse<byte[]> response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
-        if (response.statusCode() != 200) {
-            throw new IOException("GET /v1/systems answered " + response.statusCode());
+        HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
+        try (InputStream in = new BoundedInputStream(response.body(), MAX_BODY)) {
+            byte[] body = in.readAllBytes();
+            if (response.statusCode() != 200) {
+                throw new IOException("GET /v1/systems answered " + response.statusCode());
+            }
+            return json.readTree(body);
         }
-        return json.readTree(response.body());
     }
 
     private Resolution granted(byte[] body, String requestId) {
@@ -115,7 +127,7 @@ public class BrokerClient {
             String type = node.path("type").asString(null);
             JsonNode ttl = node.path("cacheTtlSeconds");
             if (!SCHEMES.contains(scheme) || value == null || value.isEmpty() || !TYPES.contains(type) || !ttl.isInt()
-                    || ttl.asInt() < 0 || ttl.asInt() > 60 || value.chars().anyMatch(c -> c < 0x20 || c == 0x7f)) {
+                    || ttl.asInt() < 0 || ttl.asInt() > 60 || !VISIBLE_ASCII.matcher(value).matches()) {
                 log.error("broker resolve rid={}: 200 body outside C4", requestId);
                 return new Resolution.Failed("broker_body_invalid");
             }

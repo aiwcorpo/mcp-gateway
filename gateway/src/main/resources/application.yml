@@ -48,6 +48,7 @@ gateway:
   public-url: ${MCP_PUBLIC_URL:}
   policy-revision: ${MCP_POLICY_REVISION:00000000000000-0000000}
   allowed-origins: ${MCP_ALLOWED_ORIGINS:}
+  allow-plain-http: ${MCP_ALLOW_PLAIN_HTTP:false}
   oidc:
     issuer: ${MCP_OIDC_ISSUER}
     jwks-uri: ${MCP_OIDC_JWKS_URI}

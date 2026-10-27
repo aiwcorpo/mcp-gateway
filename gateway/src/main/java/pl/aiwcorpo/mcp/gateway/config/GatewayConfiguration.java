@@ -111,6 +111,13 @@ public class GatewayConfiguration {
     @Bean
     TokenExchangeClient tokenExchangeClient(GatewayProperties properties, JsonMapper gatewayJson) {
         GatewayProperties.Oidc oidc = properties.oidc();
+        if (oidc.tokenUri() != null && !"https".equals(oidc.tokenUri().getScheme()) && !properties.allowPlainHttp()) {
+            // Only token-exchange systems need it; refusing here would block servers that do not.
+            org.slf4j.LoggerFactory.getLogger(GatewayConfiguration.class)
+                    .warn("gateway.oidc.token-uri is not https: token exchange disabled (gateway.allow-plain-http=false)");
+            return new TokenExchangeClient(null, null, null, oidc.exchangeAudience(), oidc.exchangeScope(),
+                    java.net.http.HttpClient.newHttpClient(), gatewayJson, properties.broker().timeout());
+        }
         return new TokenExchangeClient(oidc.tokenUri(), oidc.clientId(), oidc.clientSecret(), oidc.exchangeAudience(),
                 oidc.exchangeScope(), java.net.http.HttpClient.newBuilder()
                         .followRedirects(java.net.http.HttpClient.Redirect.NEVER).build(),
@@ -134,7 +141,7 @@ public class GatewayConfiguration {
                 uri.withPassword(redis.password().toCharArray());
             }
         }
-        return new InvalidationListener(uri.build(), redis.invalidationChannel(), cache, gatewayJson);
+        return new InvalidationListener(uri.build(), redis.invalidationChannel(), cache, gatewayJson, redis.healthInterval());
     }
 
     @Bean

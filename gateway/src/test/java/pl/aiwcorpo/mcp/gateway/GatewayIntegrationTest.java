@@ -391,8 +391,8 @@ class GatewayIntegrationTest {
 
     @Test
     void unconfiguredToolIsHiddenAndDisabled() throws Exception {
-        HttpResponse<String> call = sendModern(aliceToken(), "tools/call", "jira__delete_issue",
-                "{\"name\":\"jira__delete_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
+        HttpResponse<String> call = sendModern(aliceToken(), "tools/call", "jira__drop_project",
+                "{\"name\":\"jira__drop_project\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
         assertThat(toolError(call).path("error").asString()).isEqualTo("tool_disabled");
         assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
         HttpResponse<String> unprefixed = sendModern(aliceToken(), "tools/call", "get_issue",
@@ -488,6 +488,114 @@ class GatewayIntegrationTest {
         BrokerStub.Received systems = env.broker.systemsCalls().getFirst();
         assertThat(systems.rejectReason()).isNull();
         assertThat(systems.tool()).isNull();
+    }
+
+    // --- Review M1 findings: authorization levels, credential charset, Redis outage, limits ---------------
+
+    @Test
+    void destructiveToolIsHiddenAndDisabledEvenWithTheDestructiveGroup() throws Exception {
+        String token = env.idp.token("de570000-0000-4000-8000-000000000010", "dora",
+                List.of("mcp-jira-read", "mcp-jira-write", "mcp-jira-destructive"));
+        HttpResponse<String> list = sendModern(token, "tools/list", null, "{}");
+        assertThat(list.body()).doesNotContain("jira__delete_issue").contains("jira__get_issue");
+        HttpResponse<String> call = sendModern(token, "tools/call", "jira__delete_issue",
+                "{\"name\":\"jira__delete_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
+        assertThat(toolError(call).path("error").asString()).isEqualTo("tool_disabled");
+        assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
+        assertThat(resolveCount()).isZero();
+    }
+
+    @Test
+    void readOnlyUserCannotCallUpdateTool() throws Exception {
+        String token = env.idp.token("4ead0000-0000-4000-8000-000000000011", "rita", List.of("mcp-jira-read"));
+        HttpResponse<String> call = sendModern(token, "tools/call", "jira__add_comment",
+                "{\"name\":\"jira__add_comment\",\"arguments\":{\"issueKey\":\"ABC-1\",\"body\":\"x\"}}");
+        JsonNode error = toolError(call);
+        assertThat(error.path("error").asString()).isEqualTo("access_denied");
+        assertThat(error.path("requiredEntitlements").get(0).asString()).isEqualTo("mcp-jira-write");
+        assertThat(resolveCount()).isZero();
+        assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
+    }
+
+    @Test
+    void credentialOutsideVisibleAsciiIsRejectedAndNeverLogged(CapturedOutput output) throws Exception {
+        String value = "secret-\u0100-pat";
+        env.broker.grant(value, 60);
+        String token = env.idp.token("a5c11000-0000-4000-8000-000000000012", "ann", List.of("mcp-jira-read"));
+        HttpResponse<String> call = callGetIssue(token);
+        assertThat(call.statusCode()).isEqualTo(200);
+        assertThat(toolError(call).path("error").asString()).isEqualTo("internal_error");
+        assertThat(credentialCache.size()).isZero();
+        assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
+        assertThat(output.getAll()).doesNotContain(value).doesNotContain("secret-");
+        String rid = call.headers().firstValue("X-Request-Id").orElseThrow();
+        assertThat(auditEvents(output, rid)).anySatisfy(e -> assertThat(e.path("errorCode").asString()).isEqualTo("internal_error"));
+    }
+
+    @Test
+    void brokerAnswersOutsideTheContractAreInternalErrorsWithoutServerCall() throws Exception {
+        String token = env.idp.token("b40c0000-0000-4000-8000-000000000013", "ben", List.of("mcp-jira-read"));
+        for (BrokerStub.Mode mode : List.of(BrokerStub.Mode.REJECT, BrokerStub.Mode.BAD_BODY)) {
+            env.broker.mode(mode);
+            assertThat(toolError(callGetIssue(token)).path("error").asString()).as(mode.name()).isEqualTo("internal_error");
+        }
+        assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
+    }
+
+    @Test
+    void redisOutageDisablesTheCacheUntilTheSubscriptionIsBack() throws Exception {
+        String token = env.idp.token("4ed15000-0000-4000-8000-000000000014", "ivy", List.of("mcp-jira-read"));
+        callGetIssue(token);
+        assertThat(credentialCache.size()).isEqualTo(1);
+        var docker = env.redis.getDockerClient();
+        docker.pauseContainerCmd(env.redis.getContainerId()).exec();
+        try {
+            await().atMost(Duration.ofSeconds(15)).until(() -> !invalidations.live());
+            assertThat(credentialCache.size()).isZero();
+            callGetIssue(token);
+            callGetIssue(token);
+            assertThat(resolveCount()).as("cache bypassed while Redis is unreachable").isEqualTo(3);
+        } finally {
+            docker.unpauseContainerCmd(env.redis.getContainerId()).exec();
+        }
+        await().atMost(Duration.ofSeconds(20)).until(invalidations::live);
+        env.broker.clear();
+        callGetIssue(token);
+        callGetIssue(token);
+        assertThat(resolveCount()).as("cache used again after re-subscription").isEqualTo(1);
+    }
+
+    @Test
+    void longLivedOrServiceLikeIdpTokensAreRejected() throws Exception {
+        String longLived = env.idp.token(ALICE_SUB, "alice", ALICE_GROUPS, "mcp-gateway", "claude-code", 2 * 3600);
+        assertThat(sendModern(longLived, "tools/list", null, "{}").statusCode()).isEqualTo(401);
+        String systemSub = env.idp.token("system:mcp-gateway", "x", List.of("mcp-jira-read"));
+        assertThat(sendModern(systemSub, "tools/list", null, "{}").statusCode()).isEqualTo(401);
+    }
+
+    @Test
+    void requestBodyLimitAndAllowedOrigin() throws Exception {
+        String big = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"params\":{\"pad\":\"" + "x".repeat(1024 * 1024)
+                + "\"}}";
+        assertThat(send(aliceToken(), "/s/mcp-jira/mcp", big, Map.of()).statusCode()).isEqualTo(413);
+        assertThat(send(aliceToken(), "/s/mcp-jira/mcp", initializeBody(), Map.of("Origin", "https://allowed.test"))
+                .statusCode()).isEqualTo(200);
+        HttpResponse<String> delete = http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/s/mcp-jira/mcp"))
+                .header("Authorization", "Bearer " + aliceToken()).header("Mcp-Session-Id", "x".repeat(32))
+                .header("Origin", "https://evil.test").DELETE().build(), HttpResponse.BodyHandlers.ofString());
+        assertThat(delete.statusCode()).isEqualTo(403);
+    }
+
+    @Test
+    void invalidToolsCallIsAudited(CapturedOutput output) throws Exception {
+        HttpResponse<String> call = sendModern(aliceToken(), "tools/call", "jira__get_issue",
+                "{\"name\":\"jira__get_issue\",\"arguments\":[1]}");
+        assertThat(call.statusCode()).isEqualTo(400);
+        String rid = call.headers().firstValue("X-Request-Id").orElseThrow();
+        assertThat(auditEvents(output, rid)).anySatisfy(e -> {
+            assertThat(e.path("event").asString()).isEqualTo("tool_call");
+            assertThat(e.path("errorCode").asString()).isEqualTo("invalid_argument");
+        });
     }
 
     // --- helpers ---------------------------------------------------------------------------------------------

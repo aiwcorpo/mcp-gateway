@@ -11,6 +11,11 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Locale;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
@@ -23,6 +28,9 @@ import tools.jackson.databind.json.JsonMapper;
  * byte limit ({@code maxBytes}).
  */
 public class StreamableHttpClient {
+
+    private static final ScheduledExecutorService DEADLINES = Executors.newSingleThreadScheduledExecutor(
+            Thread.ofPlatform().daemon().name("upstream-deadline").factory());
 
     private final URI endpoint;
     private final HttpClient http;
@@ -45,10 +53,19 @@ public class StreamableHttpClient {
                 .header("Accept", "application/json, text/event-stream")
                 .POST(HttpRequest.BodyPublishers.ofString(request.body()));
         headers(builder, request);
+        long deadline = System.nanoTime() + timeout.toNanos();
         HttpResponse<InputStream> response = send(builder.build());
         int status = response.statusCode();
         String sessionId = response.headers().firstValue("Mcp-Session-Id").orElse(null);
-        try (InputStream body = new BoundedInputStream(response.body(), maxBytes)) {
+        InputStream raw = response.body();
+        // HttpRequest.timeout covers only the response headers; the body (an SSE stream may stay open) gets
+        // the rest of the same budget, after which the stream is closed under the reader.
+        AtomicBoolean expired = new AtomicBoolean();
+        ScheduledFuture<?> guard = DEADLINES.schedule(() -> {
+            expired.set(true);
+            closeQuietly(raw);
+        }, Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+        try (InputStream body = new BoundedInputStream(raw, maxBytes)) {
             if (status == 202) {
                 return new UpstreamResponse(status, sessionId, null);
             }
@@ -68,9 +85,23 @@ public class StreamableHttpClient {
         } catch (BoundedInputStream.LimitExceededException e) {
             throw new UpstreamException(UpstreamException.Kind.PROTOCOL, "response too large");
         } catch (IOException e) {
-            throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE, "reading the response failed");
+            throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE,
+                    expired.get() ? "response not complete in time" : "reading the response failed");
         } catch (JacksonException e) {
+            if (expired.get()) {
+                throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE, "response not complete in time");
+            }
             throw new UpstreamException(UpstreamException.Kind.PROTOCOL, "response is not JSON");
+        } finally {
+            guard.cancel(false);
+        }
+    }
+
+    private static void closeQuietly(InputStream in) {
+        try {
+            in.close();
+        } catch (IOException e) {
+            // the reader sees the closed stream either way
         }
     }
 

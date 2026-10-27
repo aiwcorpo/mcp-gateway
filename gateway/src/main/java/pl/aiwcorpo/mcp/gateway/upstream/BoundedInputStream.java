@@ -8,9 +8,9 @@ import java.io.InputStream;
  * Hard limit on the bytes read from a server response, counted as they are read, so a body without line
  * breaks or without Content-Length cannot grow the gateway's memory past the limit.
  */
-final class BoundedInputStream extends FilterInputStream {
+public final class BoundedInputStream extends FilterInputStream {
 
-    static final class LimitExceededException extends IOException {
+    public static final class LimitExceededException extends IOException {
         LimitExceededException() {
             super("response exceeds the size limit");
         }
@@ -19,7 +19,7 @@ final class BoundedInputStream extends FilterInputStream {
     private final long limit;
     private long count;
 
-    BoundedInputStream(InputStream in, long limit) {
+    public BoundedInputStream(InputStream in, long limit) {
         super(in);
         this.limit = limit;
     }

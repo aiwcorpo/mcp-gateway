@@ -77,10 +77,14 @@ public final class TestIdp implements AutoCloseable {
     }
 
     public String token(String sub, String username, List<String> groups, String audience, String azp) {
+        return token(sub, username, groups, audience, azp, 900);
+    }
+
+    public String token(String sub, String username, List<String> groups, String audience, String azp, long lifetimeSeconds) {
         Instant now = Instant.now();
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
                 .issuer(ISSUER).subject(sub).audience(audience)
-                .issueTime(Date.from(now)).expirationTime(Date.from(now.plusSeconds(900)))
+                .issueTime(Date.from(now)).expirationTime(Date.from(now.plusSeconds(lifetimeSeconds)))
                 .claim("azp", azp).claim("preferred_username", username).claim("groups", groups)
                 .jwtID(UUID.randomUUID().toString()).build();
         try {
