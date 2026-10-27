@@ -19,7 +19,8 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * Client side of Streamable HTTP (2025-03-26 .. 2025-11-25) towards one MCP server over mTLS. The answer to a
  * request is either application/json or an SSE stream; on a stream only the response with the request's id is
- * kept (request-scoped notifications are not forwarded in M1).
+ * kept (request-scoped notifications are not forwarded in M1). Every body, JSON or SSE, is read through a hard
+ * byte limit ({@code maxBytes}).
  */
 public class StreamableHttpClient {
 
@@ -47,28 +48,25 @@ public class StreamableHttpClient {
         HttpResponse<InputStream> response = send(builder.build());
         int status = response.statusCode();
         String sessionId = response.headers().firstValue("Mcp-Session-Id").orElse(null);
-        try (InputStream body = response.body()) {
+        try (InputStream body = new BoundedInputStream(response.body(), maxBytes)) {
             if (status == 202) {
                 return new UpstreamResponse(status, sessionId, null);
             }
             if (status != 200) {
-                body.readNBytes(maxBytes);
                 return new UpstreamResponse(status, sessionId, null);
             }
             String contentType = response.headers().firstValue("Content-Type").orElse("").toLowerCase(Locale.ROOT);
             JsonNode message;
             if (contentType.startsWith("application/json")) {
-                byte[] bytes = body.readNBytes(maxBytes + 1);
-                if (bytes.length > maxBytes) {
-                    throw new UpstreamException(UpstreamException.Kind.PROTOCOL, "response too large");
-                }
-                message = json.readTree(bytes);
+                message = json.readTree(body.readAllBytes());
             } else if (contentType.startsWith("text/event-stream")) {
                 message = fromEventStream(body, expectedId);
             } else {
                 throw new UpstreamException(UpstreamException.Kind.PROTOCOL, "unexpected content type");
             }
             return new UpstreamResponse(status, sessionId, message);
+        } catch (BoundedInputStream.LimitExceededException e) {
+            throw new UpstreamException(UpstreamException.Kind.PROTOCOL, "response too large");
         } catch (IOException e) {
             throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE, "reading the response failed");
         } catch (JacksonException e) {
@@ -118,13 +116,8 @@ public class StreamableHttpClient {
     private JsonNode fromEventStream(InputStream body, JsonNode expectedId) throws IOException, UpstreamException {
         BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8));
         StringBuilder data = new StringBuilder();
-        long total = 0;
         String line;
         while ((line = reader.readLine()) != null) {
-            total += line.length() + 1;
-            if (total > maxBytes) {
-                throw new UpstreamException(UpstreamException.Kind.PROTOCOL, "event stream too large");
-            }
             if (line.isEmpty()) {
                 JsonNode message = dispatch(data, expectedId);
                 data.setLength(0);
