@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.1.0</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>pl.aiwcorpo.mcp</groupId>
+    <artifactId>mcp-gateway-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+    <name>MCP Gateway :: Parent</name>
+
+    <modules>
+        <module>test-server</module>
+        <module>gateway</module>
+    </modules>
+
+    <properties>
+        <java.version>25</java.version>
+        <maven.compiler.release>25</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <mcp-contracts.version>2.0.2</mcp-contracts.version>
+        <bouncycastle.version>1.86</bouncycastle.version>
+        <json-schema-validator.version>3.0.8</json-schema-validator.version>
+        <!-- Same line as spring-security-oauth2-jose of Spring Boot 4.1.0; the test server has no Spring Security. -->
+        <nimbus-jose-jwt.version>10.9</nimbus-jose-jwt.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>pl.aiwcorpo.mcp</groupId>
+                <artifactId>mcp-gateway-test-server</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>pl.aiwcorpo.mcp</groupId>
+                <artifactId>mcp-contracts</artifactId>
+                <version>${mcp-contracts.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>pl.aiwcorpo.mcp</groupId>
+                <artifactId>mcp-contracts</artifactId>
+                <version>${mcp-contracts.version}</version>
+                <classifier>test-vectors</classifier>
+            </dependency>
+            <dependency>
+                <groupId>pl.aiwcorpo.mcp</groupId>
+                <artifactId>mcp-cedar-entities</artifactId>
+                <version>${mcp-contracts.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.nimbusds</groupId>
+                <artifactId>nimbus-jose-jwt</artifactId>
+                <version>${nimbus-jose-jwt.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.networknt</groupId>
+                <artifactId>json-schema-validator</artifactId>
+                <version>${json-schema-validator.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcpkix-jdk18on</artifactId>
+                <version>${bouncycastle.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>

@@ -1,0 +1,628 @@
+package pl.aiwcorpo.mcp.gateway;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+
+import io.lettuce.core.RedisClient;
+import io.lettuce.core.RedisURI;
+import io.lettuce.core.api.StatefulRedisConnection;
+import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
+import pl.aiwcorpo.mcp.gateway.broker.CredentialCache;
+import pl.aiwcorpo.mcp.gateway.broker.InvalidationListener;
+import pl.aiwcorpo.mcp.gateway.jwt.InternalTokenIssuer;
+import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
+import pl.aiwcorpo.mcp.gateway.support.BrokerStub;
+import pl.aiwcorpo.mcp.gateway.support.Contracts;
+import pl.aiwcorpo.mcp.gateway.support.GatewayTestEnvironment;
+import pl.aiwcorpo.mcp.testserver.TestMcpServer;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+
+/**
+ * End-to-end through the real gateway: IdP token -> gateway -> broker stub -> test MCP server, over mTLS with
+ * the gateway's own JWKS. Covers the M1 Definition of Done points of ws-05.
+ */
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ExtendWith(OutputCaptureExtension.class)
+class GatewayIntegrationTest {
+
+    private static final GatewayTestEnvironment env = GatewayTestEnvironment.get();
+    private static final JsonMapper JSON = JsonMapper.builder().build();
+    private static final String ALICE_SUB = "6f1c2a9e-4d4b-4c51-9a53-1e0f0c7d2b11";
+    private static final String BOB_SUB = "0d6a7e2c-9c1b-4a0e-8f55-3b2d1c0e9f22";
+    private static final List<String> ALICE_GROUPS = List.of("mcp-jira-read", "mcp-jira-write", "mcp-jira-proj-ABC",
+            "mcp-confluence-read", "other-group");
+
+    @DynamicPropertySource
+    static void properties(DynamicPropertyRegistry registry) {
+        env.register(registry);
+    }
+
+    @LocalServerPort
+    int port;
+
+    @Autowired
+    InternalTokenIssuer issuer;
+
+    @Autowired
+    InvalidationListener invalidations;
+
+    @Autowired
+    CredentialCache credentialCache;
+
+    private final HttpClient http = HttpClient.newHttpClient();
+
+    @BeforeEach
+    void reset() {
+        env.broker.grant("alice-pat", 60);
+        env.broker.clear();
+        env.jira.clearRequests();
+        env.wrongName.clearRequests();
+        credentialCache.clear();
+        await().atMost(Duration.ofSeconds(10)).until(invalidations::live);
+    }
+
+    // --- C1: OAuth resource server, RFC 9728 -------------------------------------------------------------
+
+    @Test
+    void missingTokenGets401WithResourceMetadata() throws Exception {
+        HttpResponse<String> response = send(null, "/s/mcp-jira/mcp", initializeBody(), Map.of());
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).hasValue(
+                "Bearer resource_metadata=\"http://localhost:" + port + "/.well-known/oauth-protected-resource/s/mcp-jira/mcp\"");
+        assertThat(env.jira.requests()).isEmpty();
+
+        HttpResponse<String> metadata = http.send(HttpRequest.newBuilder(
+                URI.create("http://localhost:" + port + "/.well-known/oauth-protected-resource/s/mcp-jira/mcp")).build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(metadata.statusCode()).isEqualTo(200);
+        JsonNode document = JSON.readTree(metadata.body());
+        assertThat(document.path("resource").asString()).isEqualTo("http://localhost:" + port + "/s/mcp-jira/mcp");
+        assertThat(document.path("authorization_servers").path(0).asString()).as(metadata.body()).isEqualTo("http://localhost:18080/realms/corp");
+    }
+
+    @Test
+    void tokenForAnotherAudienceOrUnknownSignerIsRejected() throws Exception {
+        String otherAudience = env.idp.token(ALICE_SUB, "alice", ALICE_GROUPS, "mcp-credential-broker", "claude-code");
+        HttpResponse<String> response = send(otherAudience, "/s/mcp-jira/mcp", initializeBody(), Map.of());
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.headers().firstValue("WWW-Authenticate").orElse("")).contains("error=\"invalid_token\"");
+
+        String gatewayInternalToken = issuer.forUser("mcp-gateway", alice(), null, UuidV7.next());
+        assertThat(send(gatewayInternalToken, "/s/mcp-jira/mcp", initializeBody(), Map.of()).statusCode()).isEqualTo(401);
+        assertThat(send(aliceToken(), "/s/mcp-jira/other", initializeBody(), Map.of()).statusCode()).isIn(404, 405);
+    }
+
+    @Test
+    void unknownServerIs404AndVirtualServersDoNotExistYet() throws Exception {
+        assertThat(send(aliceToken(), "/s/mcp-gitlab/mcp", initializeBody(), Map.of()).statusCode()).isEqualTo(404);
+        assertThat(send(aliceToken(), "/v/team-a/mcp", initializeBody(), Map.of()).statusCode()).isEqualTo(404);
+    }
+
+    @Test
+    void jwksOnlyOnTheInternalTlsPort() throws Exception {
+        HttpClient internal = HttpClient.newBuilder().sslContext(env.gatewayClientTls).build();
+        HttpResponse<String> jwks = internal.send(HttpRequest.newBuilder(
+                URI.create("https://localhost:" + env.internalPort + "/.well-known/jwks.json")).build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(jwks.statusCode()).isEqualTo(200);
+        JsonNode keys = JSON.readTree(jwks.body()).path("keys");
+        assertThat(keys.size()).isEqualTo(2);
+        keys.forEach(k -> {
+            assertThat(k.has("d")).isFalse();
+            assertThat(k.path("kid").asString()).doesNotStartWith("test-");
+            assertThat(k.path("crv").asString()).isEqualTo("P-256");
+        });
+        assertThat(http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/.well-known/jwks.json")).build(),
+                HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(404);
+        assertThat(internal.send(HttpRequest.newBuilder(
+                URI.create("https://localhost:" + env.internalPort + "/s/mcp-jira/mcp")).POST(HttpRequest.BodyPublishers.ofString("{}"))
+                .build(), HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(404);
+        assertThat(http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/actuator/prometheus")).build(),
+                HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(404);
+        HttpResponse<String> metrics = internal.send(HttpRequest.newBuilder(
+                URI.create("https://localhost:" + env.internalPort + "/actuator/prometheus")).build(), HttpResponse.BodyHandlers.ofString());
+        assertThat(metrics.statusCode()).isEqualTo(200);
+    }
+
+    // --- Legacy clients (2025-11-25): sessions, tools, C2/C3 towards the server ---------------------------
+
+    @Test
+    void legacyClientListsAndCallsToolsWithInjectedCredential(CapturedOutput output) throws Exception {
+        String token = aliceToken();
+        String session = initialize(token, "2025-11-25");
+
+        JsonNode list = rpc(token, session, "2025-11-25", "tools/list", null);
+        List<String> names = new ArrayList<>();
+        list.path("result").path("tools").forEach(t -> names.add(t.path("name").asString()));
+        assertThat(names).containsExactlyInAnyOrder("jira__get_issue", "jira__search_issues");
+
+        Map<String, String> clientHeaders = new LinkedHashMap<>();
+        clientHeaders.put("X-MCP-Credential", "Bearer stolen-pat");
+        clientHeaders.put("X-MCP-Credential-Type", "service-account");
+        clientHeaders.put("X-PAT-Jira", "client-supplied-pat");
+        clientHeaders.put("X-Request-Id", "client-req-42");
+        HttpResponse<String> call = sendRpc(token, session, "2025-11-25", toolCall("jira__get_issue", "ABC-1"), clientHeaders);
+        assertThat(call.statusCode()).isEqualTo(200);
+        String requestId = call.headers().firstValue("X-Request-Id").orElseThrow();
+        assertThat(requestId).matches("^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$");
+        JsonNode result = JSON.readTree(call.body()).path("result");
+        assertThat(result.path("isError").asBoolean()).isFalse();
+        assertThat(result.path("content").get(0).path("text").asString()).contains("user-secret");
+
+        TestMcpServer.RecordedRequest atServer = lastToolCall(env.jira);
+        assertThat(atServer.status()).isEqualTo(200);
+        assertThat(atServer.toolName()).isEqualTo("get_issue");
+        assertThat(atServer.header("x-mcp-credential")).isEqualTo("Bearer alice-pat");
+        assertThat(atServer.header("x-mcp-credential-type")).isEqualTo("user-secret");
+        assertThat(atServer.header("x-request-id")).isEqualTo(requestId);
+        assertThat(atServer.header("x-pat-jira")).isNull();
+        assertThat(atServer.header("authorization")).doesNotContain(token);
+        assertThat(atServer.headers().keySet()).noneMatch(h -> h.startsWith("x-pat-"));
+        for (TestMcpServer.RecordedRequest request : env.jira.requests()) {
+            assertThat(request.header("x-mcp-credential")).isNotEqualTo("Bearer stolen-pat");
+            assertThat(request.header("x-request-id")).isNotEqualTo("client-req-42");
+        }
+        JsonNode jwtClaims = claims(atServer.header("authorization"));
+        assertThat(jwtClaims.path("aud").isString()).isTrue();
+        assertThat(jwtClaims.path("tool").asString()).isEqualTo("get_issue");
+        assertThat(jwtClaims.path("rid").asString()).isEqualTo(requestId);
+        assertThat(jwtClaims.path("grp").toString()).doesNotContain("other-group");
+        assertThat(Contracts.schemaErrors("schemas/internal-jwt.schema.json", jwtClaims)).isEmpty();
+
+        BrokerStub.Received resolve = env.broker.received().stream()
+                .filter(r -> r.path().equals("/v1/credentials/resolve")).reduce((a, b) -> b).orElseThrow();
+        assertThat(resolve.rejectReason()).isNull();
+        assertThat(resolve.tool()).isEqualTo("get_issue");
+        assertThat(resolve.requestId()).isEqualTo(requestId);
+        assertThat(JSON.readTree(resolve.body()).path("subjectToken").isMissingNode()).isTrue();
+
+        List<JsonNode> events = auditEvents(output, requestId);
+        assertThat(events).extracting(e -> e.path("event").asString()).contains("policy_decision", "tool_call");
+        for (JsonNode event : events) {
+            assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", event)).isEmpty();
+        }
+        JsonNode toolCall = events.stream().filter(e -> e.path("event").asString().equals("tool_call")).findFirst().orElseThrow();
+        assertThat(toolCall.path("outcome").asString()).isEqualTo("ok");
+        assertThat(toolCall.path("clientRequestId").asString()).isEqualTo("client-req-42");
+        assertThat(toolCall.path("credentialType").asString()).isEqualTo("user-secret");
+        assertThat(output.getAll()).doesNotContain("alice-pat").doesNotContain(token);
+    }
+
+    @Test
+    void everyServerRequestHasAFreshTokenAndToolOnlyOnToolsCall() throws Exception {
+        String token = aliceToken();
+        String session = initialize(token, "2025-06-18");
+        rpc(token, session, "2025-06-18", "tools/list", null);
+        sendRpc(token, session, "2025-06-18", toolCall("jira__search_issues", "ABC"), Map.of());
+
+        List<TestMcpServer.RecordedRequest> requests = env.jira.requests();
+        assertThat(requests).isNotEmpty().allSatisfy(r -> assertThat(r.rejectReason()).isNull());
+        List<String> jtis = requests.stream().map(r -> claims(r.header("authorization")).path("jti").asString()).toList();
+        assertThat(jtis).doesNotHaveDuplicates();
+        for (TestMcpServer.RecordedRequest request : requests) {
+            JsonNode claims = claims(request.header("authorization"));
+            assertThat(claims.path("sub").asString()).isEqualTo(ALICE_SUB);
+            if ("tools/call".equals(request.rpcMethod())) {
+                assertThat(claims.path("tool").asString()).isEqualTo(request.toolName());
+            } else {
+                assertThat(claims.has("tool")).as(request.rpcMethod()).isFalse();
+                assertThat(request.header("x-mcp-credential")).isNull();
+            }
+        }
+    }
+
+    @Test
+    void serverRejectsTokenWhoseToolDiffersFromTheCalledTool() throws Exception {
+        String token = aliceToken();
+        String session = initialize(token, "2025-11-25");
+        sendRpc(token, session, "2025-11-25", toolCall("jira__get_issue", "ABC-1"), Map.of());
+        TestMcpServer.RecordedRequest call = lastToolCall(env.jira);
+
+        String rid = UuidV7.next();
+        String forged = issuer.forUser("mcp-jira", alice(), "get_issue", rid);
+        String body = toolCallJson("search_issues", "{\"project\":\"ABC\"}");
+        HttpResponse<String> response = HttpClient.newBuilder().sslContext(env.gatewayClientTls).build().send(
+                HttpRequest.newBuilder(URI.create("https://localhost:" + env.jira.port() + "/mcp"))
+                        .header("Authorization", "Bearer " + forged).header("X-Request-Id", rid)
+                        .header("Mcp-Session-Id", call.sessionId()).header("Content-Type", "application/json")
+                        .header("Accept", "application/json, text/event-stream")
+                        .POST(HttpRequest.BodyPublishers.ofString(body)).build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(env.jira.requests().getLast().rejectReason()).isEqualTo("tool_mismatch");
+    }
+
+    @Test
+    void sessionsAreNeverSharedBetweenUsers() throws Exception {
+        String aliceToken = aliceToken();
+        String bobToken = env.idp.token(BOB_SUB, "bob", List.of("mcp-jira-read"));
+        String aliceSession = initialize(aliceToken, "2025-11-25");
+
+        HttpResponse<String> hijack = sendRpc(bobToken, aliceSession, "2025-11-25",
+                "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\"}", Map.of());
+        assertThat(hijack.statusCode()).isEqualTo(404);
+
+        String bobSession = initialize(bobToken, "2025-11-25");
+        rpc(aliceToken, aliceSession, "2025-11-25", "tools/list", null);
+        rpc(bobToken, bobSession, "2025-11-25", "tools/list", null);
+        Map<String, String> upstreamSessionOwner = new LinkedHashMap<>();
+        for (TestMcpServer.RecordedRequest request : env.jira.requests()) {
+            if (request.sessionId() != null && request.sub() != null) {
+                String previous = upstreamSessionOwner.putIfAbsent(request.sessionId(), request.sub());
+                assertThat(previous == null || previous.equals(request.sub())).as("upstream session shared").isTrue();
+            }
+        }
+        assertThat(upstreamSessionOwner.values()).contains(ALICE_SUB, BOB_SUB);
+        assertThat(env.jira.requests()).noneMatch(r -> "session_of_other_user".equals(r.rejectReason()));
+    }
+
+    @Test
+    void lostServerSessionIsReinitialized() throws Exception {
+        String token = aliceToken();
+        String session = initialize(token, "2025-11-25");
+        rpc(token, session, "2025-11-25", "tools/list", null);
+        env.jira.dropSessions();
+        JsonNode list = rpc(token, session, "2025-11-25", "tools/list", null);
+        assertThat(list.path("result").path("tools").size()).isEqualTo(2);
+    }
+
+    @Test
+    void legacyProtocolRules() throws Exception {
+        String token = aliceToken();
+        assertThat(sendRpc(token, null, "2025-11-25", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}", Map.of())
+                .statusCode()).isEqualTo(400);
+        HttpResponse<String> init = send(token, "/s/mcp-jira/mcp",
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\","
+                        + "\"capabilities\":{},\"clientInfo\":{\"name\":\"t\",\"version\":\"1\"}}}", Map.of());
+        assertThat(JSON.readTree(init.body()).path("result").path("protocolVersion").asString()).isEqualTo("2025-11-25");
+        String session = init.headers().firstValue("Mcp-Session-Id").orElseThrow();
+        assertThat(sendRpc(token, session, "2025-06-18", "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}", Map.of())
+                .statusCode()).isEqualTo(400);
+        assertThat(sendRpc(token, session, "2025-11-25", "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}",
+                Map.of()).statusCode()).isEqualTo(202);
+        assertThat(http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/s/mcp-jira/mcp"))
+                .header("Authorization", "Bearer " + token).GET().build(), HttpResponse.BodyHandlers.ofString())
+                .statusCode()).isEqualTo(405);
+        HttpResponse<String> delete = http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/s/mcp-jira/mcp"))
+                .header("Authorization", "Bearer " + token).header("Mcp-Session-Id", session).DELETE().build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(delete.statusCode()).isEqualTo(204);
+        assertThat(sendRpc(token, session, "2025-11-25", "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}", Map.of())
+                .statusCode()).isEqualTo(404);
+        assertThat(send(token, "/s/mcp-jira/mcp", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}",
+                Map.of("Origin", "https://evil.example")).statusCode()).isEqualTo(403);
+    }
+
+    // --- Modern clients (2026-07-28) ----------------------------------------------------------------------
+
+    @Test
+    void modernClientWorksWithoutSession() throws Exception {
+        String token = aliceToken();
+        HttpResponse<String> discover = sendModern(token, "server/discover", null, "{}");
+        assertThat(discover.statusCode()).isEqualTo(200);
+        JsonNode discovered = JSON.readTree(discover.body()).path("result");
+        assertThat(discovered.path("resultType").asString()).isEqualTo("complete");
+        assertThat(discovered.path("supportedVersions").toString()).contains("2026-07-28", "2025-11-25");
+
+        HttpResponse<String> list = sendModern(token, "tools/list", null, "{}");
+        assertThat(JSON.readTree(list.body()).path("result").path("tools").size()).isEqualTo(2);
+        assertThat(list.headers().firstValue("Mcp-Session-Id")).isEmpty();
+
+        HttpResponse<String> call = sendModern(token, "tools/call", "jira__get_issue",
+                "{\"name\":\"jira__get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
+        JsonNode result = JSON.readTree(call.body()).path("result");
+        assertThat(result.path("resultType").asString()).isEqualTo("complete");
+        assertThat(result.path("isError").asBoolean()).isFalse();
+        assertThat(lastToolCall(env.jira).header("x-mcp-credential")).isEqualTo("Bearer alice-pat");
+
+        HttpResponse<String> encodedName = sendModern(token, "tools/call",
+                "=?base64?" + Base64.getEncoder().encodeToString("jira__get_issue".getBytes(StandardCharsets.UTF_8)) + "?=",
+                "{\"name\":\"jira__get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
+        assertThat(encodedName.statusCode()).isEqualTo(200);
+    }
+
+    @Test
+    void modernHeaderAndVersionErrors() throws Exception {
+        String token = aliceToken();
+        HttpResponse<String> mismatch = sendModern(token, "tools/call", "jira__search_issues",
+                "{\"name\":\"jira__get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
+        assertThat(mismatch.statusCode()).isEqualTo(400);
+        assertThat(JSON.readTree(mismatch.body()).path("error").path("code").asInt()).isEqualTo(-32020);
+
+        String unsupported = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"_meta\":{"
+                + "\"io.modelcontextprotocol/protocolVersion\":\"2099-01-01\",\"io.modelcontextprotocol/clientCapabilities\":{}}}}";
+        HttpResponse<String> version = send(token, "/s/mcp-jira/mcp", unsupported,
+                Map.of("MCP-Protocol-Version", "2099-01-01", "Mcp-Method", "tools/list"));
+        assertThat(version.statusCode()).isEqualTo(400);
+        JsonNode error = JSON.readTree(version.body()).path("error");
+        assertThat(error.path("code").asInt()).isEqualTo(-32022);
+        assertThat(error.path("data").path("supported").toString()).contains("2026-07-28");
+
+        HttpResponse<String> unknown = sendModern(token, "resources/list", null, "{}");
+        assertThat(unknown.statusCode()).isEqualTo(404);
+        assertThat(JSON.readTree(unknown.body()).path("error").path("code").asInt()).isEqualTo(-32601);
+    }
+
+    // --- Authorization (M1 stand-in), unknown tools --------------------------------------------------------
+
+    @Test
+    void userWithoutGroupsSeesNothingAndIsDenied(CapturedOutput output) throws Exception {
+        String mallory = env.idp.token("a8d1b0c2-0000-4000-8000-000000000001", "mallory", List.of());
+        HttpResponse<String> list = sendModern(mallory, "tools/list", null, "{}");
+        assertThat(JSON.readTree(list.body()).path("result").path("tools").size()).isZero();
+        HttpResponse<String> call = sendModern(mallory, "tools/call", "jira__get_issue",
+                "{\"name\":\"jira__get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
+        assertThat(toolError(call).path("error").asString()).isEqualTo("access_denied");
+        assertThat(toolError(call).path("requiredEntitlements").get(0).asString()).isEqualTo("mcp-jira-read");
+        assertThat(env.broker.received()).noneMatch(r -> r.path().equals("/v1/credentials/resolve"));
+        assertThat(env.jira.requests()).isEmpty();
+        String rid = call.headers().firstValue("X-Request-Id").orElseThrow();
+        assertThat(auditEvents(output, rid)).anySatisfy(e -> {
+            assertThat(e.path("event").asString()).isEqualTo("tool_call");
+            assertThat(e.path("outcome").asString()).isEqualTo("denied");
+            assertThat(e.path("reason").asString()).isEqualTo("not_granted");
+        });
+    }
+
+    @Test
+    void unconfiguredToolIsHiddenAndDisabled() throws Exception {
+        HttpResponse<String> call = sendModern(aliceToken(), "tools/call", "jira__delete_issue",
+                "{\"name\":\"jira__delete_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
+        assertThat(toolError(call).path("error").asString()).isEqualTo("tool_disabled");
+        assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
+        HttpResponse<String> unprefixed = sendModern(aliceToken(), "tools/call", "get_issue",
+                "{\"name\":\"get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
+        assertThat(toolError(unprefixed).path("error").asString()).isEqualTo("tool_disabled");
+    }
+
+    // --- Credentials: broker errors, cache, invalidation ---------------------------------------------------
+
+    @Test
+    void brokerUnavailableMeansUpstreamUnavailableAndNoServerCall() throws Exception {
+        env.broker.mode(BrokerStub.Mode.UNAVAILABLE);
+        HttpResponse<String> call = sendModern(aliceToken(), "tools/call", "jira__get_issue",
+                "{\"name\":\"jira__get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
+        assertThat(toolError(call).path("error").asString()).isEqualTo("upstream_unavailable");
+        assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
+    }
+
+    @Test
+    void brokerConnectionFailureMeansUpstreamUnavailable() throws Exception {
+        env.broker.mode(BrokerStub.Mode.DROP);
+        String token = env.idp.token("c0ffee00-0000-4000-8000-00000000000a", "carol", List.of("mcp-jira-read"));
+        HttpResponse<String> call = sendModern(token, "tools/call", "jira__get_issue",
+                "{\"name\":\"jira__get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
+        assertThat(toolError(call).path("error").asString()).isEqualTo("upstream_unavailable");
+        assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
+    }
+
+    @Test
+    void missingConnectionMeansCredentialRequiredWithConnectUrl() throws Exception {
+        env.broker.mode(BrokerStub.Mode.REQUIRED);
+        String token = env.idp.token("d00d0000-0000-4000-8000-00000000000b", "dave", List.of("mcp-jira-read"));
+        HttpResponse<String> call = sendModern(token, "tools/call", "jira__get_issue",
+                "{\"name\":\"jira__get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
+        JsonNode error = toolError(call);
+        assertThat(error.path("error").asString()).isEqualTo("credential_required");
+        assertThat(error.path("system").asString()).isEqualTo("jira");
+        assertThat(error.path("connectUrl").asString()).isEqualTo("http://localhost:18090/connections?system=jira");
+        assertThat(Contracts.schemaErrors("schemas/tool-error.schema.json", error)).isEmpty();
+        assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
+    }
+
+    @Test
+    void invalidationEventDropsCachedCredentialWithinOneSecond() throws Exception {
+        String sub = "e0e0e0e0-0000-4000-8000-00000000000c";
+        String token = env.idp.token(sub, "erin", List.of("mcp-jira-read"));
+        callGetIssue(token);
+        callGetIssue(token);
+        assertThat(resolveCount()).as("second call served from cache").isEqualTo(1);
+
+        env.broker.mode(BrokerStub.Mode.REQUIRED);
+        publishInvalidation(sub, "jira");
+        long published = System.nanoTime();
+        await().atMost(Duration.ofSeconds(1)).pollInterval(Duration.ofMillis(50)).untilAsserted(() ->
+                assertThat(toolError(callGetIssue(token)).path("error").asString()).isEqualTo("credential_required"));
+        assertThat(Duration.ofNanos(System.nanoTime() - published)).isLessThan(Duration.ofSeconds(1));
+    }
+
+    @Test
+    void invalidationOfAnotherUserOrSystemKeepsTheEntry() throws Exception {
+        String sub = "f0f0f0f0-0000-4000-8000-00000000000d";
+        String token = env.idp.token(sub, "frank", List.of("mcp-jira-read"));
+        callGetIssue(token);
+        publishInvalidation("someone-else", "jira");
+        publishInvalidation(sub, "gitlab");
+        Thread.sleep(300);
+        callGetIssue(token);
+        assertThat(resolveCount()).isEqualTo(1);
+    }
+
+    @Test
+    void cachedCredentialExpiresWithItsTtl() throws Exception {
+        env.broker.grant("alice-pat", 1);
+        String token = env.idp.token("a1a1a1a1-0000-4000-8000-00000000000e", "gina", List.of("mcp-jira-read"));
+        callGetIssue(token);
+        env.broker.mode(BrokerStub.Mode.REQUIRED);
+        assertThat(toolError(callGetIssue(token)).has("error")).as("still cached").isFalse();
+        Thread.sleep(1100);
+        assertThat(toolError(callGetIssue(token)).path("error").asString()).isEqualTo("credential_required");
+    }
+
+    @Test
+    void serverCertificateMustNameTheServer() throws Exception {
+        HttpResponse<String> list = sendModern(aliceToken(), "/s/mcp-confluence/mcp", "tools/list", null, "{}");
+        JsonNode error = JSON.readTree(list.body()).path("error");
+        assertThat(error.path("code").asInt()).isEqualTo(-32603);
+        assertThat(env.wrongName.requests()).isEmpty();
+    }
+
+    @Test
+    void startupCheckUsesTheServiceVariantAtTheBroker() {
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertThat(env.broker.systemsCalls()).isNotEmpty());
+        BrokerStub.Received systems = env.broker.systemsCalls().getFirst();
+        assertThat(systems.rejectReason()).isNull();
+        assertThat(systems.tool()).isNull();
+    }
+
+    // --- helpers ---------------------------------------------------------------------------------------------
+
+    private GatewayUser alice() {
+        return new GatewayUser(ALICE_SUB, "alice", "claude-code", ALICE_GROUPS, "unused");
+    }
+
+    private String aliceToken() {
+        return env.idp.token(ALICE_SUB, "alice", ALICE_GROUPS);
+    }
+
+    private HttpResponse<String> callGetIssue(String token) throws Exception {
+        return sendModern(token, "tools/call", "jira__get_issue",
+                "{\"name\":\"jira__get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
+    }
+
+    private long resolveCount() {
+        return env.broker.received().stream().filter(r -> r.path().equals("/v1/credentials/resolve")).count();
+    }
+
+    private void publishInvalidation(String sub, String system) {
+        RedisClient client = RedisClient.create(RedisURI.builder().withHost(env.redis.getHost())
+                .withPort(env.redis.getMappedPort(6379))
+                .withAuthentication("admin", GatewayTestEnvironment.REDIS_ADMIN_PASSWORD.toCharArray()).build());
+        try (StatefulRedisConnection<String, String> connection = client.connect()) {
+            connection.sync().publish("credential.invalidated", "{\"sub\":\"" + sub + "\",\"system\":\"" + system + "\"}");
+        } finally {
+            client.shutdown();
+        }
+    }
+
+    private String initialize(String token, String version) throws Exception {
+        HttpResponse<String> response = send(token, "/s/mcp-jira/mcp", initializeBody(version), Map.of());
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(JSON.readTree(response.body()).path("result").path("protocolVersion").asString()).isEqualTo(version);
+        String session = response.headers().firstValue("Mcp-Session-Id").orElseThrow();
+        assertThat(sendRpc(token, session, version, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}", Map.of())
+                .statusCode()).isEqualTo(202);
+        return session;
+    }
+
+    private JsonNode rpc(String token, String session, String version, String method, String params) throws Exception {
+        String body = "{\"jsonrpc\":\"2.0\",\"id\":\"" + UUID.randomUUID() + "\",\"method\":\"" + method + "\""
+                + (params == null ? "" : ",\"params\":" + params) + "}";
+        HttpResponse<String> response = sendRpc(token, session, version, body, Map.of());
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        return JSON.readTree(response.body());
+    }
+
+    private HttpResponse<String> sendRpc(String token, String session, String version, String body,
+                                         Map<String, String> extra) throws Exception {
+        Map<String, String> headers = new LinkedHashMap<>(extra);
+        if (session != null) {
+            headers.put("Mcp-Session-Id", session);
+        }
+        headers.put("MCP-Protocol-Version", version);
+        return send(token, "/s/mcp-jira/mcp", body, headers);
+    }
+
+    private HttpResponse<String> sendModern(String token, String method, String name, String params) throws Exception {
+        return sendModern(token, "/s/mcp-jira/mcp", method, name, params);
+    }
+
+    private HttpResponse<String> sendModern(String token, String path, String method, String name, String params)
+            throws Exception {
+        JsonNode paramsNode = JSON.readTree(params);
+        ((tools.jackson.databind.node.ObjectNode) paramsNode).putObject("_meta")
+                .put("io.modelcontextprotocol/protocolVersion", "2026-07-28")
+                .putObject("io.modelcontextprotocol/clientCapabilities");
+        String body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"" + method + "\",\"params\":" + JSON.writeValueAsString(paramsNode) + "}";
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("MCP-Protocol-Version", "2026-07-28");
+        headers.put("Mcp-Method", method);
+        if (name != null) {
+            headers.put("Mcp-Name", name);
+        }
+        return send(token, path, body, headers);
+    }
+
+    private HttpResponse<String> send(String token, String path, String body, Map<String, String> headers) throws Exception {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/event-stream")
+                .POST(HttpRequest.BodyPublishers.ofString(body));
+        if (token != null) {
+            builder.header("Authorization", "Bearer " + token);
+        }
+        headers.forEach(builder::header);
+        return http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    private static String initializeBody() {
+        return initializeBody("2025-11-25");
+    }
+
+    private static String initializeBody(String version) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"" + version
+                + "\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}";
+    }
+
+    private static String toolCall(String name, String argument) {
+        String arguments = name.endsWith("search_issues") ? "{\"project\":\"" + argument + "\"}" : "{\"issueKey\":\"" + argument + "\"}";
+        return toolCallJson(name, arguments);
+    }
+
+    private static String toolCallJson(String name, String arguments) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":\"" + name
+                + "\",\"arguments\":" + arguments + "}}";
+    }
+
+    private static TestMcpServer.RecordedRequest lastToolCall(TestMcpServer server) {
+        return server.requests().stream().filter(r -> "tools/call".equals(r.rpcMethod())).reduce((a, b) -> b).orElseThrow();
+    }
+
+    private static JsonNode toolError(HttpResponse<String> response) {
+        JsonNode result = JSON.readTree(response.body()).path("result");
+        if (!result.path("isError").asBoolean(false)) {
+            return JSON.createObjectNode();
+        }
+        return JSON.readTree(result.path("content").get(0).path("text").asString());
+    }
+
+    private static JsonNode claims(String authorization) {
+        String token = authorization.substring("Bearer ".length());
+        return JSON.readTree(Base64.getUrlDecoder().decode(token.split("\\.")[1]));
+    }
+
+    private static List<JsonNode> auditEvents(CapturedOutput output, String requestId) {
+        List<JsonNode> events = new ArrayList<>();
+        for (String line : output.getOut().split("\n")) {
+            if (line.startsWith("{") && line.contains(requestId) && line.contains("\"component\":\"gateway\"")) {
+                events.add(JSON.readTree(line));
+            }
+        }
+        return events;
+    }
+}

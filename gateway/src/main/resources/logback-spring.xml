@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+    <!-- C8: one JSON object per line, no prefix, so SIEM shippers and `make audit` read it as is. -->
+    <appender name="AUDIT_STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+    <logger name="AUDIT" level="INFO" additivity="false">
+        <appender-ref ref="AUDIT_STDOUT"/>
+    </logger>
+
+    <!-- HTTP layer DEBUG would print headers and bodies with tokens and credentials; never below INFO. -->
+    <logger name="org.springframework.web" level="INFO"/>
+    <logger name="org.springframework.security" level="INFO"/>
+    <logger name="org.apache.coyote" level="INFO"/>
+    <logger name="org.apache.tomcat" level="INFO"/>
+    <logger name="jdk.internal.httpclient" level="INFO"/>
+    <logger name="io.lettuce" level="INFO"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>

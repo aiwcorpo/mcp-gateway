@@ -1,0 +1,104 @@
+# Environment variables follow mcp-platform-dev (docs/integracja.md, service mcp-gateway of profile "full").
+server:
+  port: ${MCP_GATEWAY_PORT:8080}
+  error:
+    whitelabel:
+      enabled: false
+    include-message: never
+    include-stacktrace: never
+  shutdown: graceful
+
+spring:
+  application:
+    name: mcp-gateway
+  threads:
+    virtual:
+      enabled: true
+  data:
+    redis:
+      host: ${MCP_REDIS_HOST}
+      port: ${MCP_REDIS_PORT:6379}
+      username: ${MCP_REDIS_USER:gateway}
+      password: ${MCP_REDIS_PASSWORD:}
+      timeout: 2s
+  mvc:
+    problemdetails:
+      enabled: false
+  autoconfigure:
+    # PostgreSQL (virtual servers, activity) arrives in M2.
+    exclude:
+      - org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      show-details: never
+  health:
+    # The gateway's Redis ACL has no INFO, which the Redis health indicator needs.
+    redis:
+      enabled: false
+
+gateway:
+  component-id: mcp-gateway
+  version: 0.1.0
+  public-url: ${MCP_PUBLIC_URL:}
+  policy-revision: ${MCP_POLICY_REVISION:00000000000000-0000000}
+  allowed-origins: ${MCP_ALLOWED_ORIGINS:}
+  oidc:
+    issuer: ${MCP_OIDC_ISSUER}
+    jwks-uri: ${MCP_OIDC_JWKS_URI}
+    audience: ${MCP_OIDC_AUDIENCE:mcp-gateway}
+    authorization-server: ${MCP_OIDC_AUTHORIZATION_SERVER:}
+    token-uri: ${MCP_OIDC_TOKEN_URI:}
+    client-id: ${MCP_OIDC_CLIENT_ID:}
+    client-secret: ${MCP_OIDC_CLIENT_SECRET:}
+  internal-jwt:
+    issuer: ${MCP_INTERNAL_JWT_ISSUER:https://mcp-gateway.internal}
+    lifetime: 30s
+    keys-file: ${MCP_INTERNAL_JWT_KEYS_FILE:}
+    active-kid: ${MCP_INTERNAL_JWT_ACTIVE_KID:}
+    allow-test-keys: false
+  internal-endpoint:
+    port: ${MCP_INTERNAL_PORT:8443}
+  tls:
+    keystore: ${MCP_TLS_KEYSTORE}
+    truststore: ${MCP_TLS_TRUSTSTORE}
+    store-password: ${MCP_TLS_STORE_PASSWORD}
+  broker:
+    url: ${MCP_BROKER_URL}
+    tls-name: ${MCP_BROKER_TLS_NAME}
+    timeout: 5s
+    max-cache-ttl: 60s
+  redis:
+    host: ${MCP_REDIS_HOST}
+    port: ${MCP_REDIS_PORT:6379}
+    username: ${MCP_REDIS_USER:gateway}
+    password: ${MCP_REDIS_PASSWORD:}
+    key-prefix: ${MCP_REDIS_KEY_PREFIX:gw:}
+  sessions:
+    client-idle-timeout: 1h
+    upstream-idle-timeout: 30m
+  upstream:
+    timeout: 30s
+  # Static server configuration of M1 (instead of the registry, C5): serverId -> system, address, credential,
+  # tools with risk. Tools of the server that are not listed here are hidden and cannot be called.
+  servers:
+    mcp-jira:
+      system: jira
+      internal-url: ${MCP_SERVER_JIRA_MCP_URL:${MCP_SERVER_JIRA_URL}/mcp}
+      credential:
+        required: true
+        accepted-types: [user-secret, user-oauth]
+      tools:
+        search_issues:
+          risk: READ_ONLY
+        get_issue:
+          risk: READ_ONLY
+        add_comment:
+          risk: UPDATE
+        transition_issue:
+          risk: UPDATE

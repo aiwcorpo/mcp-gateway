@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>pl.aiwcorpo.mcp</groupId>
+        <artifactId>mcp-gateway-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>mcp-gateway-test-server</artifactId>
+    <name>MCP Gateway :: Test MCP server</name>
+    <description>
+        Minimal MCP server (Streamable HTTP, protocol 2025-11-25 and older) that plays mcp-jira in gateway tests
+        and in the M1 demo: mTLS, strict C2 verification, C3 headers, C8 audit. Not a product.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.nimbusds</groupId>
+            <artifactId>nimbus-jose-jwt</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>tools.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+        <!-- Claim shapes (variants, vs/vsc, aud as a string) are checked against internal-jwt.schema.json itself. -->
+        <dependency>
+            <groupId>pl.aiwcorpo.mcp</groupId>
+            <artifactId>mcp-contracts</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.networknt</groupId>
+            <artifactId>json-schema-validator</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>pl.aiwcorpo.mcp</groupId>
+            <artifactId>mcp-contracts</artifactId>
+            <classifier>test-vectors</classifier>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>mcp-gateway-test-server</finalName>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <mainClass>pl.aiwcorpo.mcp.testserver.TestServerMain</mainClass>
+                    <!-- The plain jar stays the main artifact so the gateway tests can depend on it. -->
+                    <classifier>exec</classifier>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
