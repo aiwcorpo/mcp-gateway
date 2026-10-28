@@ -137,6 +137,8 @@ public final class GatewayTestEnvironment {
         registry.add("gateway.oidc.issuer", () -> TestIdp.ISSUER);
         registry.add("gateway.oidc.jwks-uri", idp::jwksUri);
         registry.add("gateway.oidc.token-uri", idp::tokenUri);
+        registry.add("gateway.oidc.jwks-retry-interval", () -> "1s");
+        registry.add("gateway.audit.certificate-rejection-interval", () -> "1s");
         registry.add("gateway.oidc.client-id", () -> "mcp-gateway");
         registry.add("gateway.oidc.client-secret", () -> "test-client-secret");
         registry.add("gateway.internal-endpoint.port", () -> internalPort);

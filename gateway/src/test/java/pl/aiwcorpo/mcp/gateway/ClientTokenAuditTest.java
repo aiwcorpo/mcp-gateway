@@ -1,6 +1,7 @@
 package pl.aiwcorpo.mcp.gateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 import java.net.http.HttpResponse;
 import java.time.Instant;
@@ -93,15 +94,22 @@ class ClientTokenAuditTest extends GatewayTestBase {
     }
 
     @Test
-    void jwksOutageIsA401WithAnUpstreamUnavailableEvent(CapturedOutput output) throws Exception {
+    void jwksOutageIs503WithRetryAfterAndAnUpstreamUnavailableEvent(CapturedOutput output) throws Exception {
         ECKey stranger = new ECKeyGenerator(Curve.P_256).keyID("kid-that-forces-a-key-fetch").generate();
         String token = env.idp.sign(claims().build(), stranger);
         env.idp.jwksUp(false);
         try {
-            HttpResponse<String> response = send(token, "/s/mcp-jira/mcp", initializeBody(), Map.of());
-            assertThat(response.statusCode()).isEqualTo(401);
-            assertThat(response.headers().firstValue("WWW-Authenticate").orElse("")).doesNotContain("invalid_token")
-                    .startsWith("Bearer resource_metadata=");
+            // The key set was fetched less than the retry interval ago in an earlier test: that is "unknown kid", not an outage.
+            HttpResponse<String> response = await().atMost(java.time.Duration.ofSeconds(5))
+                    .pollInterval(java.time.Duration.ofMillis(250))
+                    .until(() -> send(token, "/s/mcp-jira/mcp", initializeBody(), Map.of()), r -> r.statusCode() == 503);
+            assertThat(response.headers().firstValue("WWW-Authenticate")).isEmpty();
+            assertThat(response.headers().firstValue("Retry-After")).contains("1");
+            assertThat(response.headers().firstValue("Cache-Control")).contains("no-store");
+            assertThat(response.headers().firstValue("Set-Cookie")).isEmpty();
+            assertThat(response.headers().firstValue("Content-Type").orElse("").replace(" ", "")).isEqualToIgnoringCase("application/json;charset=utf-8");
+            JsonNode body = JSON.readTree(response.body());
+            assertThat(body.path("error").asString()).isEqualTo("upstream_unavailable");
             assertThat(response.body()).doesNotContain("jwks");
             String rid = response.headers().firstValue("X-Request-Id").orElseThrow();
             JsonNode event = onlyAuthenticationEvent(output, rid);
@@ -111,6 +119,8 @@ class ClientTokenAuditTest extends GatewayTestBase {
             assertThat(output.getAll()).doesNotContain("AuthenticationServiceException");
         } finally {
             env.idp.jwksUp(true);
+            // The failed fetch holds the next one back for the retry interval; later tests expect "unknown kid" answers.
+            Thread.sleep(1100);
         }
     }
 

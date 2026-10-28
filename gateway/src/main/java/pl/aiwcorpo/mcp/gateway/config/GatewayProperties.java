@@ -39,6 +39,7 @@ public record GatewayProperties(
         @Valid @NotNull Admin admin,
         @Valid @NotNull VirtualServers virtualServers,
         @Valid @NotNull Metrics metrics,
+        @DefaultValue @Valid Audit audit,
         @DefaultValue("00000000000000-0000000") @Pattern(regexp = "^[0-9]{14}-[0-9a-f]{7}$") String policyRevision,
         /* Dev only: allows http for the IdP token endpoint (token exchange); never for the broker or servers. */
         @DefaultValue("false") boolean allowPlainHttp,
@@ -57,7 +58,14 @@ public record GatewayProperties(
             @DefaultValue("mcp-credential-broker") String exchangeAudience,
             @DefaultValue("mcp-credential-broker-audience") String exchangeScope,
             /* Longest accepted C1 token lifetime (exp - iat); C1 says at most 60 min. */
-            @DefaultValue("60m") Duration maxTokenLifetime) {
+            @DefaultValue("60m") Duration maxTokenLifetime,
+            /*
+             * IdP key set (CC-124): at most one fetch per retry interval (also the Retry-After of the 503, 1..60 s);
+             * a copy is current for freshFor and still used for usableFor when the IdP cannot be reached.
+             */
+            @DefaultValue("10s") Duration jwksRetryInterval,
+            @DefaultValue("5m") Duration jwksFreshFor,
+            @DefaultValue("1h") Duration jwksUsableFor) {
 
         public String advertisedAuthorizationServer() {
             return authorizationServer == null || authorizationServer.isBlank() ? issuer : authorizationServer;
@@ -128,6 +136,14 @@ public record GatewayProperties(
     public record VirtualServers(
             /* Links one user may own; creating more is refused. */
             @DefaultValue("50") @Min(1) int maxPerUser) {
+    }
+
+    /** Caps on authentication events that cost the sender nothing (CC-120, CC-125). */
+    public record Audit(
+            /* Per second and per reason, for missing_token and malformed. */
+            @DefaultValue("20") @Min(1) int unauthenticatedPerSecond,
+            /* One client_certificate_rejected event per source address in this time on the admin port. */
+            @DefaultValue("1m") Duration certificateRejectionInterval) {
     }
 
     /** Prometheus endpoint on the internal port: only client certificates with these names (empty = nobody). */

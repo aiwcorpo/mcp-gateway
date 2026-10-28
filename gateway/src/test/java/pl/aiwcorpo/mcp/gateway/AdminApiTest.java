@@ -436,7 +436,7 @@ class AdminApiTest extends GatewayTestBase {
         List<JsonNode> events = auditEvents(output, change.requestId());
         assertThat(events).hasSize(1);
         JsonNode event = events.get(0);
-        assertThat(event.path("event").asString()).isEqualTo("admin_change");
+        assertThat(event.path("event").asString()).isEqualTo("virtual_server_change");
         assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", event)).isEmpty();
         return event;
     }

@@ -1,5 +1,17 @@
 # Status ws-05 (mcp-gateway)
 
+Kamień: **M3** (fala z 2026-10-28) na kontraktach `mcp-contracts` **3.0.1**. Poniżej plan kamieni pośrednich M3, a pod nim
+(od sekcji "Kamień M2") stan z M2, który M3 rozwija. Gdzie M3 zmienia zachowanie z M2, wiersz M2 jest oznaczony "zastąpione w M3".
+
+## Kamienie pośrednie M3
+
+| Kamień | Zakres | Commit |
+| --- | --- | --- |
+| K1 | kontrakty 3.0.1; 503 `upstream_unavailable` z `Retry-After` przy niedostępnym JWKS (CC-124, kolejność decyzji, własny zestaw kluczy `IdpKeySet`, powody odrzucenia bez parsowania komunikatów bibliotek: LOW-4); audyt odrzuceń mTLS i tokenów BFF na C5 (CC-125); `virtual_server_change` (CC-116); limity zdarzeń `missing_token` i `malformed` z osobnym budżetem i `mcp_audit_authentication_suppressed_total{component,reason}` | K1 |
+| K2 | potwierdzenia TOTP DESTRUCTIVE (C11): oczekujące wywołania w Redis, weryfikacja kodu u brokera, "jedna oczekująca", "pierwsza wygrywa", `invalidate-codes`, C5 podgląd/`viewed`/`cancel`, fail-closed; wektory `confirmation-binding/`, `tool-errors/`, `totp/` | |
+| K3 | `/admin/v1/activity/calls` (CC-095, kursor HMAC), rejestr w zakresie M3 (manifest, `definitionHash`, ukrycie niezgodnej definicji, `title` i zamknięty `inputSchema`) | |
+| K4 | Cedar z podpisanej paczki (pull, podpis, monotoniczna rewizja, brak paczki = brak startu, `prv`), ocena `call` z `refs` i `vsScopes` zamiast grup C9; obraz glibc | |
+
 Kamień: **M2** (fala z 2026-10-28) na kontraktach `mcp-contracts` **2.2.5**: wirtualne serwery, API C5 dla BFF
 (katalog, linki), `credential_required` z linkiem do portalu, jedna domena (CC-089). Pod spodem M1 (OAuth RS,
 broker, C2/C3, audyt, jeden serwer). M3 (potwierdzenia, zawężanie zasobów, `overrides`) i M4 nie są zaczęte.

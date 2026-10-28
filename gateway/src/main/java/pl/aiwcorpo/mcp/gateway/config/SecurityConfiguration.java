@@ -1,6 +1,8 @@
 package pl.aiwcorpo.mcp.gateway.config;
 
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -26,17 +28,25 @@ import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.AuthenticationEntryPointFailureHandler;
 
+import com.nimbusds.jose.jwk.JWKSet;
+import com.nimbusds.jose.jwk.source.JWKSource;
+import com.nimbusds.jose.proc.SecurityContext;
+
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.http.HttpServletResponse;
 import pl.aiwcorpo.mcp.gateway.admin.AdminClientCertificateFilter;
 import pl.aiwcorpo.mcp.gateway.admin.AdminOperations;
 import pl.aiwcorpo.mcp.gateway.admin.ClientCertificateVerifier;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
+import pl.aiwcorpo.mcp.gateway.auth.AuthenticationAudit;
+import pl.aiwcorpo.mcp.gateway.auth.AuthenticationEventLimiter;
 import pl.aiwcorpo.mcp.gateway.auth.ClassifyingJwtDecoder;
+import pl.aiwcorpo.mcp.gateway.auth.ClientTokenUnavailable;
+import pl.aiwcorpo.mcp.gateway.auth.IdpKeySet;
 import pl.aiwcorpo.mcp.gateway.auth.McpAuthenticationEntryPoint;
-import pl.aiwcorpo.mcp.gateway.auth.MissingTokenEventLimiter;
 import pl.aiwcorpo.mcp.gateway.auth.ResourceMetadata;
 import pl.aiwcorpo.mcp.gateway.jwt.JwksController;
+import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
 
 /**
  * OAuth resource server for C1: JWKS from configuration (the issuer as seen from containers differs from
@@ -47,25 +57,40 @@ import pl.aiwcorpo.mcp.gateway.jwt.JwksController;
 public class SecurityConfiguration {
 
     @Bean
-    JwtDecoder jwtDecoder(GatewayProperties properties) {
-        return new ClassifyingJwtDecoder(
-                decoder(properties.oidc(), properties.oidc().audience(), properties.admin().audience(), null));
+    IdpKeySet idpKeySet(GatewayProperties properties, Clock clock) {
+        GatewayProperties.Oidc oidc = properties.oidc();
+        return IdpKeySet.overHttp(oidc.jwksUri(), clock, oidc.jwksRetryInterval(), oidc.jwksFreshFor(), oidc.jwksUsableFor());
+    }
+
+    @Bean
+    JwtDecoder jwtDecoder(GatewayProperties properties, IdpKeySet keys, Clock clock) {
+        return new ClassifyingJwtDecoder(keys,
+                decoder(keys, properties.oidc(), properties.oidc().audience(), properties.admin().audience(), null, clock));
     }
 
     /** The BFF's user token exchanged for the admin audience (C5): same issuer, keys and claim rules. */
     @Bean
-    JwtDecoder adminJwtDecoder(GatewayProperties properties) {
-        return decoder(properties.oidc(), properties.admin().audience(), properties.oidc().audience(),
-                properties.admin().authorizedParty());
+    JwtDecoder adminJwtDecoder(GatewayProperties properties, IdpKeySet keys, Clock clock) {
+        return new ClassifyingJwtDecoder(keys, decoder(keys, properties.oidc(), properties.admin().audience(),
+                properties.oidc().audience(), properties.admin().authorizedParty(), clock));
+    }
+
+    @Bean
+    AuthenticationAudit authenticationAudit(AuditLog audit, GatewayProperties properties, MeterRegistry meters) {
+        return new AuthenticationAudit(audit, properties.componentId(),
+                new AuthenticationEventLimiter(properties.audit().unauthenticatedPerSecond(),
+                        properties.audit().certificateRejectionInterval(), System::nanoTime, meters));
     }
 
     /**
      * A token serves one API: it must name the audience of that API and not the other one, so a token that was
      * minted for both can never act on both. {@code requiredAzp} (when set) pins the client the token was issued to.
      */
-    private static JwtDecoder decoder(GatewayProperties.Oidc oidc, String requiredAudience, String forbiddenAudience,
-                                      String requiredAzp) {
-        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(oidc.jwksUri().toString())
+    private static JwtDecoder decoder(IdpKeySet keys, GatewayProperties.Oidc oidc, String requiredAudience,
+                                      String forbiddenAudience, String requiredAzp, Clock clock) {
+        // Keys come from the copy of IdpKeySet only: the lookup and its fetch rules (CC-124) are decided before this runs.
+        JWKSource<SecurityContext> source = (selector, context) -> selector.select(new JWKSet(keys.snapshot()));
+        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSource(source)
                 .jwsAlgorithms(algorithms -> {
                     algorithms.add(SignatureAlgorithm.RS256);
                     algorithms.add(SignatureAlgorithm.ES256);
@@ -83,10 +108,27 @@ public class SecurityConfiguration {
                 && !Duration.between(jwt.getIssuedAt(), jwt.getExpiresAt()).minus(oidc.maxTokenLifetime()).isPositive()
                 ? OAuth2TokenValidatorResult.success()
                 : OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "invalid_claims", null));
-        // The defaults (typ, timestamps, certificate binding) stay; the issuer is replaced by a named copy.
+        // The defaults (typ, certificate binding) stay; the timestamps are checked by named validators first, so no
+        // reason depends on the wording of a library message (an expired token fails the default one too, with the
+        // same outcome).
         decoder.setJwtValidator(JwtValidators.createDefaultWithValidators(
-                List.of(named("wrong_issuer", new JwtIssuerValidator(oidc.issuer())), audience, claims)));
+                List.of(named("wrong_issuer", new JwtIssuerValidator(oidc.issuer())), audience, claims,
+                        timestamps(clock))));
         return decoder;
+    }
+
+    private static OAuth2TokenValidator<Jwt> timestamps(Clock clock) {
+        Duration skew = Duration.ofSeconds(60);
+        return jwt -> {
+            Instant now = clock.instant();
+            if (jwt.getExpiresAt() != null && !now.minus(skew).isBefore(jwt.getExpiresAt())) {
+                return OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "expired", null));
+            }
+            if (jwt.getNotBefore() != null && now.plus(skew).isBefore(jwt.getNotBefore())) {
+                return OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "not_yet_valid", null));
+            }
+            return OAuth2TokenValidatorResult.success();
+        };
     }
 
     private static OAuth2TokenValidator<Jwt> named(String reason, OAuth2TokenValidator<Jwt> validator) {
@@ -99,8 +141,20 @@ public class SecurityConfiguration {
     @Bean
     @Order(1)
     SecurityFilterChain adminFilterChain(HttpSecurity http, @Qualifier("adminJwtDecoder") JwtDecoder decoder,
-                                         GatewayProperties properties, ClientCertificateVerifier certificates) throws Exception {
+                                         GatewayProperties properties, ClientCertificateVerifier certificates,
+                                         AuthenticationAudit authenticationAudit) throws Exception {
         AuthenticationEntryPoint unauthenticated = (request, response, e) -> {
+            String requestId = UuidV7.next();
+            String reason = AuthenticationAudit.reasonOf(e);
+            authenticationAudit.rejected(requestId, request.getHeader("X-Request-Id"), reason,
+                    AuthenticationAudit.errorCodeOf(reason), null);
+            response.setHeader("X-Request-Id", requestId);
+            if (ClientTokenUnavailable.REASON.equals(reason)) {
+                response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
+                response.setHeader(HttpHeaders.RETRY_AFTER, Integer.toString(AuthenticationAudit.retryAfterOf(e)));
+                writeError(response, HttpServletResponse.SC_SERVICE_UNAVAILABLE, "upstream_unavailable");
+                return;
+            }
             response.setHeader(HttpHeaders.WWW_AUTHENTICATE, "Bearer");
             writeError(response, HttpServletResponse.SC_UNAUTHORIZED, "unauthenticated");
         };
@@ -112,13 +166,31 @@ public class SecurityConfiguration {
                 .httpBasic(basic -> basic.disable())
                 .logout(logout -> logout.disable())
                 .addFilterBefore(new AdminClientCertificateFilter(AdminOperations.admin(properties.admin().allowedClientCns(),
-                        properties.admin().registryClientCns()), true, certificates), BearerTokenAuthenticationFilter.class)
+                        properties.admin().registryClientCns()), true, certificates, authenticationAudit),
+                        BearerTokenAuthenticationFilter.class)
                 .authorizeHttpRequests(auth -> auth.anyRequest().authenticated())
-                .oauth2ResourceServer(rs -> rs.jwt(jwt -> jwt.decoder(decoder)).authenticationEntryPoint(unauthenticated))
+                .oauth2ResourceServer(rs -> rs.jwt(jwt -> jwt.decoder(decoder)).authenticationEntryPoint(unauthenticated)
+                        .withObjectPostProcessor(routeServiceFailuresTo(unauthenticated)))
                 .exceptionHandling(e -> e.authenticationEntryPoint(unauthenticated)
                         .accessDeniedHandler((request, response, denied) ->
                                 writeError(response, HttpServletResponse.SC_FORBIDDEN, "access_denied")));
         return http.build();
+    }
+
+    /**
+     * An unreachable JWKS surfaces as an AuthenticationServiceException, which the filter would rethrow (500, no
+     * event); route it to the entry point like every other rejection.
+     */
+    private static ObjectPostProcessor<BearerTokenAuthenticationFilter> routeServiceFailuresTo(AuthenticationEntryPoint entryPoint) {
+        return new ObjectPostProcessor<>() {
+            @Override
+            public <O extends BearerTokenAuthenticationFilter> O postProcess(O filter) {
+                AuthenticationEntryPointFailureHandler handler = new AuthenticationEntryPointFailureHandler(entryPoint);
+                handler.setRethrowAuthenticationServiceException(false);
+                filter.setAuthenticationFailureHandler(handler);
+                return filter;
+            }
+        };
     }
 
     private static void writeError(HttpServletResponse response, int status, String code) throws java.io.IOException {
@@ -131,10 +203,9 @@ public class SecurityConfiguration {
     @Order(2)
     SecurityFilterChain securityFilterChain(HttpSecurity http, @Qualifier("jwtDecoder") JwtDecoder decoder,
                                             ResourceMetadata metadata, GatewayProperties properties,
-                                            ClientCertificateVerifier certificates, AuditLog audit,
-                                            MeterRegistry meters) throws Exception {
-        McpAuthenticationEntryPoint entryPoint = new McpAuthenticationEntryPoint(metadata, audit, properties.componentId(),
-                new MissingTokenEventLimiter(MissingTokenEventLimiter.DEFAULT_PER_SECOND, System::nanoTime, meters));
+                                            ClientCertificateVerifier certificates,
+                                            AuthenticationAudit authenticationAudit) throws Exception {
+        McpAuthenticationEntryPoint entryPoint = new McpAuthenticationEntryPoint(metadata, authenticationAudit);
         String authorizationServer = properties.oidc().advertisedAuthorizationServer();
         http.csrf(csrf -> csrf.disable())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -144,24 +215,14 @@ public class SecurityConfiguration {
                 .logout(logout -> logout.disable())
                 // Prometheus is permitted below, so the scraper's certificate is the only thing that guards it.
                 .addFilterBefore(new AdminClientCertificateFilter(AdminOperations.metrics(properties.metrics().allowedClientCns()),
-                        false, certificates), BearerTokenAuthenticationFilter.class)
+                        false, certificates, authenticationAudit), BearerTokenAuthenticationFilter.class)
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(ResourceMetadata.WELL_KNOWN, ResourceMetadata.WELL_KNOWN + "/**").permitAll()
                         .requestMatchers(JwksController.PATH, "/actuator/health", "/actuator/prometheus").permitAll()
                         .requestMatchers("/error").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(rs -> rs.jwt(jwt -> jwt.decoder(decoder)).authenticationEntryPoint(entryPoint)
-                        // An unreachable JWKS surfaces as an AuthenticationServiceException, which the filter would
-                        // rethrow (500, no event); route it to the entry point like every other rejection.
-                        .withObjectPostProcessor(new ObjectPostProcessor<BearerTokenAuthenticationFilter>() {
-                            @Override
-                            public <O extends BearerTokenAuthenticationFilter> O postProcess(O filter) {
-                                AuthenticationEntryPointFailureHandler handler = new AuthenticationEntryPointFailureHandler(entryPoint);
-                                handler.setRethrowAuthenticationServiceException(false);
-                                filter.setAuthenticationFailureHandler(handler);
-                                return filter;
-                            }
-                        })
+                        .withObjectPostProcessor(routeServiceFailuresTo(entryPoint))
                         // RFC 9728 documents come from Spring Security's metadata filter
                         // (/.well-known/oauth-protected-resource/<path>); resource = the requested path.
                         .protectedResourceMetadata(m -> m.protectedResourceMetadataCustomizer(builder -> builder

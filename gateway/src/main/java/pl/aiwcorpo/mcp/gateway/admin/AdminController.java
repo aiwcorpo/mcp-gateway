@@ -189,7 +189,7 @@ public class AdminController {
     }
 
     private AuditEvent change(String requestId, GatewayUser user, String slug) {
-        return AuditEvent.of("admin_change", requestId, componentId).user(user)
+        return AuditEvent.of("virtual_server_change", requestId, componentId).user(user)
                 .virtualServer(VirtualServer.validSlug(slug) ? slug : null);
     }
 

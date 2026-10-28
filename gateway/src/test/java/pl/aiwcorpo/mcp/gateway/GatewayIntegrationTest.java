@@ -73,7 +73,7 @@ class GatewayIntegrationTest extends GatewayTestBase {
         String otherAudience = env.idp.token(ALICE_SUB, "alice", ALICE_GROUPS, "mcp-credential-broker", "claude-code");
         HttpResponse<String> response = send(otherAudience, "/s/mcp-jira/mcp", initializeBody(), Map.of());
         assertThat(response.statusCode()).isEqualTo(401);
-        assertThat(response.headers().firstValue("WWW-Authenticate").orElse("")).contains("error=\"invalid_token\"");
+        assertThat(response.headers().firstValue("WWW-Authenticate").orElse("")).startsWith("Bearer resource_metadata=").doesNotContain("invalid_token");
 
         String gatewayInternalToken = issuer.forUser("mcp-gateway", alice(), null, UuidV7.next());
         assertThat(send(gatewayInternalToken, "/s/mcp-jira/mcp", initializeBody(), Map.of()).statusCode()).isEqualTo(401);

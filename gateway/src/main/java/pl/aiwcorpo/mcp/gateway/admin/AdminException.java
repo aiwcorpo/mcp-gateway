@@ -13,7 +13,7 @@ public final class AdminException extends RuntimeException {
         this(status, code, code);
     }
 
-    /** {@code auditReason} is the C8 reason of the admin_change event; it may be finer than the client-visible code. */
+    /** {@code auditReason} is the C8 reason of the virtual_server_change event; it may be finer than the client-visible code. */
     public AdminException(HttpStatus status, String code, String auditReason) {
         super(code, null, false, false);
         this.status = status;

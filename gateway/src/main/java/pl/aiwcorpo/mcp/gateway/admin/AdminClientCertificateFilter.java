@@ -24,6 +24,8 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import pl.aiwcorpo.mcp.gateway.auth.AuthenticationAudit;
+import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
 
 /**
  * mTLS half of C5 authentication. Client certificates are optional on the internal port (servers fetching the
@@ -52,15 +54,18 @@ public final class AdminClientCertificateFilter extends OncePerRequestFilter {
     private final List<Rule> rules;
     private final boolean refuseUncovered;
     private final ClientCertificateVerifier verifier;
+    private final AuthenticationAudit audit;
 
     /**
      * @param refuseUncovered true for the admin chain (every path in it is an operation); false for a filter that
      *                        guards a few paths of a chain and lets the rest through untouched
      */
-    public AdminClientCertificateFilter(List<Rule> rules, boolean refuseUncovered, ClientCertificateVerifier verifier) {
+    public AdminClientCertificateFilter(List<Rule> rules, boolean refuseUncovered, ClientCertificateVerifier verifier,
+                                        AuthenticationAudit audit) {
         this.rules = List.copyOf(rules);
         this.refuseUncovered = refuseUncovered;
         this.verifier = verifier;
+        this.audit = audit;
     }
 
     @Override
@@ -76,12 +81,12 @@ public final class AdminClientCertificateFilter extends OncePerRequestFilter {
         Optional<X509Certificate> client = attribute instanceof X509Certificate[] chainOfCertificates
                 ? verifier.verified(chainOfCertificates, Instant.now()) : Optional.empty();
         if (client.isEmpty()) {
-            reject(response, HttpServletResponse.SC_UNAUTHORIZED, "unauthenticated");
+            reject(request, response, HttpServletResponse.SC_UNAUTHORIZED, "unauthenticated");
             return;
         }
         String name = commonName(client.get());
         if (rule == null || name == null || !rule.names().contains(name)) {
-            reject(response, HttpServletResponse.SC_FORBIDDEN, "access_denied");
+            reject(request, response, HttpServletResponse.SC_FORBIDDEN, "access_denied");
             return;
         }
         chain.doFilter(request, response);
@@ -133,7 +138,11 @@ public final class AdminClientCertificateFilter extends OncePerRequestFilter {
         return !anyDns;
     }
 
-    private static void reject(HttpServletResponse response, int status, String code) throws IOException {
+    /** Nothing of the certificate goes to the event (CC-125): the reason and the status only. */
+    private void reject(HttpServletRequest request, HttpServletResponse response, int status, String code) throws IOException {
+        String requestId = UuidV7.next();
+        audit.rejected(requestId, request.getHeader("X-Request-Id"), "client_certificate_rejected", code, request.getRemoteAddr());
+        response.setHeader("X-Request-Id", requestId);
         response.setStatus(status);
         response.setContentType("application/json;charset=UTF-8");
         response.getOutputStream().write(("{\"error\":\"" + code + "\"}").getBytes(StandardCharsets.UTF_8));
