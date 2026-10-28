@@ -22,7 +22,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Receiver side of the internal JWT (C2, mcp-contracts 2.0.0) as an MCP server or the broker must implement
+ * Receiver side of the internal JWT (C2, mcp-contracts 2.2.1) as an MCP server or the broker must implement
  * it. Rejection reasons are the ones used in {@code test-vectors/jwt}.
  */
 public final class InternalJwtVerifier {
@@ -40,7 +40,7 @@ public final class InternalJwtVerifier {
         public static RequestRule forJsonRpc(String method, String toolName) {
             return switch (method) {
                 case "tools/call" -> new RequestRule(false, ToolRule.EQUALS, toolName);
-                case "initialize", "tools/list", "ping" -> new RequestRule(true, ToolRule.ABSENT, null);
+                case "initialize", "server/discover", "tools/list", "ping" -> new RequestRule(true, ToolRule.ABSENT, null);
                 default -> new RequestRule(false, ToolRule.ABSENT, null);
             };
         }

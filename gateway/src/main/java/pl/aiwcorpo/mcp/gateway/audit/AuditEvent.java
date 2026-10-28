@@ -50,6 +50,11 @@ public final class AuditEvent {
         return put("server", serverId);
     }
 
+    /** Slug of the link the call came through; the caller only passes slugs that matched the C5 pattern. */
+    public AuditEvent virtualServer(String slug) {
+        return put("virtualServer", slug);
+    }
+
     public AuditEvent tool(String name) {
         if (name != null && name.length() <= 64 && TOOL_NAME.matcher(name).matches()) {
             fields.put("tool", name);

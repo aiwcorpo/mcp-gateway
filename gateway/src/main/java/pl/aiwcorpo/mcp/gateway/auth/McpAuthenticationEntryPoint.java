@@ -22,12 +22,11 @@ public final class McpAuthenticationEntryPoint implements AuthenticationEntryPoi
     @Override
     public void commence(HttpServletRequest request, HttpServletResponse response, AuthenticationException authException)
             throws IOException {
-        String path = request.getRequestURI();
         StringBuilder challenge = new StringBuilder("Bearer");
         if (authException instanceof InvalidBearerTokenException) {
             challenge.append(" error=\"invalid_token\",");
         }
-        challenge.append(" resource_metadata=\"").append(metadata.metadataUrl(request, path)).append('"');
+        challenge.append(" resource_metadata=\"").append(metadata.metadataUrl(request.getRequestURI())).append('"');
         response.setHeader(HttpHeaders.WWW_AUTHENTICATE, challenge.toString());
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.setContentType("application/json");

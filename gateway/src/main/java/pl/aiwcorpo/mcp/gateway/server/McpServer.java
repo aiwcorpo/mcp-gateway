@@ -6,10 +6,11 @@ import java.util.Optional;
 
 /**
  * One MCP server behind the gateway. {@code serverId -> system, internalUrl} comes only from configuration
- * (C5); the TLS name the server certificate must carry is always {@code <serverId>.internal}.
+ * (C5); the TLS name the server certificate must carry is always {@code <serverId>.internal}. A disabled server
+ * keeps its tools in the catalog but none of them can be listed or called.
  */
-public record McpServer(String serverId, String system, URI internalUrl, CredentialPolicy credential,
-                        Map<String, ToolDefinition> tools) {
+public record McpServer(String serverId, String system, URI internalUrl, String version, boolean enabled,
+                        CredentialPolicy credential, Map<String, ToolDefinition> tools) {
 
     public String tlsName() {
         return serverId + ".internal";
@@ -17,6 +18,10 @@ public record McpServer(String serverId, String system, URI internalUrl, Credent
 
     public String toolPrefix() {
         return system + "__";
+    }
+
+    public String qualifiedName(ToolDefinition tool) {
+        return toolPrefix() + tool.name();
     }
 
     public Optional<ToolDefinition> tool(String serverSideName) {

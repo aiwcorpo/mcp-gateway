@@ -1,47 +1,44 @@
 package pl.aiwcorpo.mcp.gateway.auth;
 
-import java.net.URI;
+import java.util.regex.Pattern;
 
-import jakarta.servlet.http.HttpServletRequest;
-
-/** Public URLs of the gateway as the client sees them: RFC 9728 resource and its metadata document. */
+/**
+ * RFC 9728 URLs of the gateway: the protected resource is the MCP endpoint the client called and its metadata
+ * lives at the root of the public origin ({@code /.well-known/oauth-protected-resource/<path>}).
+ */
 public final class ResourceMetadata {
 
     public static final String WELL_KNOWN = "/.well-known/oauth-protected-resource";
+    /** MCP endpoints that have metadata; a link slug is not looked up, so the document does not reveal links. */
+    public static final Pattern RESOURCE_PATH = Pattern.compile(
+            "^/(?:s/mcp-[a-z]{2,32}|v/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)/mcp$");
 
-    private final URI publicUrl;
+    private final PublicUrls urls;
 
-    public ResourceMetadata(URI publicUrl) {
-        this.publicUrl = publicUrl;
-    }
-
-    /**
-     * Base URL: the configured public URL, otherwise the request's own scheme and authority. A forged Host only
-     * changes the metadata URL in the forger's own 401 response.
-     */
-    public String baseUrl(HttpServletRequest request) {
-        if (publicUrl != null) {
-            String value = publicUrl.toString();
-            return value.endsWith("/") ? value.substring(0, value.length() - 1) : value;
-        }
-        String scheme = request.getScheme();
-        int port = request.getServerPort();
-        boolean defaultPort = ("http".equals(scheme) && port == 80) || ("https".equals(scheme) && port == 443);
-        return scheme + "://" + request.getServerName() + (defaultPort ? "" : ":" + port);
+    public ResourceMetadata(PublicUrls urls) {
+        this.urls = urls;
     }
 
     /** Replaces scheme and authority of a URL derived from the request with the configured public URL. */
     public String rebase(String url) {
-        if (publicUrl == null) {
-            return url;
-        }
-        URI derived = URI.create(url);
-        String base = publicUrl.toString().endsWith("/")
-                ? publicUrl.toString().substring(0, publicUrl.toString().length() - 1) : publicUrl.toString();
-        return base + (derived.getRawPath() == null ? "" : derived.getRawPath());
+        String path = java.net.URI.create(url).getRawPath();
+        return urls.base() + (path == null ? "" : path);
     }
 
-    public String metadataUrl(HttpServletRequest request, String resourcePath) {
-        return baseUrl(request) + WELL_KNOWN + resourcePath;
+    /**
+     * Metadata URL for the requested path. A path that is not an MCP endpoint gets the root document, so nothing
+     * of the request (parameters, quotes) lands in the challenge header.
+     */
+    public String metadataUrl(String resourcePath) {
+        boolean known = resourcePath != null && RESOURCE_PATH.matcher(resourcePath).matches();
+        return urls.base() + WELL_KNOWN + (known ? resourcePath : "");
+    }
+
+    public boolean isMetadataPath(String requestPath) {
+        if (WELL_KNOWN.equals(requestPath)) {
+            return true;
+        }
+        return requestPath != null && requestPath.startsWith(WELL_KNOWN + "/")
+                && RESOURCE_PATH.matcher(requestPath.substring(WELL_KNOWN.length())).matches();
     }
 }

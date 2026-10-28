@@ -18,8 +18,7 @@ import pl.aiwcorpo.mcp.gateway.server.ToolDefinition;
 class GroupToolAuthorizerTest {
 
     private final GroupToolAuthorizer authorizer = new GroupToolAuthorizer();
-    private final McpServer jira = new McpServer("mcp-jira", "jira", URI.create("https://mcp-jira.internal:8443/mcp"),
-            new CredentialPolicy(true, Set.of("user-secret"), List.of(), false), Map.of());
+    private final McpServer jira = server(true);
     private final GatewayUser all = user("mcp-jira-read", "mcp-jira-write", "mcp-jira-destructive");
 
     @Test
@@ -45,8 +44,30 @@ class GroupToolAuthorizerTest {
         assertThat(decision.reason()).isEqualTo("tool_disabled");
     }
 
+    @Test
+    void disabledServerOrToolIsDeniedFirstWhateverTheGroups() {
+        McpServer disabledServer = server(false);
+        ToolDecision server = authorizer.decide(all, disabledServer, tool(Risk.READ_ONLY));
+        assertThat(server.allowed()).isFalse();
+        assertThat(server.reason()).isEqualTo("tool_disabled");
+        ToolDefinition off = new ToolDefinition("some_tool", Risk.READ_ONLY, "read", null, "A tool.", true);
+        assertThat(authorizer.decide(all, jira, off).reason()).isEqualTo("tool_disabled");
+    }
+
+    @Test
+    void entitlementsFollowTheRisk() {
+        assertThat(authorizer.requiredEntitlements(jira, tool(Risk.READ_ONLY))).containsExactly("mcp-jira-read");
+        assertThat(authorizer.requiredEntitlements(jira, tool(Risk.UPDATE))).containsExactly("mcp-jira-write");
+        assertThat(authorizer.requiredEntitlements(jira, tool(Risk.DESTRUCTIVE))).containsExactly("mcp-jira-destructive");
+    }
+
+    private static McpServer server(boolean enabled) {
+        return new McpServer("mcp-jira", "jira", URI.create("https://mcp-jira.internal:8443/mcp"), "1.0.0", enabled,
+                new CredentialPolicy(true, Set.of("user-secret"), List.of(), false), Map.of());
+    }
+
     private static ToolDefinition tool(Risk risk) {
-        return new ToolDefinition("some_tool", risk);
+        return new ToolDefinition("some_tool", risk, "read", null, "A tool.", false);
     }
 
     private static GatewayUser user(String... groups) {

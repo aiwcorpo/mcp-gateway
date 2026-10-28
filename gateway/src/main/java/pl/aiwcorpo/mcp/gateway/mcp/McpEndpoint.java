@@ -6,6 +6,9 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -22,30 +25,36 @@ import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.http.HttpServletRequest;
 import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
 import pl.aiwcorpo.mcp.gateway.config.GatewayProperties;
+import pl.aiwcorpo.mcp.gateway.edge.JsonErrorController;
 import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
-import pl.aiwcorpo.mcp.gateway.server.McpServer;
 import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
 import pl.aiwcorpo.mcp.gateway.upstream.UpstreamSessions;
+import pl.aiwcorpo.mcp.gateway.virtual.VirtualServerService;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * Client side of the gateway: Streamable HTTP on {@code /s/<serverId>/mcp} (C5) for modern clients (2026-07-28,
- * per-request {@code _meta}, no sessions) and legacy clients (2025-03-26 .. 2025-11-25, initialize and
- * Mcp-Session-Id bound to the token's sub). Responses are always application/json. Every request gets a
- * UUIDv7 requestId, returned in {@code X-Request-Id}.
+ * Client side of the gateway: Streamable HTTP on {@code /s/<serverId>/mcp} and {@code /v/<slug>/mcp} (C5) for
+ * modern clients (2026-07-28, per-request {@code _meta}, no sessions) and legacy clients (2025-03-26 ..
+ * 2025-11-25, initialize and Mcp-Session-Id bound to the token's sub). Responses are always application/json,
+ * errors included. Every request gets a UUIDv7 requestId, returned in {@code X-Request-Id}. A link belongs to
+ * its owner: anyone else gets the 404 of a missing slug.
  */
 @RestController
 public class McpEndpoint {
 
+    private static final Logger log = LoggerFactory.getLogger(McpEndpoint.class);
     private static final int MAX_BODY = 1024 * 1024;
     private static final String META_VERSION = "io.modelcontextprotocol/protocolVersion";
     private static final String META_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities";
     private static final String META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
 
+    private enum Kind { SERVER, VIRTUAL }
+
     private final ServerRegistry servers;
+    private final VirtualServerService virtualServers;
     private final McpGatewayService service;
     private final ClientSessionStore sessions;
     private final UpstreamSessions upstream;
@@ -55,9 +64,11 @@ public class McpEndpoint {
     private final String name;
     private final String version;
 
-    public McpEndpoint(ServerRegistry servers, McpGatewayService service, ClientSessionStore sessions,
-                       UpstreamSessions upstream, JsonMapper json, MeterRegistry meters, GatewayProperties properties) {
+    public McpEndpoint(ServerRegistry servers, VirtualServerService virtualServers, McpGatewayService service,
+                       ClientSessionStore sessions, UpstreamSessions upstream, JsonMapper json, MeterRegistry meters,
+                       GatewayProperties properties) {
         this.servers = servers;
+        this.virtualServers = virtualServers;
         this.service = service;
         this.sessions = sessions;
         this.upstream = upstream;
@@ -71,9 +82,27 @@ public class McpEndpoint {
     @PostMapping("/s/{serverId}/mcp")
     public ResponseEntity<String> post(@PathVariable String serverId, @AuthenticationPrincipal Jwt token,
                                        HttpServletRequest request) throws IOException {
+        return post(Kind.SERVER, serverId, token, request);
+    }
+
+    @PostMapping("/v/{slug}/mcp")
+    public ResponseEntity<String> postVirtual(@PathVariable String slug, @AuthenticationPrincipal Jwt token,
+                                              HttpServletRequest request) throws IOException {
+        return post(Kind.VIRTUAL, slug, token, request);
+    }
+
+    private ResponseEntity<String> post(Kind kind, String endpointId, Jwt token, HttpServletRequest request)
+            throws IOException {
         String requestId = UuidV7.next();
-        Optional<McpServer> server = servers.find(serverId);
-        if (server.isEmpty()) {
+        GatewayUser user = GatewayUser.from(token);
+        Optional<Target> target;
+        try {
+            target = resolve(kind, endpointId, user);
+        } catch (DataAccessException e) {
+            log.error("virtual server lookup failed rid={}: {}", requestId, e.getClass().getName());
+            return error(HttpStatus.SERVICE_UNAVAILABLE, requestId, null, -32603, "Virtual servers are unavailable.", null, false);
+        }
+        if (target.isEmpty()) {
             return plain(HttpStatus.NOT_FOUND, requestId);
         }
         if (!originAllowed(request)) {
@@ -94,36 +123,54 @@ public class McpEndpoint {
             return error(HttpStatus.BAD_REQUEST, requestId, null, -32600,
                     "Expected a single JSON-RPC request or notification.", null, false);
         }
-        GatewayUser user = GatewayUser.from(token);
         String method = message.get("method").asString();
         JsonNode id = message.get("id");
         String clientRequestId = request.getHeader("X-Request-Id");
         JsonNode meta = message.path("params").path("_meta");
 
         if ("initialize".equals(method)) {
-            return initialize(server.get(), user, message, requestId);
+            return initialize(target.get(), user, message, requestId);
         }
         if (meta.has(META_VERSION)) {
-            return modern(server.get(), user, message, meta, request, requestId, clientRequestId);
+            return modern(target.get(), user, message, meta, request, requestId, clientRequestId);
         }
-        return legacy(server.get(), user, message, request, requestId, clientRequestId, method, id);
+        return legacy(target.get(), user, message, request, requestId, clientRequestId, method, id);
     }
 
-    @GetMapping("/s/{serverId}/mcp")
-    public ResponseEntity<String> get(@PathVariable String serverId, HttpServletRequest request) {
+    @GetMapping({"/s/{serverId}/mcp", "/v/{slug}/mcp"})
+    public ResponseEntity<String> get(HttpServletRequest request) {
         if (!originAllowed(request)) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+            return plain(HttpStatus.FORBIDDEN, UuidV7.next());
         }
         // No standalone SSE stream: legacy clients may get 405 (2025-03-26+), modern ones must (2026-07-28).
-        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).header(HttpHeaders.ALLOW, "POST, DELETE").build();
+        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).header(HttpHeaders.ALLOW, "POST, DELETE")
+                .contentType(MediaType.APPLICATION_JSON).body(JsonErrorController.body(405));
     }
 
     @DeleteMapping("/s/{serverId}/mcp")
     public ResponseEntity<String> delete(@PathVariable String serverId, @AuthenticationPrincipal Jwt token,
                                          HttpServletRequest request) {
+        return delete(Kind.SERVER, serverId, token, request);
+    }
+
+    @DeleteMapping("/v/{slug}/mcp")
+    public ResponseEntity<String> deleteVirtual(@PathVariable String slug, @AuthenticationPrincipal Jwt token,
+                                                HttpServletRequest request) {
+        return delete(Kind.VIRTUAL, slug, token, request);
+    }
+
+    private ResponseEntity<String> delete(Kind kind, String id, Jwt token, HttpServletRequest request) {
         String requestId = UuidV7.next();
         String sessionId = request.getHeader("Mcp-Session-Id");
-        if (servers.find(serverId).isEmpty()) {
+        GatewayUser user = GatewayUser.from(token);
+        Optional<Target> target;
+        try {
+            target = resolve(kind, id, user);
+        } catch (DataAccessException e) {
+            log.error("virtual server lookup failed rid={}: {}", requestId, e.getClass().getName());
+            return plain(HttpStatus.SERVICE_UNAVAILABLE, requestId);
+        }
+        if (target.isEmpty()) {
             return plain(HttpStatus.NOT_FOUND, requestId);
         }
         if (!originAllowed(request)) {
@@ -131,19 +178,26 @@ public class McpEndpoint {
         }
         if (sessionId == null) {
             return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).header(HttpHeaders.ALLOW, "POST")
-                    .header("X-Request-Id", requestId).build();
+                    .header("X-Request-Id", requestId).contentType(MediaType.APPLICATION_JSON)
+                    .body(JsonErrorController.body(405));
         }
-        GatewayUser user = GatewayUser.from(token);
         Optional<ClientSession> session = sessions.find(sessionId).filter(s -> s.sub().equals(user.sub()));
         if (session.isEmpty()) {
             return plain(HttpStatus.NOT_FOUND, requestId);
         }
         sessions.delete(sessionId);
-        upstream.close(legacyConversation(user, sessionId), user, requestId);
+        upstream.close(legacyConversation(user, sessionId), user, requestId, target.get().virtualSlug());
         return plain(HttpStatus.NO_CONTENT, requestId);
     }
 
-    private ResponseEntity<String> initialize(McpServer server, GatewayUser user, JsonNode message, String requestId) {
+    private Optional<Target> resolve(Kind kind, String id, GatewayUser user) {
+        return switch (kind) {
+            case SERVER -> servers.find(id).map(Target::of);
+            case VIRTUAL -> virtualServers.usableBy(user, id).map(Target::of);
+        };
+    }
+
+    private ResponseEntity<String> initialize(Target target, GatewayUser user, JsonNode message, String requestId) {
         JsonNode id = message.get("id");
         if (id == null || id.isNull()) {
             return error(HttpStatus.BAD_REQUEST, requestId, null, -32600, "initialize must be a request.", null, false);
@@ -153,13 +207,13 @@ public class McpEndpoint {
         ObjectNode result = json.createObjectNode();
         result.put("protocolVersion", negotiated);
         result.putObject("capabilities").putObject("tools").put("listChanged", false);
-        result.putObject("serverInfo").put("name", name + "/" + server.serverId()).put("version", version);
+        result.putObject("serverInfo").put("name", name + "/" + target.label()).put("version", version);
         count("initialize", false);
         return ResponseEntity.ok().header("Mcp-Session-Id", session.id()).header("X-Request-Id", requestId)
                 .contentType(MediaType.APPLICATION_JSON).body(result(id, result, false));
     }
 
-    private ResponseEntity<String> legacy(McpServer server, GatewayUser user, JsonNode message, HttpServletRequest request,
+    private ResponseEntity<String> legacy(Target target, GatewayUser user, JsonNode message, HttpServletRequest request,
                                           String requestId, String clientRequestId, String method, JsonNode id) {
         String headerVersion = request.getHeader("MCP-Protocol-Version");
         if (headerVersion != null && ProtocolVersions.isModern(headerVersion)) {
@@ -185,12 +239,12 @@ public class McpEndpoint {
         if (id == null) {
             return plain(HttpStatus.ACCEPTED, requestId);
         }
-        CallContext ctx = new CallContext(requestId, clientRequestId, user, server, version,
+        CallContext ctx = new CallContext(requestId, clientRequestId, user, target, version,
                 legacyConversation(user, sessionId));
         return dispatch(ctx, message, method, id, false);
     }
 
-    private ResponseEntity<String> modern(McpServer server, GatewayUser user, JsonNode message, JsonNode meta,
+    private ResponseEntity<String> modern(Target target, GatewayUser user, JsonNode message, JsonNode meta,
                                           HttpServletRequest request, String requestId, String clientRequestId) {
         String method = message.get("method").asString();
         JsonNode id = message.get("id");
@@ -225,7 +279,7 @@ public class McpEndpoint {
         if (id == null) {
             return plain(HttpStatus.ACCEPTED, requestId);
         }
-        CallContext ctx = new CallContext(requestId, clientRequestId, user, server, bodyVersion,
+        CallContext ctx = new CallContext(requestId, clientRequestId, user, target, bodyVersion,
                 "m|" + user.sub() + "|" + user.client());
         if ("server/discover".equals(method)) {
             count(method, true);
@@ -291,7 +345,11 @@ public class McpEndpoint {
     }
 
     private static ResponseEntity<String> plain(HttpStatus status, String requestId) {
-        return ResponseEntity.status(status).header("X-Request-Id", requestId).build();
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(status).header("X-Request-Id", requestId);
+        if (status.value() < 400) {
+            return builder.build();
+        }
+        return builder.contentType(MediaType.APPLICATION_JSON).body(JsonErrorController.body(status.value()));
     }
 
     private boolean originAllowed(HttpServletRequest request) {

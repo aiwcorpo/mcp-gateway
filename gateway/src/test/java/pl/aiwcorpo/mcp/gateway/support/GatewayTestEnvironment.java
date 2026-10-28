@@ -12,6 +12,7 @@ import javax.net.ssl.SSLContext;
 
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.Transferable;
 
 import pl.aiwcorpo.mcp.testserver.JwksKeySource;
@@ -19,14 +20,18 @@ import pl.aiwcorpo.mcp.testserver.TestMcpServer;
 import pl.aiwcorpo.mcp.testserver.Tls;
 
 /**
- * Everything around the gateway under test, started once per JVM: internal CA and certificates, IdP stand-in,
- * broker stub, the test MCP server as mcp-jira, a second server with a certificate for the wrong name (as
- * mcp-confluence), and Redis with the ACL of mcp-platform-dev.
+ * Everything around the gateway under test, started once per JVM: internal CA and certificates (gateway, BFF, a
+ * component of another name, a certificate of a foreign CA), IdP stand-in, broker stub, the test MCP server as
+ * mcp-jira and as mcp-gitlab, a server with a certificate for the wrong name (as mcp-confluence), Redis with the
+ * ACL of mcp-platform-dev and PostgreSQL for the links.
  */
 public final class GatewayTestEnvironment {
 
     public static final String REDIS_GATEWAY_PASSWORD = "gateway-test-password";
     public static final String REDIS_ADMIN_PASSWORD = "admin-test-password";
+    public static final String POSTGRES_PASSWORD = "gateway-db-test-password";
+    /** publicBaseUrl in tests; no request to the gateway ever carries this host. */
+    public static final String PUBLIC_URL = "https://mcp.aiwcorpo.pl";
     private static final String DATA_COMMANDS = "-@all +get +set +setnx +getdel +getex +mget +del +unlink +exists +expire "
             + "+pexpire +ttl +pttl +incr +incrby +decr +hset +hget +hdel +hgetall +hexists +hincrby +multi +exec +discard "
             + "+ping +auth +hello +client|setname +client|setinfo +reset +quit";
@@ -40,9 +45,16 @@ public final class GatewayTestEnvironment {
     public final TestIdp idp;
     public final BrokerStub broker;
     public final TestMcpServer jira;
+    public final TestMcpServer gitlab;
     public final TestMcpServer wrongName;
     public final GenericContainer<?> redis;
+    public final GenericContainer<?> postgres;
     public final SSLContext gatewayClientTls;
+    /** Client TLS identities for the admin API: the BFF, another component of the internal CA, a foreign CA. */
+    public final SSLContext bffTls;
+    public final SSLContext otherComponentTls;
+    public final SSLContext foreignCaTls;
+    public final SSLContext noClientCertificateTls;
 
     public static synchronized GatewayTestEnvironment get() {
         if (instance == null) {
@@ -61,7 +73,12 @@ public final class GatewayTestEnvironment {
         gatewayKeystore = pki.issue("gateway.p12", "mcp-gateway", List.of("mcp-gateway.internal", "localhost", "127.0.0.1"),
                 true, true);
         Path jiraKeystore = pki.issue("jira.p12", "mcp-jira", List.of("mcp-jira.internal", "localhost"), true, false);
+        Path gitlabKeystore = pki.issue("gitlab.p12", "mcp-gitlab", List.of("mcp-gitlab.internal", "localhost"), true, false);
         Path wrongKeystore = pki.issue("wrong.p12", "mcp-confluence", List.of("mcp-jira.internal"), true, false);
+        Path bffKeystore = pki.issue("bff.p12", "mcp-portal-bff", List.of(), false, true);
+        Path ciKeystore = pki.issue("ci.p12", "mcp-registry-ci", List.of(), false, true);
+        TestPki foreign = new TestPki(Files.createDirectory(dir.resolve("foreign")));
+        Path foreignKeystore = foreign.issue("bff.p12", "mcp-portal-bff", List.of(), false, true);
         Path brokerKeystore = pki.issue("broker.p12", "mcp-credential-broker", List.of("mcp-credential-broker.internal"),
                 true, false);
         try (ServerSocket socket = new ServerSocket(0)) {
@@ -76,6 +93,9 @@ public final class GatewayTestEnvironment {
         broker = new BrokerStub(Tls.fromPkcs12(brokerKeystore, pki.truststore(), TestPki.PASSWORD), gatewayKeys);
         jira = new TestMcpServer(new TestMcpServer.Config("mcp-jira", "/mcp", "https://mcp-gateway.internal", false, null,
                 gatewayKeys), Tls.fromPkcs12(jiraKeystore, pki.truststore(), TestPki.PASSWORD),
+                new InetSocketAddress("127.0.0.1", 0)).start();
+        gitlab = new TestMcpServer(new TestMcpServer.Config("mcp-gitlab", "/mcp", "https://mcp-gateway.internal", false, null,
+                gatewayKeys), Tls.fromPkcs12(gitlabKeystore, pki.truststore(), TestPki.PASSWORD),
                 new InetSocketAddress("127.0.0.1", 0)).start();
         wrongName = new TestMcpServer(new TestMcpServer.Config("mcp-confluence", "/mcp", "https://mcp-gateway.internal",
                 false, null, gatewayKeys), Tls.fromPkcs12(wrongKeystore, pki.truststore(), TestPki.PASSWORD),
@@ -92,6 +112,18 @@ public final class GatewayTestEnvironment {
                 .withCommand("redis-server", "--aclfile", "/etc/redis-users.acl", "--appendonly", "no")
                 .withExposedPorts(6379);
         redis.start();
+
+        postgres = new GenericContainer<>("postgres:18.6-alpine")
+                .withEnv("POSTGRES_USER", "gateway").withEnv("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
+                .withEnv("POSTGRES_DB", "gateway")
+                .withExposedPorts(5432)
+                .waitingFor(Wait.forLogMessage(".*database system is ready to accept connections.*\\n", 2));
+        postgres.start();
+
+        bffTls = Tls.fromPkcs12(bffKeystore, pki.truststore(), TestPki.PASSWORD);
+        otherComponentTls = Tls.fromPkcs12(ciKeystore, pki.truststore(), TestPki.PASSWORD);
+        foreignCaTls = Tls.fromKeyStores(load(foreignKeystore), TestPki.PASSWORD, load(pki.truststore()));
+        noClientCertificateTls = trustOnly;
     }
 
     public void register(DynamicPropertyRegistry registry) {
@@ -114,14 +146,34 @@ public final class GatewayTestEnvironment {
         registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
         registry.add("spring.data.redis.username", () -> "gateway");
         registry.add("spring.data.redis.password", () -> REDIS_GATEWAY_PASSWORD);
+        registry.add("spring.datasource.url", () -> "jdbc:postgresql://" + postgres.getHost() + ":" + postgres.getMappedPort(5432)
+                + "/gateway");
+        registry.add("spring.datasource.username", () -> "gateway");
+        registry.add("spring.datasource.password", () -> POSTGRES_PASSWORD);
+        registry.add("gateway.public-url", () -> PUBLIC_URL);
         registry.add("gateway.servers.mcp-jira.internal-url", () -> "https://127.0.0.1:" + jira.port() + "/mcp");
         registry.add("gateway.servers.mcp-jira.tools.delete_issue.risk", () -> "DESTRUCTIVE");
+        registry.add("gateway.servers.mcp-jira.tools.delete_issue.description", () -> "Deletes one Jira issue.");
+        registry.add("gateway.servers.mcp-jira.tools.delete_issue.title", () -> "Usuni\u0119cie zg\u0142oszenia");
+        registry.add("gateway.servers.mcp-gitlab.system", () -> "gitlab");
+        registry.add("gateway.servers.mcp-gitlab.internal-url", () -> "https://127.0.0.1:" + gitlab.port() + "/mcp");
+        registry.add("gateway.servers.mcp-gitlab.credential.accepted-types", () -> "user-secret,user-oauth");
+        registry.add("gateway.servers.mcp-gitlab.tools.get_issue.risk", () -> "READ_ONLY");
+        registry.add("gateway.servers.mcp-gitlab.tools.get_issue.description", () -> "Returns one GitLab issue.");
         registry.add("gateway.allowed-origins", () -> "https://allowed.test");
         registry.add("gateway.redis.health-interval", () -> "1s");
+        registry.add("gateway.servers.mcp-servicedesk.system", () -> "servicedesk");
+        registry.add("gateway.servers.mcp-servicedesk.enabled", () -> "false");
+        registry.add("gateway.servers.mcp-servicedesk.version", () -> "2.1.0");
+        registry.add("gateway.servers.mcp-servicedesk.credential.required", () -> "false");
+        registry.add("gateway.servers.mcp-servicedesk.internal-url", () -> "https://127.0.0.1:9/mcp");
+        registry.add("gateway.servers.mcp-servicedesk.tools.get_ticket.risk", () -> "READ_ONLY");
+        registry.add("gateway.servers.mcp-servicedesk.tools.get_ticket.description", () -> "Returns one ticket.");
         registry.add("gateway.servers.mcp-confluence.system", () -> "confluence");
         registry.add("gateway.servers.mcp-confluence.internal-url", () -> "https://127.0.0.1:" + wrongName.port() + "/mcp");
         registry.add("gateway.servers.mcp-confluence.credential.required", () -> "false");
         registry.add("gateway.servers.mcp-confluence.tools.search_issues.risk", () -> "READ_ONLY");
+        registry.add("gateway.servers.mcp-confluence.tools.search_issues.description", () -> "Searches pages.");
     }
 
     private static java.security.KeyStore load(Path path) throws Exception {

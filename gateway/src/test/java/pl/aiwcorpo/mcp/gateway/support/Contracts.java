@@ -22,4 +22,11 @@ public final class Contracts {
         Schema schema = SCHEMAS.getSchema(SchemaLocation.of("classpath:mcp-contracts/" + schemaPath));
         return schema.validate(value).stream().map(Object::toString).toList();
     }
+
+    /** Errors of {@code value} against a schema of the C5 OpenAPI document, e.g. {@code Catalog} or {@code VirtualServer}. */
+    public static List<String> gatewayAdminErrors(String component, JsonNode value) {
+        Schema schema = SCHEMAS.getSchema(SchemaLocation.of(
+                "classpath:mcp-contracts/openapi/gateway-admin.v1.yaml#/components/schemas/" + component));
+        return schema.validate(value).stream().map(Object::toString).toList();
+    }
 }

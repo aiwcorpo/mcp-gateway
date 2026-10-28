@@ -45,6 +45,14 @@ public final class InternalTokenIssuer {
 
     /** User variant; {@code tool} is the server-side name or null. */
     public String forUser(String audience, GatewayUser user, String tool, String requestId) {
+        return forUser(audience, user, tool, requestId, null);
+    }
+
+    /**
+     * User variant for a call through a virtual server: {@code vs} is the slug and {@code vsc} (resource
+     * narrowing, dormant per CC-085) is always {@code {}}, present exactly when {@code vs} is (C2).
+     */
+    public String forUser(String audience, GatewayUser user, String tool, String requestId, String virtualServer) {
         JWTClaimsSet.Builder claims = common(audience, requestId)
                 .subject(user.sub())
                 .claim("usr", user.username())
@@ -52,6 +60,9 @@ public final class InternalTokenIssuer {
                 .claim("azp", user.client());
         if (tool != null) {
             claims.claim("tool", tool);
+        }
+        if (virtualServer != null) {
+            claims.claim("vs", virtualServer).claim("vsc", java.util.Map.of());
         }
         return sign(claims.build());
     }

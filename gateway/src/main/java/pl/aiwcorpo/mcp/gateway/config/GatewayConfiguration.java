@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -13,8 +14,11 @@ import org.springframework.core.Ordered;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import io.lettuce.core.RedisURI;
+import jakarta.servlet.DispatcherType;
 import io.micrometer.core.instrument.MeterRegistry;
+import pl.aiwcorpo.mcp.gateway.admin.AdminController;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
+import pl.aiwcorpo.mcp.gateway.auth.PublicUrls;
 import pl.aiwcorpo.mcp.gateway.auth.ResourceMetadata;
 import pl.aiwcorpo.mcp.gateway.authz.GroupToolAuthorizer;
 import pl.aiwcorpo.mcp.gateway.authz.ToolAuthorizer;
@@ -24,6 +28,9 @@ import pl.aiwcorpo.mcp.gateway.broker.CredentialService;
 import pl.aiwcorpo.mcp.gateway.broker.InvalidationListener;
 import pl.aiwcorpo.mcp.gateway.broker.SystemsCheck;
 import pl.aiwcorpo.mcp.gateway.broker.TokenExchangeClient;
+import pl.aiwcorpo.mcp.gateway.edge.JsonErrorReportValveCustomizer;
+import pl.aiwcorpo.mcp.gateway.edge.PublicEdgeFilter;
+import pl.aiwcorpo.mcp.gateway.edge.WellKnownGuard;
 import pl.aiwcorpo.mcp.gateway.jwt.InternalPortFilter;
 import pl.aiwcorpo.mcp.gateway.jwt.InternalTokenIssuer;
 import pl.aiwcorpo.mcp.gateway.jwt.SigningKeys;
@@ -35,6 +42,8 @@ import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
 import pl.aiwcorpo.mcp.gateway.tls.InternalTls;
 import pl.aiwcorpo.mcp.gateway.upstream.StreamableHttpClient;
 import pl.aiwcorpo.mcp.gateway.upstream.UpstreamSessions;
+import pl.aiwcorpo.mcp.gateway.virtual.VirtualServerService;
+import pl.aiwcorpo.mcp.gateway.virtual.VirtualServerStore;
 import tools.jackson.databind.json.JsonMapper;
 
 @Configuration
@@ -56,22 +65,63 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    ResourceMetadata resourceMetadata(GatewayProperties properties) {
-        return new ResourceMetadata(properties.publicUrl());
+    PublicUrls publicUrls(GatewayProperties properties) {
+        return new PublicUrls(properties.publicUrl(), properties.allowPlainHttp());
+    }
+
+    @Bean
+    ResourceMetadata resourceMetadata(PublicUrls urls) {
+        return new ResourceMetadata(urls);
     }
 
     @Bean
     InternalConnector internalConnector(GatewayProperties properties) {
         return new InternalConnector(properties.internalEndpoint().port(), properties.tls().keystore(),
-                properties.tls().storePassword());
+                properties.tls().truststore(), properties.tls().storePassword());
+    }
+
+    @Bean
+    JsonErrorReportValveCustomizer jsonErrorReportValveCustomizer() {
+        return new JsonErrorReportValveCustomizer();
+    }
+
+    @Bean
+    FilterRegistrationBean<PublicEdgeFilter> publicEdgeFilter() {
+        FilterRegistrationBean<PublicEdgeFilter> registration = new FilterRegistrationBean<>(new PublicEdgeFilter());
+        registration.setOrder(Ordered.HIGHEST_PRECEDENCE);
+        registration.setDispatcherTypes(DispatcherType.REQUEST, DispatcherType.ERROR, DispatcherType.ASYNC);
+        return registration;
     }
 
     @Bean
     FilterRegistrationBean<InternalPortFilter> internalPortFilter(GatewayProperties properties) {
         FilterRegistrationBean<InternalPortFilter> registration =
                 new FilterRegistrationBean<>(new InternalPortFilter(properties.internalEndpoint().port()));
-        registration.setOrder(Ordered.HIGHEST_PRECEDENCE);
+        registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 1);
         return registration;
+    }
+
+    @Bean
+    FilterRegistrationBean<WellKnownGuard> wellKnownGuard(ResourceMetadata metadata) {
+        FilterRegistrationBean<WellKnownGuard> registration = new FilterRegistrationBean<>(new WellKnownGuard(metadata));
+        registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 2);
+        return registration;
+    }
+
+    @Bean
+    VirtualServerStore virtualServerStore(JdbcClient jdbc, JsonMapper gatewayJson) {
+        return new VirtualServerStore(jdbc, gatewayJson);
+    }
+
+    @Bean
+    VirtualServerService virtualServerService(VirtualServerStore store, ServerRegistry registry, ToolAuthorizer authorizer) {
+        return new VirtualServerService(store, registry, authorizer);
+    }
+
+    @Bean
+    AdminController adminController(ServerRegistry registry, ToolAuthorizer authorizer, VirtualServerService virtualServers,
+                                    PublicUrls urls, AuditLog audit, JsonMapper gatewayJson, GatewayProperties properties) {
+        return new AdminController(registry, authorizer, virtualServers, urls, audit, gatewayJson, properties.componentId());
     }
 
     @Bean
@@ -187,10 +237,11 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    McpGatewayService mcpGatewayService(UpstreamSessions upstream, CredentialService credentials, ToolAuthorizer authorizer,
-                                        AuditLog audit, ToolErrors errors, JsonMapper gatewayJson, MeterRegistry meters,
+    McpGatewayService mcpGatewayService(ServerRegistry registry, PublicUrls urls, UpstreamSessions upstream,
+                                        CredentialService credentials, ToolAuthorizer authorizer, AuditLog audit,
+                                        ToolErrors errors, JsonMapper gatewayJson, MeterRegistry meters,
                                         GatewayProperties properties) {
-        return new McpGatewayService(upstream, credentials, authorizer, audit, errors, gatewayJson, meters,
+        return new McpGatewayService(registry, urls, upstream, credentials, authorizer, audit, errors, gatewayJson, meters,
                 properties.componentId());
     }
 }

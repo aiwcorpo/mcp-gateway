@@ -50,6 +50,23 @@ class InternalTokenIssuerTest {
     }
 
     @Test
+    void virtualServerCallsCarryVsWithAnEmptyVscAndPlainCallsCarryNeither() throws Exception {
+        String rid = UuidV7.next();
+        String viaLink = issuer.forUser("mcp-jira", alice, "get_issue", rid, "team-a-dev");
+        JsonNode claims = claims(viaLink);
+        assertThat(claims.path("vs").asString()).isEqualTo("team-a-dev");
+        assertThat(claims.path("vsc").isObject()).isTrue();
+        assertThat(claims.path("vsc").isEmpty()).isTrue();
+        assertThat(Contracts.schemaErrors("schemas/internal-jwt.schema.json", claims)).isEmpty();
+        assertThat(receiver("mcp-jira").verify("Bearer " + viaLink, rid,
+                InternalJwtVerifier.RequestRule.forJsonRpc("tools/call", "get_issue")).reason()).isNull();
+
+        JsonNode plain = claims(issuer.forUser("mcp-jira", alice, "get_issue", rid));
+        assertThat(plain.has("vs")).isFalse();
+        assertThat(plain.has("vsc")).isFalse();
+    }
+
+    @Test
     void withoutToolForProtocolMethodsAndServiceVariantOnlyWhereAllowed() throws Exception {
         String rid = UuidV7.next();
         String list = issuer.forUser("mcp-jira", alice, null, rid);

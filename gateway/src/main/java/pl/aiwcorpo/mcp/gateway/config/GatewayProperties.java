@@ -23,8 +23,11 @@ import jakarta.validation.constraints.Pattern;
 public record GatewayProperties(
         @DefaultValue("mcp-gateway") @NotBlank String componentId,
         @DefaultValue("0.1.0") String version,
-        /* Public base URL as clients see it (RFC 9728 resource); empty = taken from the request. */
-        URI publicUrl,
+        /*
+         * Public base URL as clients see it (publicBaseUrl of C5, CC-089): RFC 9728 resource, WWW-Authenticate,
+         * MCP endpoint and portal links. Always configuration, never the Host of a request.
+         */
+        @NotNull URI publicUrl,
         @Valid @NotNull Oidc oidc,
         @Valid @NotNull InternalJwt internalJwt,
         @Valid @NotNull InternalEndpoint internalEndpoint,
@@ -33,6 +36,7 @@ public record GatewayProperties(
         @Valid @NotNull Redis redis,
         @Valid @NotNull Sessions sessions,
         @Valid @NotNull Upstream upstream,
+        @Valid @NotNull Admin admin,
         @DefaultValue("00000000000000-0000000") @Pattern(regexp = "^[0-9]{14}-[0-9a-f]{7}$") String policyRevision,
         /* Dev only: allows http for the IdP token endpoint (token exchange); never for the broker or servers. */
         @DefaultValue("false") boolean allowPlainHttp,
@@ -108,10 +112,18 @@ public record GatewayProperties(
             @DefaultValue("4194304") int maxResponseBytes) {
     }
 
-    /** Static configuration of one MCP server (M1 stand-in for the registry, C5). */
+    /** Admin API of C5 on the internal TLS port: mTLS client names and the audience of the BFF's user token. */
+    public record Admin(
+            @DefaultValue("mcp-gateway-admin") @NotBlank String audience,
+            @DefaultValue("mcp-portal-bff") @NotEmpty List<String> allowedClientCns) {
+    }
+
+    /** Static configuration of one MCP server (stand-in for the registry, C5). */
     public record Server(
             @NotBlank String system,
             @NotNull URI internalUrl,
+            @DefaultValue("0.1.0") @NotBlank String version,
+            @DefaultValue("true") boolean enabled,
             @Valid @NotNull Credential credential,
             @Valid @NotEmpty Map<String, Tool> tools) {
     }
@@ -124,6 +136,12 @@ public record GatewayProperties(
             @DefaultValue("false") boolean tokenExchange) {
     }
 
-    public record Tool(@NotBlank String risk) {
+    /** {@code action} defaults from the risk (read, update, delete); {@code title} is optional (CC-082). */
+    public record Tool(
+            @NotBlank String risk,
+            @NotBlank String description,
+            String title,
+            String action,
+            @DefaultValue("false") boolean disabled) {
     }
 }

@@ -24,10 +24,15 @@ spring:
   mvc:
     problemdetails:
       enabled: false
-  autoconfigure:
-    # PostgreSQL (virtual servers, activity) arrives in M2.
-    exclude:
-      - org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration
+  datasource:
+    url: ${MCP_DB_URL}
+    username: ${MCP_DB_USER:gateway}
+    password: ${MCP_DB_PASSWORD}
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 3000
+  flyway:
+    locations: classpath:db/migration
 
 management:
   endpoints:
@@ -45,7 +50,8 @@ management:
 gateway:
   component-id: mcp-gateway
   version: 0.1.0
-  public-url: ${MCP_PUBLIC_URL:}
+  # Public origin (publicBaseUrl, CC-089): required, never derived from the Host of a request.
+  public-url: ${MCP_PUBLIC_URL}
   policy-revision: ${MCP_POLICY_REVISION:00000000000000-0000000}
   allowed-origins: ${MCP_ALLOWED_ORIGINS:}
   allow-plain-http: ${MCP_ALLOW_PLAIN_HTTP:false}
@@ -65,6 +71,9 @@ gateway:
     allow-test-keys: false
   internal-endpoint:
     port: ${MCP_INTERNAL_PORT:8443}
+  admin:
+    audience: ${MCP_ADMIN_AUDIENCE:mcp-gateway-admin}
+    allowed-client-cns: ${MCP_ADMIN_CLIENT_CNS:mcp-portal-bff}
   tls:
     keystore: ${MCP_TLS_KEYSTORE}
     truststore: ${MCP_TLS_TRUSTSTORE}
@@ -85,11 +94,13 @@ gateway:
     upstream-idle-timeout: 30m
   upstream:
     timeout: 30s
-  # Static server configuration of M1 (instead of the registry, C5): serverId -> system, address, credential,
-  # tools with risk. Tools of the server that are not listed here are hidden and cannot be called.
+  # Static server configuration (stand-in for the registry, C5): serverId -> system, address, credential, tools
+  # with risk and the catalog texts. Tools of the server that are not listed here are hidden and cannot be called.
   servers:
     mcp-jira:
       system: jira
+      version: ${MCP_SERVER_JIRA_VERSION:1.0.0}
+      enabled: ${MCP_SERVER_JIRA_ENABLED:true}
       internal-url: ${MCP_SERVER_JIRA_MCP_URL:${MCP_SERVER_JIRA_URL}/mcp}
       credential:
         required: true
@@ -97,9 +108,17 @@ gateway:
       tools:
         search_issues:
           risk: READ_ONLY
+          title: Wyszukiwanie zgłoszeń (JQL)
+          description: Searches Jira issues with a JQL query.
         get_issue:
           risk: READ_ONLY
+          title: Pobranie zgłoszenia
+          description: Returns one Jira issue by key.
         add_comment:
           risk: UPDATE
+          title: Dodanie komentarza
+          description: Adds a comment to a Jira issue.
         transition_issue:
           risk: UPDATE
+          title: Zmiana statusu zgłoszenia
+          description: Moves a Jira issue to another status.

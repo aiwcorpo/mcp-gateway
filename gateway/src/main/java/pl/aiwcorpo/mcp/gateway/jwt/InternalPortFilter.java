@@ -10,9 +10,9 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 /**
- * Separates the two connectors: the internal TLS port serves only the JWKS and the actuator (health,
- * Prometheus), the public port everything else. Servers and the broker fetch keys over the internal CA, and
- * clients never reach internal endpoints.
+ * Separates the two connectors: the internal TLS port serves only the JWKS, the actuator (health, Prometheus)
+ * and the C5 admin API, the public port everything else. Servers and the broker fetch keys over the internal CA,
+ * and clients never reach internal endpoints.
  */
 public final class InternalPortFilter extends OncePerRequestFilter {
 
@@ -27,7 +27,7 @@ public final class InternalPortFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
         boolean internal = request.getLocalPort() == internalPort;
         String path = request.getRequestURI();
-        boolean internalPath = "GET".equals(request.getMethod())
+        boolean internalPath = path.startsWith("/admin/v1/") || "GET".equals(request.getMethod())
                 && (JwksController.PATH.equals(path) || "/actuator/health".equals(path) || "/actuator/prometheus".equals(path));
         if (internal != internalPath) {
             response.sendError(HttpServletResponse.SC_NOT_FOUND);
