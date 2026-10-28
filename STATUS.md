@@ -11,6 +11,7 @@ broker, C2/C3, audyt, jeden serwer). M3 (potwierdzenia, zawężanie zasobów, `o
 | K1 | kontrakty 2.2.1; serwery z metadanymi katalogu (`title`, `description`, `action`, `enabled`, `disabled`); PostgreSQL + Flyway; C5 `catalog` i `virtual-servers`; `/v/<slug>/mcp`; `vs`/`vsc` w C2; `connectUrl` z adresu publicznego; reguły jednej domeny (nosniff, CSP, JSON, bez cookies) | `33d3f98` |
 | K2 | mTLS C5 (certyfikat klienta oceniany w filtrze, nie w handshake: regresja pobierania JWKS przez serwery); konfiguracja pięciu systemów; atrapa brokera, skrypty hosta na portach 18700-18703, demo na żywo z Keycloakiem, PostgreSQL i Redisem; README | `db8454b` |
 | K3 | port wewnętrzny rozpoznawany po znormalizowanej ścieżce (`//admin/v1`, `/%61dmin/v1`), szersze testy negatywne ścieżek; mutacje testów (3 z 3 zabite) | `1aed158` |
+| K4 | poprawki przeglądu Opus (LOW 1-10, MEDIUM-1 odroczone do M3); obraz `mcp-gateway:m2-8dc1d7a` | `8dc1d7a` |
 
 ## M2: zakres z zadania
 
@@ -28,11 +29,11 @@ broker, C2/C3, audyt, jeden serwer). M3 (potwierdzenia, zawężanie zasobów, `o
 ```
 ./mvnw -B install
 test-server: Tests run: 51, Failures: 0, Errors: 0   (InternalJwtVerifierVectorTest, wszystkie wektory C2 2.2.1)
-gateway:     Tests run: 107, Failures: 0, Errors: 0
-  GatewayIntegrationTest 30, VirtualServerMcpTest 11, AdminApiTest 11, PublicEdgeTest 8, InternalTokenIssuerTest 8,
-  VirtualServerServiceTest 6, CredentialCacheTest 6, GroupToolAuthorizerTest 5, CredentialServiceTest 4,
-  StreamableHttpClientTest 4, ClientCertificateVerifierTest 4, ServerRegistryTest 3, ResourceMetadataTest 3,
-  PublicUrlsTest 2, PublicEdgeFilterTest 2
+gateway:     Tests run: 120, Failures: 0, Errors: 0   (stan po K4, 8dc1d7a)
+  GatewayIntegrationTest 32, AdminApiTest 16, VirtualServerMcpTest 12, PublicEdgeTest 8, InternalTokenIssuerTest 8,
+  VirtualServerServiceTest 7, CredentialCacheTest 6, GroupToolAuthorizerTest 5, ClientCertificateVerifierTest 5,
+  CredentialServiceTest 4, StreamableHttpClientTest 4, InternalPortFilterTest 3, ServerRegistryTest 3,
+  ResourceMetadataTest 3, PublicUrlsTest 2, PublicEdgeFilterTest 2
 ```
 
 Scenariusze negatywne z zadania i gdzie siedzą: link z narzędziem ponad uprawnienia twórcy (`AdminApiTest.aLinkNeverReachesBeyondTheCreatorsRights`,
@@ -90,8 +91,9 @@ nginx przed gateway'em (ws-01), prawdziwy broker z M2 (ws-06) na jego portach, k
   obrazu glibc zamiast Alpine; `prv` = `00000000000000-0000000` (CC-068 mówi, że od M2 gateway bez paczki nie wstaje:
   do domknięcia z Cedar).
 - **Aktywność** (`GET /admin/v1/activity`), potwierdzenia, `policy/status`, rate limit: poza tym zadaniem.
-- **Bez limitu liczby linków na użytkownika** i bez cache wyszukiwania linku (jedno zapytanie do PostgreSQL na żądanie
-  `/v/`); przy 503 bazy klient dostaje błąd JSON-RPC `-32603` z HTTP 503. M4.
+- **Limit linków na użytkownika:** 50 (`MCP_VIRTUAL_SERVERS_MAX_PER_USER`), sprawdzany razem z INSERT pod blokadą
+  doradczą PostgreSQL na właściciela. Bez cache wyszukiwania linku (jedno zapytanie do PostgreSQL na żądanie `/v/`);
+  przy 503 bazy klient dostaje błąd JSON-RPC `-32603` z HTTP 503. Stronicowanie listy linków: nie (50 wierszy to górna granica).
 - **`MCP_PUBLIC_URL` jest wymagany** (wcześniej pusty = z `Host`), start bez niego się nie udaje.
 
 ## Odstępstwa i rzeczy niedokończone z M1 (aktualne)
@@ -129,7 +131,18 @@ nginx przed gateway'em (ws-01), prawdziwy broker z M2 (ws-06) na jego portach, k
 4. **C8: zdarzenie odrzuconego uwierzytelnienia po stronie gateway'a** (token C1): `authentication` z `component:
    gateway` i słownikiem `reason` dla C1 (`expired`, `wrong_audience`, `bad_signature`, ...); schemat 2.1.1 wymienia
    tylko powody JWT wewnętrznego i zakazuje pól z niezweryfikowanego tokenu, więc wystarczy rozszerzyć słownik.
-5. Z M1 nadal otwarte: `prv` przed pierwszą paczką (CC-068 częściowo to adresuje), metody 2026-07-28 w regułach C2
+5. **C5 `POST /virtual-servers`: odpowiedź na przekroczenie limitu linków.** Kontrakt zna tylko 409 `slug_taken` i 400
+   `invalid_request`; gateway odpowiada 400 `invalid_request` (409 `slug_taken` kazałby kreatorowi szukać innego sluga w
+   nieskończoność). Propozycja: 409 z kodem `virtual_server_limit_reached` (wzorzec `^[a-z][a-z0-9_]*$` pozwala) albo 429, plus
+   limit w opisie operacji, żeby kreator pokazał "usuń nieużywany link".
+6. **C8 `admin_change`: powody i lista narzędzi.** Gateway zapisuje `reason` ze słownika `vs_created`, `vs_deleted`,
+   `slug_taken`, `not_granted`, `invalid_request`, `virtual_server_limit`, `not_found_or_denied`; schemat opisuje `reason` jako
+   "known values" bez tych wpisów. Do dopisania w opisie pola. Pole z listą narzędzi linku (do pytania "kto utworzył link z
+   gitlab__*") nie istnieje; opcja: `resource`-podobne pole `tools` w `admin_change`, ograniczone wzorcem `QualifiedToolName`.
+7. **C5/README: tożsamość scrapera metryk.** Kontrakt nie mówi, kto czyta `/actuator/prometheus` ani jakim certyfikatem. Gateway
+   wymaga certyfikatu clientAuth z CA wewnętrznego i CN z `MCP_METRICS_CLIENT_CNS` (domyślnie pusta lista). Do ustalenia nazwa
+   (np. `mcp-prometheus`) i wydanie certyfikatu w `gen-certs.sh` (ws-01), jeśli metryki mają być zbierane w M2.
+8. Z M1 nadal otwarte: `prv` przed pierwszą paczką (CC-068 częściowo to adresuje), metody 2026-07-28 w regułach C2
    (CC-069 przyjęte, zaimplementowane w wektorach 2.1.0+).
 
 ## Czego potrzebują inni
@@ -157,7 +170,11 @@ nginx przed gateway'em (ws-01), prawdziwy broker z M2 (ws-06) na jego portach, k
   `gateway-admin-mock`, który ma ten sam alias) z certyfikatem `mcp-gateway`, a BFF dostać certyfikat
   `mcp-portal-bff` i zaufanie do CA. Proxy: `/s/`, `/v/` i `/.well-known/oauth-protected-resource*` na port 8080 gateway'a,
   na tych trasach usuwa `Cookie` i dokłada `nosniff` oraz CSP `default-src 'none'; sandbox` (`add_header ... always`);
-  gateway robi to samo sam, ale proxy jest w kontrakcie. Obraz zbudowany lokalnie: `mcp-gateway:m2-3cdc720` (drzewo `3cdc720`, kolejne commity tylko dokumentacja); nie uruchamiany w compose.
+  gateway robi to samo sam, ale proxy jest w kontrakcie. **Obraz dla ws-01: `mcp-gateway:m2-8dc1d7a`**, zbudowany lokalnie z jara po pełnym `./mvnw -B verify` na `8dc1d7a`
+  (kod i testy; kolejne commity zmieniają tylko `STATUS.md`); poprzedni `m2-3cdc720` nie ma poprawek CN/SAN (94afc7d) ani K4.
+  Nie uruchamiany w compose. Nowe zmienne (wszystkie z bezpiecznymi domyślnymi): `MCP_ADMIN_AUTHORIZED_PARTY` (`mcp-portal-bff`),
+  `MCP_ADMIN_REGISTRY_CLIENT_CNS`, `MCP_VIRTUAL_SERVERS_MAX_PER_USER` (50), `MCP_METRICS_CLIENT_CNS` (puste: `/actuator/prometheus`
+  odpowiada 401/403 każdemu; scraper potrzebuje certyfikatu clientAuth z CA wewnętrznego i jego CN na tej liście).
 - **ws-06 (broker):** bez zmian; `connectUrl` z 409 jest ignorowany przez gateway (patrz CC 2). `GET /v1/systems` jest
   wołane wariantem serwisowym przy starcie dla wszystkich pięciu systemów (ostrzeżenie w logu, gdy broker zna mniej).
 - **ws-04 / ws-02 (serwery, starter):** wywołania przez link niosą `vs` = slug i `vsc` = `{}` w JWT (wszystkie żądania
@@ -168,9 +185,29 @@ nginx przed gateway'em (ws-01), prawdziwy broker z M2 (ws-06) na jego portach, k
   pokazania w kreatorze; `title` narzędzi po polsku jest w konfiguracji gateway'a.
 - **ws-09 (polityki):** paczka polityk i mapowanie `overrides` potrzebne, zanim Cedar zastąpi grupy (M3).
 
+## Przegląd M2 (2026-10-28, Opus, 94afc7d): znaleziska i poprawki
+
+Raport: scratchpad/review-gateway-M2.md. 0 CRITICAL, 0 HIGH, 1 MEDIUM, 10 LOW. Poprawki w `8dc1d7a`.
+
+| Znalezisko | Status |
+| --- | --- |
+| MEDIUM-1 rejestr z `definitionHash`, Cedar `call` z paczką, `GET /admin/v1/activity`, odmowa startu bez paczki (CC-068) | **odroczone do M3** (decyzja koordynatora 2026-10-28, wiersz "Gateway M2 bez rejestru definicji" w tabeli decyzji STATUS.md planu; 00-overview: M3 = Cedar i dystrybucja paczek, M4 = przypinanie definicji). Nic z tego nie zaimplementowane. Do tego czasu: grupy C9 zamiast Cedar, `prv` = `00000000000000-0000000`, opisy narzędzi z konfiguracji (nie z `tools/list` serwera) idą do katalogu C5, ale `tools/list` na `/s/` i `/v/` nadal przekazuje definicję serwera bez porównania z zatwierdzoną; tanie zabezpieczenie z raportu (porównanie `description`/`inputSchema` z konfiguracją) nie zrobione, bo nie jest w zakresie decyzji |
+| LOW-1 brak limitu linków na użytkownika | poprawione: 50 (konfigurowalne), 400 `invalid_request` (C5 nie ma kodu; propozycja CC 5), zdarzenie audytu z powodem `virtual_server_limit`; testy: 50 + 1, limit per użytkownik, zwolnienie po DELETE, 16 równoległych POST przy 45 istniejących daje dokładnie 5 sukcesów |
+| LOW-2 409 `slug_taken` zdradza cudzy slug | bez zmian: tak stanowi kontrakt C5 (zgłoszone w przeglądzie jako uwaga do kontraktu) |
+| LOW-3 audyt `admin_change` | poprawione: powód `vs_created` / `vs_deleted` / `slug_taken` / `not_granted` / `invalid_request` / `virtual_server_limit` / `not_found_or_denied`, zdarzenia także dla 400, 403, 404, 409 (`deny`, `denied`, `errorCode` z C10 gdzie istnieje), slug w zdarzeniu tylko gdy zgodny ze wzorcem; testy sprawdzają każde zdarzenie schematem C8. Lista narzędzi linku w zdarzeniu: nie ma pola w C8 (propozycja CC 6) |
+| LOW-4 `azp` i `aud` tokenu C5 | poprawione: C5 wymaga `azp` = `mcp-portal-bff` (`MCP_ADMIN_AUTHORIZED_PARTY`) i odrzuca `aud` zawierające `mcp-gateway`; `/s/` i `/v/` odrzucają `aud` z `mcp-gateway-admin`. Sprawdzone na żywym Keycloaku: wymieniony token BFF ma `azp: mcp-portal-bff` |
+| LOW-5 jedna lista CN dla całego `/admin/v1` | poprawione: tabela operacja -> CN z `x-allowed-client-cn` (`AdminOperations`), operacja spoza tabeli to 403 dla każdego CN (także `/admin/v1/catalog/`, nieznany czasownik); zapis rejestru ma osobną listę `MCP_ADMIN_REGISTRY_CLIENT_CNS` |
+| LOW-6 brak odwołań i wspólny truststore klientów C5 | bez zmian, znane, M4 (osobny truststore, krótkie certyfikaty albo lista numerów); nie było na liście poprawek |
+| LOW-7 sesja do serwera wspólna dla `/s/` i linków | poprawione: klucz rozmowy zawiera cel (`serverId` albo `vs/<slug>`) w erze legacy i modern; DELETE sesji klienta zamyka sesje do serwera wszystkich endpointów; test sprawdza dwie różne sesje i `vs` w JWT |
+| LOW-8 `/actuator/prometheus` bez uwierzytelnienia, 405 na porcie publicznym | poprawione: Prometheus wymaga certyfikatu klienta z CA wewnętrznego i CN z `MCP_METRICS_CLIENT_CNS` (domyślnie nikt: 401 bez certyfikatu, 403 z cudzym); port publiczny daje 404 dla ścieżek wewnętrznych (JWKS, `/actuator*`, `/admin/v1*`) niezależnie od metody |
+| LOW-9 obraz bez poprawki CN/SAN | poprawione: `mcp-gateway:m2-8dc1d7a` z jara zbudowanego na `8dc1d7a` |
+| LOW-10 mutacje, które przeżyły | poprawione testami; mutacje sprawdzone po poprawce (czerwone testy): `disabled = !allowed` (AdminApiTest), DELETE sesji bez sprawdzenia `sub` (GatewayIntegrationTest; kod był poprawny, brakowało testu), klucz sesji bez celu (VirtualServerMcpTest). Filtr portu na `getRequestURI()`: `InternalPortFilterTest` (jednostkowy, status z filtra). Certyfikat CA jako liść: `ClientCertificateVerifierTest` (CA z EKU clientAuth i CN `mcp-portal-bff`) |
+
+Z przeglądu M1: LOW-8 (Prometheus bez uwierzytelnienia) zamknięte tą samą zmianą.
+
 ## Co zostało
 
-Cedar `call` z paczką i `prv`; rejestr manifestów z `definitionHash` i zatwierdzaniem; `activity`; `policy/status`;
+M3 (odroczone z M2, decyzja koordynatora 2026-10-28): Cedar `call` z paczką i `prv`; rejestr manifestów z `definitionHash` i zatwierdzaniem; `activity`; `policy/status`;
 potwierdzenia (M3, pivot 3.0.0); rate limit i HA (M4); zdarzenia audytu C1; obraz glibc; test z prawdziwym Claude Code
 i nginx w mcp-platform-dev.
 
