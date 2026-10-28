@@ -76,6 +76,27 @@ gateway:
     authorized-party: ${MCP_ADMIN_AUTHORIZED_PARTY:mcp-portal-bff}
     allowed-client-cns: ${MCP_ADMIN_CLIENT_CNS:mcp-portal-bff}
     registry-client-cns: ${MCP_ADMIN_REGISTRY_CLIENT_CNS:mcp-registry-ci}
+  # Signed policy bundles (C7). No start without a main bundle (CC-068). The key files are PEM public keys (Ed25519);
+  # identifiers starting with test- are accepted only with MCP_POLICY_ALLOW_TEST_KEYS=true (dev).
+  policy:
+    main-url: ${MCP_POLICY_MAIN_URL}
+    overrides-url: ${MCP_POLICY_OVERRIDES_URL:}
+    main-key-id: ${MCP_POLICY_MAIN_KEY_ID}
+    main-key-file: ${MCP_POLICY_MAIN_KEY_FILE}
+    overrides-key-id: ${MCP_POLICY_OVERRIDES_KEY_ID:}
+    overrides-key-file: ${MCP_POLICY_OVERRIDES_KEY_FILE:}
+    allow-test-keys: ${MCP_POLICY_ALLOW_TEST_KEYS:false}
+    state-dir: ${MCP_POLICY_STATE_DIR:}
+    minimum-main-revision: ${MCP_POLICY_MINIMUM_MAIN_REVISION:}
+    minimum-overrides-revision: ${MCP_POLICY_MINIMUM_OVERRIDES_REVISION:}
+    main-interval: ${MCP_POLICY_MAIN_INTERVAL:30s}
+    overrides-interval: ${MCP_POLICY_OVERRIDES_INTERVAL:5s}
+    startup-timeout: ${MCP_POLICY_STARTUP_TIMEOUT:2m}
+  registry:
+    mode: ${MCP_REGISTRY_MODE:required}
+    bootstrap-from-server: ${MCP_REGISTRY_BOOTSTRAP:true}
+  activity:
+    cursor-key: ${MCP_ACTIVITY_CURSOR_KEY:}
   virtual-servers:
     max-per-user: ${MCP_VIRTUAL_SERVERS_MAX_PER_USER:50}
   metrics:

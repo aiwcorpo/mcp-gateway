@@ -103,6 +103,21 @@ public class AdminController {
         return respond(HttpStatus.OK, requestId(request), body);
     }
 
+    /** The revision of the main bundle in force on this instance (C5 getPolicyStatus); other instances report themselves. */
+    @GetMapping("/policy/status")
+    public ResponseEntity<String> policyStatus(HttpServletRequest request) {
+        ObjectNode body = json.createObjectNode();
+        ObjectNode instance = body.putArray("instances").addObject();
+        instance.put("instanceId", componentId + "-" + instanceName());
+        instance.put("revision", authorizer.policyRevision() == null ? "00000000000000-0000000" : authorizer.policyRevision());
+        return respond(HttpStatus.OK, requestId(request), body);
+    }
+
+    private static String instanceName() {
+        String host = System.getenv("HOSTNAME");
+        return host == null || host.isBlank() ? "0" : host.replaceAll("[^A-Za-z0-9.-]", "");
+    }
+
     @GetMapping("/virtual-servers")
     public ResponseEntity<String> list(@AuthenticationPrincipal Jwt token, HttpServletRequest request) {
         ArrayNode body = json.createArrayNode();

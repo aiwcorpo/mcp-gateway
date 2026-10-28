@@ -38,5 +38,17 @@ export MCP_DB_URL=jdbc:postgresql://localhost:15432/gateway MCP_DB_USER=gateway 
 export MCP_TLS_KEYSTORE="$dev/certs/mcp-gateway/keystore.p12"
 export MCP_TLS_TRUSTSTORE="$dev/certs/ca/truststore.p12"
 export MCP_TLS_STORE_PASSWORD="$TLS_STORE_PASSWORD"
+# Signed policy bundles (ws-09): the bundle server of the dev stack (POLICIES_PORT, 18747) and the dev public keys of
+# mcp-policies. The gateway does not start without a main bundle.
+policies="${MCP_POLICIES_REPO:-$here/../mcp-policies}"
+export MCP_POLICY_MAIN_URL="${MCP_POLICY_MAIN_URL:-http://127.0.0.1:18747/policies/main/}"
+export MCP_POLICY_OVERRIDES_URL="${MCP_POLICY_OVERRIDES_URL:-http://127.0.0.1:18747/policies/overrides/}"
+export MCP_POLICY_MAIN_KEY_ID=test-policies-main-dev
+export MCP_POLICY_MAIN_KEY_FILE="$policies/keys/dev/test-policies-main-dev.public.pem"
+export MCP_POLICY_OVERRIDES_KEY_ID=test-policies-overrides-dev
+export MCP_POLICY_OVERRIDES_KEY_FILE="$policies/keys/dev/test-policies-overrides-dev.public.pem"
+export MCP_POLICY_ALLOW_TEST_KEYS=true
+export MCP_POLICY_STATE_DIR="${MCP_POLICY_STATE_DIR:-$here/gateway/target/policy-state}"
+mkdir -p "$MCP_POLICY_STATE_DIR"
 
 exec "${JAVA_HOME:+$JAVA_HOME/bin/}java" -jar "$jar"

@@ -52,23 +52,31 @@ public final class RegistryService {
         this.guard = guard;
     }
 
-    /** Takes the manifests stored by earlier runs; a stored manifest that no longer passes is ignored and logged. */
+    /**
+     * Takes the manifests stored by earlier runs. A stored manifest that no longer passes leaves its server without tools
+     * (fail-closed) until a new registration, and the risks it names still count for the floors.
+     */
     public void load() {
         for (RegistryStore.Stored stored : store.all()) {
             Optional<McpServer> server = servers.find(stored.serverId());
             if (server.isEmpty() || !server.get().approvalRequired()) {
                 continue;
             }
+            store.raiseFloors(stored.serverId(), lenientRisks(stored.manifest()));
             List<String> reasons = validator.violations(stored.manifest(), server.get());
             if (reasons.isEmpty()) {
                 take(validator.approved(stored.manifest()));
             } else {
-                log.error("stored manifest of {} is no longer acceptable: {}", stored.serverId(), reasons);
+                log.error("stored manifest of {} is no longer acceptable, the server has no tools: {}", stored.serverId(), reasons);
             }
         }
     }
 
     public Result register(String serverId, JsonNode manifest, String source) {
+        return write(serverId, manifest, source, false);
+    }
+
+    private Result write(String serverId, JsonNode manifest, String source, boolean insertOnly) {
         Optional<McpServer> server = servers.find(serverId);
         if (server.isEmpty()) {
             return new Result.UnknownServer();
@@ -76,25 +84,24 @@ public final class RegistryService {
         if (!server.get().approvalRequired()) {
             return new Result.Rejected(List.of("this server takes its tools from the gateway configuration"));
         }
-        List<String> reasons = new ArrayList<>(validator.violations(manifest, server.get()));
-        if (reasons.isEmpty()) {
-            ApprovedServer candidate = validator.approved(manifest);
-            ApprovedServer current = approved.get(serverId);
-            if (current != null) {
-                candidate.tools().forEach((name, tool) -> {
-                    ApprovedTool before = current.tools().get(name);
-                    if (before != null && Risk.valueOf(tool.risk()).ordinal() < Risk.valueOf(before.risk()).ordinal()) {
-                        reasons.add("the risk of tool " + name + " was lowered: that needs an approval");
-                    }
-                });
-            }
-            if (reasons.isEmpty()) {
-                store.save(serverId, manifest, source);
-                take(candidate);
-                return new Result.Accepted(candidate);
-            }
+        List<String> reasons = validator.violations(manifest, server.get());
+        if (!reasons.isEmpty()) {
+            return new Result.Rejected(reasons);
         }
-        return new Result.Rejected(List.copyOf(reasons));
+        ApprovedServer candidate = validator.approved(manifest);
+        Map<String, Integer> risks = new java.util.HashMap<>();
+        candidate.tools().forEach((name, tool) -> risks.put(name, Risk.valueOf(tool.risk()).ordinal()));
+        RegistryStore.Written written = store.write(serverId, manifest, source, risks, servers.configuredMinimumRisks(serverId),
+                insertOnly);
+        return switch (written) {
+            case RegistryStore.Written.Done done -> {
+                take(candidate);
+                yield new Result.Accepted(candidate);
+            }
+            case RegistryStore.Written.Lowered lowered -> new Result.Rejected(List.of("the risk of " + String.join(", ", lowered.tools())
+                    + " is lower than what was approved before: that needs an administrator"));
+            case RegistryStore.Written.AlreadyThere there -> new Result.Rejected(List.of("this server has an approved manifest"));
+        };
     }
 
     private void take(ApprovedServer server) {
@@ -107,20 +114,40 @@ public final class RegistryService {
         return Optional.ofNullable(approved.get(serverId));
     }
 
-    /** Servers that need an approved manifest and have none get the one they serve. Safe to call repeatedly. */
+    /**
+     * Servers that need a manifest and have no approval at all (no stored row, valid or not) get the one they serve. It is
+     * written insert-only: an approval that exists, or appears meanwhile, is never replaced by what a server says about itself.
+     */
     public void bootstrapMissing() {
         for (McpServer server : servers.requiringApproval()) {
-            if (approved.containsKey(server.serverId()) || !server.enabled()) {
+            if (approved.containsKey(server.serverId()) || !server.enabled() || store.find(server.serverId()).isPresent()) {
                 continue;
             }
             fetcher.fetch(server).ifPresent(manifest -> {
-                Result result = register(server.serverId(), manifest, "bootstrap");
+                Result result = write(server.serverId(), manifest, "bootstrap", true);
                 if (result instanceof Result.Rejected rejected) {
-                    log.error("manifest served by {} refused: {}", server.serverId(), rejected.reasons());
+                    log.error("manifest served by {} not taken: {}", server.serverId(), rejected.reasons());
                 } else {
                     log.info("manifest of {} taken as approved", server.serverId());
                 }
             });
         }
+    }
+
+    /** Risks named by a stored manifest, read without trusting its shape: whatever is readable counts. */
+    private static Map<String, Integer> lenientRisks(JsonNode manifest) {
+        Map<String, Integer> risks = new java.util.HashMap<>();
+        for (JsonNode tool : manifest.path("tools")) {
+            String name = tool.path("name").asString(null);
+            String risk = tool.path("risk").asString(null);
+            if (name != null && name.length() <= 64 && risk != null) {
+                try {
+                    risks.put(name, Risk.valueOf(risk).ordinal());
+                } catch (IllegalArgumentException e) {
+                    // not a risk of C6: nothing to raise
+                }
+            }
+        }
+        return risks;
     }
 }

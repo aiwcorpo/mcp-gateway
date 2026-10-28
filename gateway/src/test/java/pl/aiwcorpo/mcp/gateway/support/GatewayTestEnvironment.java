@@ -50,6 +50,9 @@ public final class GatewayTestEnvironment {
     public final TestMcpServer jira;
     public final TestMcpServer gitlab;
     public final TestMcpServer wrongName;
+    public final PolicyServer policies;
+    public final Path policyKeys;
+    public final Path policyState;
     public final GenericContainer<?> redis;
     public final GenericContainer<?> postgres;
     public final SSLContext gatewayClientTls;
@@ -97,6 +100,13 @@ public final class GatewayTestEnvironment {
         JwksKeySource gatewayKeys = new JwksKeySource(
                 URI.create("https://localhost:" + internalPort + "/.well-known/jwks.json"), trustOnly, Duration.ZERO);
 
+        policies = new PolicyServer();
+        policies.publishMain(TestBundles.main(TestBundles.revision(1), java.util.Map.of()));
+        policyKeys = Files.createDirectory(dir.resolve("policy-keys"));
+        Files.writeString(policyKeys.resolve("main.pem"), TestBundles.publicKeyPem("test-policy-bundle"));
+        Files.writeString(policyKeys.resolve("overrides.pem"), TestBundles.publicKeyPem("test-policy-overrides"));
+        policyState = Files.createDirectory(dir.resolve("policy-state"));
+
         idp = new TestIdp();
         broker = new BrokerStub(Tls.fromPkcs12(brokerKeystore, pki.truststore(), TestPki.PASSWORD), gatewayKeys);
         jira = new TestMcpServer(new TestMcpServer.Config("mcp-jira", "/mcp", "https://mcp-gateway.internal", false, null,
@@ -140,6 +150,17 @@ public final class GatewayTestEnvironment {
         registry.add("gateway.oidc.issuer", () -> TestIdp.ISSUER);
         registry.add("gateway.oidc.jwks-uri", idp::jwksUri);
         registry.add("gateway.oidc.token-uri", idp::tokenUri);
+        registry.add("gateway.policy.main-url", policies::mainUrl);
+        registry.add("gateway.policy.overrides-url", policies::overridesUrl);
+        registry.add("gateway.policy.main-key-id", () -> "test-policy-bundle");
+        registry.add("gateway.policy.main-key-file", () -> policyKeys.resolve("main.pem").toString());
+        registry.add("gateway.policy.overrides-key-id", () -> "test-policy-overrides");
+        registry.add("gateway.policy.overrides-key-file", () -> policyKeys.resolve("overrides.pem").toString());
+        registry.add("gateway.policy.allow-test-keys", () -> "true");
+        registry.add("gateway.policy.state-dir", policyState::toString);
+        registry.add("gateway.policy.main-interval", () -> "300ms");
+        registry.add("gateway.policy.overrides-interval", () -> "200ms");
+        registry.add("gateway.policy.startup-timeout", () -> "10s");
         registry.add("gateway.oidc.jwks-retry-interval", () -> "1s");
         registry.add("gateway.audit.certificate-rejection-interval", () -> "1s");
         registry.add("gateway.oidc.client-id", () -> "mcp-gateway");

@@ -1,20 +1,19 @@
-package pl.aiwcorpo.mcp.gateway.authz;
+package pl.aiwcorpo.mcp.gateway.support;
 
 import java.util.List;
 
 import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
+import pl.aiwcorpo.mcp.gateway.authz.ToolAuthorizer;
+import pl.aiwcorpo.mcp.gateway.authz.ToolDecision;
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
 import pl.aiwcorpo.mcp.gateway.server.ToolDefinition;
+import tools.jackson.databind.JsonNode;
 
-/**
- * Stand-in for the Cedar evaluation: the C9 group {@code mcp-<system>-read|write|destructive} by risk. A DESTRUCTIVE
- * tool is allowed for the group and still waits for the code of the authenticator (C11). A disabled server or tool
- * is denied first. Deny is the default (invariant 6).
- */
-public final class GroupToolAuthorizer implements ToolAuthorizer {
+/** The group rule of the example policies as a plain function, for unit tests that need an authorizer but not Cedar. */
+public final class GroupRulesAuthorizer implements ToolAuthorizer {
 
     @Override
-    public ToolDecision decide(GatewayUser user, McpServer server, ToolDefinition tool) {
+    public ToolDecision decide(GatewayUser user, McpServer server, ToolDefinition tool, JsonNode arguments, String virtualSlug) {
         if (!server.enabled() || tool.disabled()) {
             return ToolDecision.deny("tool_disabled", List.of());
         }

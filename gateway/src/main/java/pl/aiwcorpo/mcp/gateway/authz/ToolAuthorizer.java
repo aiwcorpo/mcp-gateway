@@ -5,18 +5,29 @@ import java.util.List;
 import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
 import pl.aiwcorpo.mcp.gateway.server.ToolDefinition;
+import tools.jackson.databind.JsonNode;
 
 /**
- * Tool-level authorization before a call, for the tools/list filter, the catalog and the creation of virtual
- * servers. A later Cedar {@code call} evaluation from the policy bundle replaces the implementation; callers stay.
+ * Tool-level authorization (C7): the Cedar {@code call} evaluation from the policy bundle. Used for the tools/list filter, the
+ * catalog and the creation of virtual servers (no arguments, so no resource references), and before every call (with the
+ * arguments and the link). Deny is the default, and any failure to decide is a deny (invariant 6).
  */
 public interface ToolAuthorizer {
 
-    ToolDecision decide(GatewayUser user, McpServer server, ToolDefinition tool);
+    /** Without arguments and without a link: whether the caller may call this tool at all. */
+    default ToolDecision decide(GatewayUser user, McpServer server, ToolDefinition tool) {
+        return decide(user, server, tool, null, null);
+    }
 
-    /** Groups (C9) that grant the tool according to the policy; shown in the catalog and in access_denied. */
+    /**
+     * Before a call. {@code arguments} give the resources named by the tool's {@code resourceRefs}; {@code virtualSlug} is the
+     * link the call came through, or null.
+     */
+    ToolDecision decide(GatewayUser user, McpServer server, ToolDefinition tool, JsonNode arguments, String virtualSlug);
+
+    /** Groups (C9) that usually grant the tool; shown in the catalog and in access_denied. Informational: the policy decides. */
     List<String> requiredEntitlements(McpServer server, ToolDefinition tool);
 
-    /** Revision of the policies used, for {@code prv} (C2) and {@code policyRevision} (C8); null without a bundle. */
+    /** Revision of the main policy bundle in force, for {@code prv} (C2) and {@code policyRevision} (C8); null before the first. */
     String policyRevision();
 }

@@ -41,7 +41,9 @@ import pl.aiwcorpo.mcp.gateway.confirm.ConfirmationStore;
 import pl.aiwcorpo.mcp.gateway.confirm.RedisConfirmationStore;
 import pl.aiwcorpo.mcp.gateway.auth.PublicUrls;
 import pl.aiwcorpo.mcp.gateway.auth.ResourceMetadata;
-import pl.aiwcorpo.mcp.gateway.authz.GroupToolAuthorizer;
+import pl.aiwcorpo.mcp.gateway.authz.CedarToolAuthorizer;
+import pl.aiwcorpo.mcp.gateway.policy.BundleFetcher;
+import pl.aiwcorpo.mcp.gateway.policy.PolicyService;
 import pl.aiwcorpo.mcp.gateway.authz.ToolAuthorizer;
 import pl.aiwcorpo.mcp.gateway.broker.BrokerClient;
 import pl.aiwcorpo.mcp.gateway.broker.CredentialCache;
@@ -160,8 +162,19 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    ToolAuthorizer toolAuthorizer() {
-        return new GroupToolAuthorizer();
+    BundleFetcher bundleFetcher() {
+        return new BundleFetcher();
+    }
+
+    /** Does not return before a signed main bundle is loaded: the gateway has no start without policies (CC-068). */
+    @Bean
+    PolicyService policyService(GatewayProperties properties, BundleFetcher fetcher, MeterRegistry meters) {
+        return new PolicyService(properties.policy(), fetcher, meters).start();
+    }
+
+    @Bean
+    ToolAuthorizer toolAuthorizer(PolicyService policies, JsonMapper gatewayJson) {
+        return new CedarToolAuthorizer(policies, gatewayJson);
     }
 
     @Bean
@@ -349,8 +362,8 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    RegistryStore registryStore(JdbcClient jdbc, JsonMapper gatewayJson) {
-        return new RegistryStore(jdbc, gatewayJson);
+    RegistryStore registryStore(JdbcClient jdbc, JsonMapper gatewayJson, PlatformTransactionManager transactions) {
+        return new RegistryStore(jdbc, gatewayJson, transactions);
     }
 
     @Bean

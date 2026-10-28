@@ -43,6 +43,7 @@ public record GatewayProperties(
         @DefaultValue @Valid Confirmations confirmations,
         @DefaultValue @Valid Activity activity,
         @DefaultValue @Valid Registry registry,
+        @Valid @NotNull Policy policy,
         @DefaultValue("00000000000000-0000000") @Pattern(regexp = "^[0-9]{14}-[0-9a-f]{7}$") String policyRevision,
         /* Dev only: allows http for the IdP token endpoint (token exchange); never for the broker or servers. */
         @DefaultValue("false") boolean allowPlainHttp,
@@ -145,6 +146,31 @@ public record GatewayProperties(
     public record Confirmations(
             /* Pending confirmations of a risk other than DESTRUCTIVE (required by policy) per user. */
             @DefaultValue("3") @Min(1) int pendingLimit) {
+    }
+
+    /**
+     * Where the signed policy bundles come from (C7). The gateway does not start without a main bundle (CC-068). Keys are PEM
+     * files of the Ed25519 public keys; identifiers starting with {@code test-} need {@code allowTestKeys} (CC-044).
+     */
+    public record Policy(
+            @NotNull URI mainUrl,
+            URI overridesUrl,
+            @NotBlank String mainKeyId,
+            @NotBlank String mainKeyFile,
+            String overridesKeyId,
+            String overridesKeyFile,
+            @DefaultValue("false") boolean allowTestKeys,
+            /* Directory of the rollback protection state (CC-066), one per instance; empty = in memory only. */
+            String stateDir,
+            /* Lowest revision ever accepted per channel (raised after an incident); empty = none. */
+            String minimumMainRevision,
+            String minimumOverridesRevision,
+            @DefaultValue("30s") Duration mainInterval,
+            @DefaultValue("5s") Duration overridesInterval,
+            /* How long the start waits for the main bundle before the gateway gives up. */
+            @DefaultValue("2m") Duration startupTimeout,
+            /* After a restart with an overrides bundle active: how long to wait for it before an alarm and serving anyway. */
+            @DefaultValue("1m") Duration overridesGrace) {
     }
 
     /** Approved definitions of the servers (C6). */

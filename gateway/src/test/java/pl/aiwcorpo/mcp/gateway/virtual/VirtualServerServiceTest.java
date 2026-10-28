@@ -22,7 +22,6 @@ import org.springframework.http.HttpStatus;
 
 import pl.aiwcorpo.mcp.gateway.admin.AdminException;
 import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
-import pl.aiwcorpo.mcp.gateway.authz.GroupToolAuthorizer;
 import pl.aiwcorpo.mcp.gateway.config.GatewayProperties;
 import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
 import tools.jackson.databind.JsonNode;
@@ -36,7 +35,7 @@ class VirtualServerServiceTest {
     private final ServerRegistry registry = new ServerRegistry(Map.of(
             "mcp-jira", server("jira", "https://mcp-jira.internal:8443/mcp", Map.of("get_issue", tool("READ_ONLY"), "add_comment", tool("UPDATE"))),
             "mcp-gitlab", server("gitlab", "https://mcp-gitlab.internal:8443/mcp", Map.of("get_issue", tool("READ_ONLY")))), "static");
-    private final VirtualServerService service = new VirtualServerService(store, registry, new GroupToolAuthorizer(), 2);
+    private final VirtualServerService service = new VirtualServerService(store, registry, new pl.aiwcorpo.mcp.gateway.support.GroupRulesAuthorizer(), 2);
     private final GatewayUser reader = new GatewayUser("sub-reader", "reader", "mcp-portal-bff", List.of("mcp-jira-read"), "t");
 
     @Test

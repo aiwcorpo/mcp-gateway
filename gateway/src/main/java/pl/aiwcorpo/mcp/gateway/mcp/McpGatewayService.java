@@ -259,14 +259,26 @@ public class McpGatewayService {
         }
         McpServer server = resolved.get().server();
         ToolDefinition tool = resolved.get().tool();
-        ToolDecision decision = authorizer.decide(ctx.user(), server, tool);
+        ToolDecision decision = authorizer.decide(ctx.user(), server, tool, arguments, ctx.target().virtualSlug());
         if (!decision.allowed()) {
-            decisionEvent(ctx, server, tool, "deny", decision.reason(),
-                    "tool_disabled".equals(decision.reason()) ? "tool_disabled" : "access_denied");
-            ObjectNode error = "tool_disabled".equals(decision.reason())
-                    ? errors.error("tool_disabled", "This tool is not available.")
-                    : errors.error("access_denied", "You are not allowed to use this tool.",
-                            Map.of("requiredEntitlements", decision.requiredEntitlements()));
+            String code = switch (decision.reason()) {
+                case "tool_disabled" -> "tool_disabled";
+                case "invalid_argument" -> "invalid_argument";
+                case "policy_unavailable" -> "upstream_unavailable";
+                case "policy_error" -> "internal_error";
+                default -> "access_denied";
+            };
+            decisionEvent(ctx, server, tool, "deny", decision.reason(), code);
+            ObjectNode error = switch (code) {
+                case "tool_disabled" -> errors.error("tool_disabled", "This tool is not available.");
+                case "invalid_argument" -> errors.error("invalid_argument", "An argument does not fit the resource it names.");
+                case "upstream_unavailable" -> errors.error("upstream_unavailable", "The policy service is unavailable. Try again later.");
+                case "internal_error" -> errors.error("internal_error", "The call could not be completed.");
+                default -> decision.requiredEntitlements().isEmpty()
+                        ? errors.error("access_denied", "You are not allowed to use this tool.")
+                        : errors.error("access_denied", "You are not allowed to use this tool.",
+                                Map.of("requiredEntitlements", decision.requiredEntitlements()));
+            };
             return finish(ctx, server, tool, null, started, argsLength, "deny", decision.reason(), null, error);
         }
         try {

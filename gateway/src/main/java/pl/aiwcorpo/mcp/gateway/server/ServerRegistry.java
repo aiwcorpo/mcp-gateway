@@ -60,6 +60,22 @@ public final class ServerRegistry {
         return List.copyOf(servers.values());
     }
 
+    /** Risk ordinal per tool that the configuration names: a manifest may not go below it (fail-closed on a lower risk). */
+    public Map<String, Integer> configuredMinimumRisks(String serverId) {
+        GatewayProperties.Server configured = config.get(serverId);
+        Map<String, Integer> minimum = new LinkedHashMap<>();
+        if (configured != null) {
+            configured.tools().forEach((name, tool) -> {
+                try {
+                    minimum.put(name, Risk.valueOf(tool.risk()).ordinal());
+                } catch (IllegalArgumentException e) {
+                    throw new IllegalStateException("gateway.servers." + serverId + ".tools." + name + ".risk: " + tool.risk());
+                }
+            });
+        }
+        return minimum;
+    }
+
     /** Servers whose tools wait for an approved manifest, or have one. */
     public List<McpServer> requiringApproval() {
         return servers.values().stream().filter(McpServer::approvalRequired).toList();
