@@ -26,8 +26,10 @@ public final class InternalPortFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         boolean internal = request.getLocalPort() == internalPort;
-        String path = request.getRequestURI();
-        boolean internalPath = path.startsWith("/admin/v1/") || "GET".equals(request.getMethod())
+        // The decoded and normalised path (what routing and security see), not the raw URI: "//admin/v1/x" and
+        // "/%61dmin/v1/x" must not slip past a prefix test on the public port.
+        String path = request.getServletPath();
+        boolean internalPath = path.equals("/admin/v1") || path.startsWith("/admin/v1/") || "GET".equals(request.getMethod())
                 && (JwksController.PATH.equals(path) || "/actuator/health".equals(path) || "/actuator/prometheus".equals(path));
         if (internal != internalPath) {
             response.sendError(HttpServletResponse.SC_NOT_FOUND);

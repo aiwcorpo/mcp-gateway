@@ -148,9 +148,10 @@ class PublicEdgeTest extends GatewayTestBase {
         for (String path : List.of("/.well-known/oauth-protected-resource/elsewhere", "/.well-known/oauth-protected-resource/s/mcp-jira",
                 "/.well-known/oauth-protected-resource/s/mcp-jira/mcp/extra", "/.well-known/oauth-protected-resource/v/Bad_Slug/mcp",
                 "/.well-known/oauth-protected-resource/admin/v1/catalog", "/.well-known/oauth-protected-resource/s/../v/x/mcp",
-                "/.well-known/oauth-protected-resourcex")) {
+                "/.well-known/oauth-protected-resourcex", "/%2ewell-known/oauth-protected-resource/elsewhere",
+                "/.well-known//oauth-protected-resource/elsewhere")) {
             Reply reply = raw("GET " + path, Map.of(), null);
-            assertThat(reply.status).as(path).isEqualTo(404);
+            assertThat(reply.status).as(path).isIn(400, 404);
             assertThat(reply.body).as(path).doesNotContain("resource\"");
         }
     }

@@ -61,11 +61,13 @@ class AdminApiTest extends GatewayTestBase {
     @Test
     void adminApiIsNotOnThePublicPort() throws Exception {
         String token = env.idp.token(ALICE_SUB, "alice", ALICE_GROUPS, "mcp-gateway-admin", "mcp-portal-bff");
-        for (String path : List.of("/admin/v1/catalog", "/admin/v1/virtual-servers", "/s/../admin/v1/catalog",
-                "/s/%2e%2e/admin/v1/catalog", "/v/x/mcp/../../../admin/v1/catalog")) {
+        for (String path : List.of("/admin/v1/catalog", "/admin/v1/virtual-servers", "/admin/v1", "/s/../admin/v1/catalog",
+                "/s/%2e%2e/admin/v1/catalog", "/v/x/mcp/../../../admin/v1/catalog", "//admin/v1/catalog", "/%61dmin/v1/catalog",
+                "/admin//v1/catalog", "/./admin/v1/catalog", "/admin/v1/catalog/", "/admin/v1/virtual-servers;x=1",
+                "/ADMIN/v1/catalog")) {
             HttpResponse<String> response = http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
                     .header("Authorization", "Bearer " + token).build(), HttpResponse.BodyHandlers.ofString());
-            assertThat(response.statusCode()).as(path).isIn(400, 404);
+            assertThat(response.statusCode()).as(path).isIn(400, 401, 404);
             assertThat(response.body()).as(path).doesNotContain("servers");
         }
     }

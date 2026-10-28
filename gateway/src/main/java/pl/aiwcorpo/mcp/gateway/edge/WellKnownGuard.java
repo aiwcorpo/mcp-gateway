@@ -25,7 +25,7 @@ public final class WellKnownGuard extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        String path = request.getRequestURI();
+        String path = request.getServletPath();
         if (path.startsWith(ResourceMetadata.WELL_KNOWN) && !metadata.isMetadataPath(path)) {
             response.sendError(HttpServletResponse.SC_NOT_FOUND);
             return;
