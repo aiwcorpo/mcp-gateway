@@ -57,6 +57,13 @@ class ClientCertificateVerifierTest {
     }
 
     @Test
+    void aCaCertificateIsNeverAcceptedAsAClientEvenWithTheClientAuthPurpose() throws Exception {
+        X509Certificate[] ca = chain(pki.issue("ca-as-leaf.p12", "mcp-portal-bff", List.of(), false, true, true));
+        assertThat(ca[0].getBasicConstraints()).as("the fixture really is a CA certificate").isNotEqualTo(-1);
+        assertThat(verifier.verified(ca, Instant.now())).isEmpty();
+    }
+
+    @Test
     void aCertificateClaimingTheCaNameButSignedByAnotherKeyIsRejected() throws Exception {
         X509Certificate[] fake = chain(foreign.issue("fake.p12", "mcp-portal-bff", List.of(), false, true));
         X509Certificate[] withOwnCaAppended = {fake[0], chain(pki.issue("x.p12", "x", List.of(), false, true))[1]};

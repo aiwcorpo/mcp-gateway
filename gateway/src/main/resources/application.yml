@@ -73,7 +73,13 @@ gateway:
     port: ${MCP_INTERNAL_PORT:8443}
   admin:
     audience: ${MCP_ADMIN_AUDIENCE:mcp-gateway-admin}
+    authorized-party: ${MCP_ADMIN_AUTHORIZED_PARTY:mcp-portal-bff}
     allowed-client-cns: ${MCP_ADMIN_CLIENT_CNS:mcp-portal-bff}
+    registry-client-cns: ${MCP_ADMIN_REGISTRY_CLIENT_CNS:mcp-registry-ci}
+  virtual-servers:
+    max-per-user: ${MCP_VIRTUAL_SERVERS_MAX_PER_USER:50}
+  metrics:
+    allowed-client-cns: ${MCP_METRICS_CLIENT_CNS:}
   tls:
     keystore: ${MCP_TLS_KEYSTORE}
     truststore: ${MCP_TLS_TRUSTSTORE}

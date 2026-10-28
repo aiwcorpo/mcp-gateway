@@ -59,6 +59,12 @@ public final class TestPki {
 
     /** Keystore with a certificate CN={@code cn}, the given DNS/IP SANs and EKU server and/or client auth. */
     public Path issue(String file, String cn, List<String> dnsNames, boolean serverAuth, boolean clientAuth) throws Exception {
+        return issue(file, cn, dnsNames, serverAuth, clientAuth, false);
+    }
+
+    /** As above; {@code ca} marks the certificate as a CA (basicConstraints), which no client may present as its own. */
+    public Path issue(String file, String cn, List<String> dnsNames, boolean serverAuth, boolean clientAuth, boolean ca)
+            throws Exception {
         KeyPair keys = keyPair();
         X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(new X500Name("CN=test-internal-ca"), serial(),
                 Date.from(Instant.now().minusSeconds(60)), Date.from(Instant.now().plus(Duration.ofDays(1))),
@@ -68,7 +74,7 @@ public final class TestPki {
         if (sans.length > 0) {
             builder.addExtension(Extension.subjectAlternativeName, false, new GeneralNames(sans));
         }
-        builder.addExtension(Extension.basicConstraints, true, new BasicConstraints(false));
+        builder.addExtension(Extension.basicConstraints, true, new BasicConstraints(ca));
         builder.addExtension(Extension.keyUsage, true, new KeyUsage(KeyUsage.digitalSignature));
         List<KeyPurposeId> purposes = new java.util.ArrayList<>();
         if (serverAuth) {

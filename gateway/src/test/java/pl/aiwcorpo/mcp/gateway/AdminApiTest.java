@@ -8,8 +8,10 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.system.CapturedOutput;
 
 import pl.aiwcorpo.mcp.gateway.support.Contracts;
 import pl.aiwcorpo.mcp.gateway.support.GatewayTestEnvironment;
@@ -47,6 +49,45 @@ class AdminApiTest extends GatewayTestBase {
         assertThat(wrongAudience.statusCode()).as("a token for MCP clients is not an admin token").isEqualTo(401);
         String brokerToken = env.idp.token(ALICE_SUB, "alice", ALICE_GROUPS, "mcp-credential-broker", "mcp-portal-bff");
         assertThat(admin(env.bffTls, "GET", "/admin/v1/catalog", brokerToken, null).statusCode()).isEqualTo(401);
+    }
+
+    @Test
+    void theAdminTokenMustBeIssuedToTheBffAndNamesOnlyTheAdminAudience() throws Exception {
+        assertThat(admin(env.bffTls, "GET", "/admin/v1/catalog",
+                env.idp.token(ALICE_SUB, "alice", ALICE_GROUPS, "mcp-gateway-admin", "claude-code"), null).statusCode())
+                .as("another client asked for the admin audience").isEqualTo(401);
+        assertThat(admin(env.bffTls, "GET", "/admin/v1/catalog", env.idp.token(ALICE_SUB, "alice", ALICE_GROUPS,
+                List.of("mcp-gateway-admin", "mcp-gateway"), "mcp-portal-bff"), null).statusCode())
+                .as("a token that is also an MCP token").isEqualTo(401);
+        assertThat(admin(env.bffTls, "GET", "/admin/v1/catalog", env.idp.token(ALICE_SUB, "alice", ALICE_GROUPS,
+                List.of("mcp-gateway-admin", "mcp-credential-broker"), "mcp-portal-bff"), null).statusCode())
+                .as("other audiences next to the admin one are not a problem").isEqualTo(200);
+
+        assertThat(send(env.idp.token(ALICE_SUB, "alice", ALICE_GROUPS, List.of("mcp-gateway", "mcp-gateway-admin"),
+                "claude-code"), "/s/mcp-jira/mcp", initializeBody(), Map.of()).statusCode())
+                .as("an admin token does not open the MCP endpoints").isEqualTo(401);
+    }
+
+    @Test
+    void certificateNamesAreCheckedPerOperation() throws Exception {
+        String token = env.idp.token(ALICE_SUB, "alice", ALICE_GROUPS, "mcp-gateway-admin", "mcp-portal-bff");
+        assertThat(admin(env.otherComponentTls, "GET", "/admin/v1/virtual-servers", token, null).statusCode())
+                .as("registry CI may not list links").isEqualTo(403);
+        assertThat(admin(env.otherComponentTls, "POST", "/admin/v1/virtual-servers", token,
+                "{\"slug\":\"ci-link\",\"displayName\":\"x\",\"tools\":[\"jira__get_issue\"]}").statusCode()).isEqualTo(403);
+        assertThat(JSON.readTree(admin("GET", "/admin/v1/virtual-servers", ALICE_SUB, "alice", ALICE_GROUPS, null).body()).size())
+                .as("and created nothing").isZero();
+
+        assertThat(admin(env.bffTls, "PUT", "/admin/v1/registry/servers/mcp-jira", token, "{}").statusCode())
+                .as("the BFF may not write manifests").isEqualTo(403);
+        assertThat(admin(env.otherComponentTls, "PUT", "/admin/v1/registry/servers/mcp-jira", token, "{}").statusCode())
+                .as("registry CI passes the certificate check; the operation itself is not served yet").isNotEqualTo(403);
+
+        for (String path : List.of("/admin/v1/nothing", "/admin/v1", "/admin/v1/catalog/", "/admin/v1/virtual-servers/x/y")) {
+            assertThat(admin(env.bffTls, "GET", path, token, null).statusCode()).as(path).isEqualTo(403);
+        }
+        assertThat(admin(env.bffTls, "PATCH", "/admin/v1/catalog", token, "{}").statusCode()).as("a method the contract lacks")
+                .isEqualTo(403);
     }
 
     @Test
@@ -109,6 +150,8 @@ class AdminApiTest extends GatewayTestBase {
         assertThat(delete.path("requiredEntitlements").toString()).isEqualTo("[\"mcp-jira-destructive\"]");
 
         assertThat(tool(server(catalog, "mcp-gitlab"), "gitlab__get_issue").path("access").asString()).isEqualTo("denied");
+        assertThat(tool(server(catalog, "mcp-gitlab"), "gitlab__get_issue").path("disabled").asBoolean(true))
+                .as("denied for lack of a group is not disabled: the portal offers to ask for access").isFalse();
         assertThat(tool(server(catalog, "mcp-confluence"), "confluence__search_issues").path("access").asString())
                 .isEqualTo("granted");
         assertThat(tool(server(catalog, "mcp-confluence"), "confluence__search_issues").has("title")).isFalse();
@@ -278,6 +321,110 @@ class AdminApiTest extends GatewayTestBase {
                 .header("Authorization", "Bearer " + token).header("X-Request-Id", "not\"a-uuid").build(),
                 HttpResponse.BodyHandlers.ofString());
         assertThat(replaced.headers().firstValue("X-Request-Id").orElse("")).isNotEqualTo("not\"a-uuid").matches("^[0-9a-f-]{36}$");
+    }
+
+    @Test
+    void aUserOwnsAtMostFiftyLinks() throws Exception {
+        List<String> tools = List.of("jira__get_issue");
+        for (int i = 0; i < 50; i++) {
+            assertThat(createLink(BOB_SUB, "bob", BOB_GROUPS, "link-" + i, "Link " + i, tools).statusCode()).as("link " + i).isEqualTo(201);
+        }
+        HttpResponse<String> over = createLink(BOB_SUB, "bob", BOB_GROUPS, "link-50", "One too many", tools);
+        assertThat(over.statusCode()).isEqualTo(400);
+        assertThat(JSON.readTree(over.body()).path("error").asString()).isEqualTo("invalid_request");
+        assertThat(JSON.readTree(admin("GET", "/admin/v1/virtual-servers", BOB_SUB, "bob", BOB_GROUPS, null).body()).size())
+                .isEqualTo(50);
+        assertThat(createLink(ALICE_SUB, "alice", ALICE_GROUPS, "alice-link", "Alice", tools).statusCode())
+                .as("the limit is per user").isEqualTo(201);
+
+        assertThat(admin("DELETE", "/admin/v1/virtual-servers/link-7", BOB_SUB, "bob", BOB_GROUPS, null).statusCode()).isEqualTo(204);
+        assertThat(createLink(BOB_SUB, "bob", BOB_GROUPS, "link-50", "Fits again", tools).statusCode()).isEqualTo(201);
+    }
+
+    @Test
+    void concurrentCreatesCannotOvershootTheLimit() throws Exception {
+        List<String> tools = List.of("jira__get_issue");
+        for (int i = 0; i < 45; i++) {
+            assertThat(createLink(BOB_SUB, "bob", BOB_GROUPS, "pre-" + i, "Pre " + i, tools).statusCode()).isEqualTo(201);
+        }
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(16)) {
+            List<java.util.concurrent.Future<Integer>> results = new ArrayList<>();
+            for (int i = 0; i < 16; i++) {
+                String slug = "race-" + i;
+                results.add(pool.submit(() -> createLink(BOB_SUB, "bob", BOB_GROUPS, slug, slug, tools).statusCode()));
+            }
+            int created = 0;
+            for (var result : results) {
+                created += result.get() == 201 ? 1 : 0;
+            }
+            assertThat(created).isEqualTo(5);
+        }
+        assertThat(JSON.readTree(admin("GET", "/admin/v1/virtual-servers", BOB_SUB, "bob", BOB_GROUPS, null).body()).size())
+                .isEqualTo(50);
+    }
+
+    @Test
+    void everyAdminChangeIsAuditedWithItsOutcome(CapturedOutput output) throws Exception {
+        String token = env.idp.token(ALICE_SUB, "alice", ALICE_GROUPS, "mcp-gateway-admin", "mcp-portal-bff");
+        String good = "{\"slug\":\"audited\",\"displayName\":\"x\",\"tools\":[\"jira__get_issue\"]}";
+
+        JsonNode created = onlyEvent(output, change("POST", "/admin/v1/virtual-servers", token, good), 201);
+        assertThat(created.path("virtualServer").asString()).isEqualTo("audited");
+        assertThat(created.path("decision").asString()).isEqualTo("allow");
+        assertThat(created.path("reason").asString()).isEqualTo("vs_created");
+        assertThat(created.path("outcome").asString()).isEqualTo("ok");
+        assertThat(created.path("sub").asString()).isEqualTo(ALICE_SUB);
+
+        JsonNode taken = onlyEvent(output, change("POST", "/admin/v1/virtual-servers", token, good), 409);
+        assertThat(taken.path("decision").asString()).isEqualTo("deny");
+        assertThat(taken.path("reason").asString()).isEqualTo("slug_taken");
+        assertThat(taken.path("outcome").asString()).isEqualTo("denied");
+
+        JsonNode refused = onlyEvent(output, change("POST", "/admin/v1/virtual-servers", token,
+                "{\"slug\":\"refused\",\"displayName\":\"x\",\"tools\":[\"jira__delete_issue\"]}"), 403);
+        assertThat(refused.path("reason").asString()).isEqualTo("not_granted");
+        assertThat(refused.path("errorCode").asString()).isEqualTo("access_denied");
+        assertThat(refused.path("virtualServer").asString()).isEqualTo("refused");
+
+        JsonNode malformed = onlyEvent(output, change("POST", "/admin/v1/virtual-servers", token, "{\"slug\":\"Bad Slug\"}"), 400);
+        assertThat(malformed.path("reason").asString()).isEqualTo("invalid_request");
+        assertThat(malformed.path("errorCode").asString()).isEqualTo("invalid_argument");
+        assertThat(malformed.has("virtualServer")).as("an invalid slug is not copied into the log").isFalse();
+
+        JsonNode unknown = onlyEvent(output, change("DELETE", "/admin/v1/virtual-servers/nobody-has-this", token, null), 404);
+        assertThat(unknown.path("reason").asString()).isEqualTo("not_found_or_denied");
+        assertThat(unknown.path("decision").asString()).isEqualTo("deny");
+
+        String bobToken = env.idp.token(BOB_SUB, "bob", BOB_GROUPS, "mcp-gateway-admin", "mcp-portal-bff");
+        JsonNode foreign = onlyEvent(output, change("DELETE", "/admin/v1/virtual-servers/audited", bobToken, null), 404);
+        assertThat(foreign.path("sub").asString()).isEqualTo(BOB_SUB);
+        assertThat(foreign.path("reason").asString()).isEqualTo("not_found_or_denied");
+
+        JsonNode deleted = onlyEvent(output, change("DELETE", "/admin/v1/virtual-servers/audited", token, null), 204);
+        assertThat(deleted.path("reason").asString()).isEqualTo("vs_deleted");
+        assertThat(deleted.path("decision").asString()).isEqualTo("allow");
+    }
+
+    private record Change(String requestId, HttpResponse<String> response) {
+    }
+
+    private Change change(String method, String path, String token, String body) throws Exception {
+        String requestId = pl.aiwcorpo.mcp.gateway.jwt.UuidV7.next();
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create("https://localhost:" + env.internalPort + path))
+                .header("Authorization", "Bearer " + token).header("Content-Type", "application/json").header("X-Request-Id", requestId)
+                .method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body));
+        return new Change(requestId, HttpClient.newBuilder().sslContext(env.bffTls).build()
+                .send(builder.build(), HttpResponse.BodyHandlers.ofString()));
+    }
+
+    private static JsonNode onlyEvent(CapturedOutput output, Change change, int status) {
+        assertThat(change.response().statusCode()).isEqualTo(status);
+        List<JsonNode> events = auditEvents(output, change.requestId());
+        assertThat(events).hasSize(1);
+        JsonNode event = events.get(0);
+        assertThat(event.path("event").asString()).isEqualTo("admin_change");
+        assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", event)).isEmpty();
+        return event;
     }
 
     private static JsonNode server(JsonNode catalog, String serverId) {

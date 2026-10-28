@@ -213,6 +213,31 @@ class VirtualServerMcpTest extends GatewayTestBase {
         assertThat(call.body()).doesNotContain("localhost:18090");
     }
 
+    @Test
+    void oneClientSessionGetsASeparateServerSessionPerEndpoint() throws Exception {
+        link("own-session", List.of("jira__get_issue"));
+        String token = aliceToken();
+        String session = initialize(token, "2025-11-25");
+        Map<String, String> headers = Map.of("Mcp-Session-Id", session, "MCP-Protocol-Version", "2025-11-25");
+        String list = "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/list\"}";
+        assertThat(send(token, "/s/mcp-jira/mcp", list, headers).statusCode()).isEqualTo(200);
+        assertThat(send(token, "/v/own-session/mcp", list, headers).statusCode()).isEqualTo(200);
+
+        List<TestMcpServer.RecordedRequest> lists = env.jira.requests().stream().filter(r -> "tools/list".equals(r.rpcMethod())).toList();
+        assertThat(lists).hasSize(2);
+        assertThat(lists.get(0).sessionId()).isNotNull().isNotEqualTo(lists.get(1).sessionId());
+        assertThat(claims(lists.get(0).header("authorization")).has("vs")).isFalse();
+        assertThat(claims(lists.get(1).header("authorization")).path("vs").asString()).isEqualTo("own-session");
+
+        HttpResponse<String> closed = http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/s/mcp-jira/mcp"))
+                .header("Authorization", "Bearer " + token).header("Mcp-Session-Id", session).DELETE().build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(closed.statusCode()).isEqualTo(204);
+        assertThat(env.jira.requests().stream().filter(r -> "DELETE".equals(r.httpMethod())).map(TestMcpServer.RecordedRequest::sessionId))
+                .as("closing the client session ends the server session of every endpoint")
+                .containsExactlyInAnyOrder(lists.get(0).sessionId(), lists.get(1).sessionId());
+    }
+
     private void link(String slug, List<String> tools) throws Exception {
         link(slug, ALICE_GROUPS, tools);
     }

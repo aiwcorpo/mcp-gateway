@@ -3,6 +3,8 @@ package pl.aiwcorpo.mcp.gateway.virtual;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -34,7 +36,7 @@ class VirtualServerServiceTest {
     private final ServerRegistry registry = new ServerRegistry(Map.of(
             "mcp-jira", server("jira", "https://mcp-jira.internal:8443/mcp", Map.of("get_issue", tool("READ_ONLY"), "add_comment", tool("UPDATE"))),
             "mcp-gitlab", server("gitlab", "https://mcp-gitlab.internal:8443/mcp", Map.of("get_issue", tool("READ_ONLY")))));
-    private final VirtualServerService service = new VirtualServerService(store, registry, new GroupToolAuthorizer());
+    private final VirtualServerService service = new VirtualServerService(store, registry, new GroupToolAuthorizer(), 2);
     private final GatewayUser reader = new GatewayUser("sub-reader", "reader", "mcp-portal-bff", List.of("mcp-jira-read"), "t");
 
     @Test
@@ -66,14 +68,25 @@ class VirtualServerServiceTest {
                 assertThat(e.code()).isEqualTo("access_denied");
             });
         }
-        verify(store, never()).insert(any());
+        verify(store, never()).insert(any(), anyInt());
     }
 
     @Test
     void createMapsATakenSlugTo409() {
-        when(store.insert(any())).thenReturn(false);
+        when(store.insert(any(), anyInt())).thenReturn(VirtualServerStore.Inserted.SLUG_TAKEN);
         assertThatThrownBy(() -> service.create(reader, new VirtualServerService.Create("link", "Link", List.of("jira__get_issue"))))
                 .isInstanceOfSatisfying(AdminException.class, e -> assertThat(e.code()).isEqualTo("slug_taken"));
+    }
+
+    @Test
+    void createPassesTheLimitToTheStoreAndRefusesAtIt() {
+        when(store.insert(any(), eq(2))).thenReturn(VirtualServerStore.Inserted.LIMIT_REACHED);
+        assertThatThrownBy(() -> service.create(reader, new VirtualServerService.Create("link", "Link", List.of("jira__get_issue"))))
+                .isInstanceOfSatisfying(AdminException.class, e -> {
+                    assertThat(e.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+                    assertThat(e.code()).isEqualTo("invalid_request");
+                    assertThat(e.auditReason()).isEqualTo("virtual_server_limit");
+                });
     }
 
     @Test

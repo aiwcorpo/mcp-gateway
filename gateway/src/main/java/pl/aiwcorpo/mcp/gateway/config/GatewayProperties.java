@@ -37,6 +37,8 @@ public record GatewayProperties(
         @Valid @NotNull Sessions sessions,
         @Valid @NotNull Upstream upstream,
         @Valid @NotNull Admin admin,
+        @Valid @NotNull VirtualServers virtualServers,
+        @Valid @NotNull Metrics metrics,
         @DefaultValue("00000000000000-0000000") @Pattern(regexp = "^[0-9]{14}-[0-9a-f]{7}$") String policyRevision,
         /* Dev only: allows http for the IdP token endpoint (token exchange); never for the broker or servers. */
         @DefaultValue("false") boolean allowPlainHttp,
@@ -115,7 +117,22 @@ public record GatewayProperties(
     /** Admin API of C5 on the internal TLS port: mTLS client names and the audience of the BFF's user token. */
     public record Admin(
             @DefaultValue("mcp-gateway-admin") @NotBlank String audience,
-            @DefaultValue("mcp-portal-bff") @NotEmpty List<String> allowedClientCns) {
+            /* Client of the user token (azp): the BFF that exchanged it, nobody else. */
+            @DefaultValue("mcp-portal-bff") @NotBlank String authorizedParty,
+            /* Certificate names of the operations the contract gives to the BFF (x-allowed-client-cn). */
+            @DefaultValue("mcp-portal-bff") @NotEmpty List<String> allowedClientCns,
+            /* Certificate names of the operations the contract gives to registry CI. */
+            @DefaultValue("mcp-registry-ci") @NotEmpty List<String> registryClientCns) {
+    }
+
+    public record VirtualServers(
+            /* Links one user may own; creating more is refused. */
+            @DefaultValue("50") @Min(1) int maxPerUser) {
+    }
+
+    /** Prometheus endpoint on the internal port: only client certificates with these names (empty = nobody). */
+    public record Metrics(
+            @DefaultValue List<String> allowedClientCns) {
     }
 
     /** Static configuration of one MCP server (stand-in for the registry, C5). */

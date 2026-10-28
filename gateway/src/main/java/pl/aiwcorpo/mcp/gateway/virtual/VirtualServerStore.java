@@ -6,6 +6,8 @@ import java.util.Optional;
 
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
@@ -18,21 +20,33 @@ public class VirtualServerStore {
 
     private final JdbcClient jdbc;
     private final JsonMapper json;
+    private final TransactionTemplate transactions;
 
-    public VirtualServerStore(JdbcClient jdbc, JsonMapper json) {
+    public VirtualServerStore(JdbcClient jdbc, JsonMapper json, PlatformTransactionManager transactionManager) {
         this.jdbc = jdbc;
         this.json = json;
+        this.transactions = new TransactionTemplate(transactionManager);
     }
 
-    /** False when the slug is taken (by anyone). */
-    public boolean insert(VirtualServer server) {
+    public enum Inserted { CREATED, SLUG_TAKEN, LIMIT_REACHED }
+
+    /**
+     * Inserts the link unless the slug is taken (by anyone) or the owner already has {@code maxPerOwner} links.
+     * The count and the insert run under a per-owner advisory lock, so concurrent requests cannot overshoot.
+     */
+    public Inserted insert(VirtualServer server, int maxPerOwner) {
         try {
-            jdbc.sql("INSERT INTO virtual_servers (slug, owner_sub, display_name, tools) VALUES (?, ?, ?, ?::jsonb)")
-                    .params(server.slug(), server.ownerSub(), server.displayName(), json.writeValueAsString(server.tools()))
-                    .update();
-            return true;
+            return transactions.execute(status -> {
+                jdbc.sql("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))").param(server.ownerSub()).query().singleRow();
+                int rows = jdbc.sql("INSERT INTO virtual_servers (slug, owner_sub, display_name, tools) "
+                                + "SELECT ?, ?, ?, ?::jsonb WHERE (SELECT count(*) FROM virtual_servers WHERE owner_sub = ?) < ?")
+                        .params(server.slug(), server.ownerSub(), server.displayName(), json.writeValueAsString(server.tools()),
+                                server.ownerSub(), maxPerOwner)
+                        .update();
+                return rows == 1 ? Inserted.CREATED : Inserted.LIMIT_REACHED;
+            });
         } catch (DuplicateKeyException e) {
-            return false;
+            return Inserted.SLUG_TAKEN;
         }
     }
 

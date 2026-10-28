@@ -15,7 +15,10 @@ import javax.naming.InvalidNameException;
 import javax.naming.ldap.LdapName;
 import javax.naming.ldap.Rdn;
 
+import org.springframework.http.server.PathContainer;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.pattern.PathPattern;
+import org.springframework.web.util.pattern.PathPatternParser;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -25,23 +28,50 @@ import jakarta.servlet.http.HttpServletResponse;
 /**
  * mTLS half of C5 authentication. Client certificates are optional on the internal port (servers fetching the
  * JWKS present none or a serverAuth-only one), so the chain is verified here against the internal CA and then the
- * name is checked. No usable certificate is 401, a valid certificate of another component 403 (README of C5).
+ * name is checked against the operation: each rule is a method and a path pattern with the names the contract
+ * allows for it ({@code x-allowed-client-cn}). A request no rule covers is refused for every name. No usable
+ * certificate is 401, a valid certificate of another component 403 (README of C5).
  */
 public final class AdminClientCertificateFilter extends OncePerRequestFilter {
 
+    /** One operation (or all methods when {@code method} is null) and the certificate names allowed to call it. */
+    public record Rule(String method, PathPattern pattern, Set<String> names) {
+        private static final PathPatternParser PARSER = new PathPatternParser();
+
+        public static Rule of(String method, String pattern, Collection<String> names) {
+            return new Rule(method, PARSER.parse(pattern), Set.copyOf(names));
+        }
+
+        boolean covers(String requestMethod, PathContainer path) {
+            return (method == null || method.equals(requestMethod)) && pattern.matches(path);
+        }
+    }
+
     private static final String CERTIFICATES = "jakarta.servlet.request.X509Certificate";
 
-    private final Set<String> allowedNames;
+    private final List<Rule> rules;
+    private final boolean refuseUncovered;
     private final ClientCertificateVerifier verifier;
 
-    public AdminClientCertificateFilter(List<String> allowedNames, ClientCertificateVerifier verifier) {
-        this.allowedNames = Set.copyOf(allowedNames);
+    /**
+     * @param refuseUncovered true for the admin chain (every path in it is an operation); false for a filter that
+     *                        guards a few paths of a chain and lets the rest through untouched
+     */
+    public AdminClientCertificateFilter(List<Rule> rules, boolean refuseUncovered, ClientCertificateVerifier verifier) {
+        this.rules = List.copyOf(rules);
+        this.refuseUncovered = refuseUncovered;
         this.verifier = verifier;
     }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
+        PathContainer path = PathContainer.parsePath(request.getServletPath());
+        Rule rule = rules.stream().filter(candidate -> candidate.covers(request.getMethod(), path)).findFirst().orElse(null);
+        if (rule == null && !refuseUncovered) {
+            chain.doFilter(request, response);
+            return;
+        }
         Object attribute = request.getAttribute(CERTIFICATES);
         Optional<X509Certificate> client = attribute instanceof X509Certificate[] chainOfCertificates
                 ? verifier.verified(chainOfCertificates, Instant.now()) : Optional.empty();
@@ -50,7 +80,7 @@ public final class AdminClientCertificateFilter extends OncePerRequestFilter {
             return;
         }
         String name = commonName(client.get());
-        if (name == null || !allowedNames.contains(name)) {
+        if (rule == null || name == null || !rule.names().contains(name)) {
             reject(response, HttpServletResponse.SC_FORBIDDEN, "access_denied");
             return;
         }

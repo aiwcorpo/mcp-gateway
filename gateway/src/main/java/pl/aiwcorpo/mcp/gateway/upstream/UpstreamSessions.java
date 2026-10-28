@@ -83,10 +83,10 @@ public class UpstreamSessions {
         throw new UpstreamException(UpstreamException.Kind.PROTOCOL, "session lost twice");
     }
 
-    /** Ends the server sessions of one conversation (client DELETE of a legacy session). */
-    public void close(String conversationKey, GatewayUser user, String requestId, String virtualServer) {
+    /** Ends the server sessions whose conversation key starts with the prefix (client DELETE of a legacy session). */
+    public void close(String conversationPrefix, GatewayUser user, String requestId, String virtualServer) {
         sessions.entrySet().removeIf(entry -> {
-            if (!entry.getKey().endsWith("|" + conversationKey) || !entry.getValue().sub().equals(user.sub())) {
+            if (!entry.getKey().substring(entry.getKey().indexOf('|') + 1).startsWith(conversationPrefix) || !entry.getValue().sub().equals(user.sub())) {
                 return false;
             }
             String serverId = entry.getKey().substring(0, entry.getKey().indexOf('|'));

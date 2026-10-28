@@ -113,25 +113,26 @@ public class AdminController {
         String requestId = requestId(request);
         GatewayUser user = GatewayUser.from(token);
         byte[] raw = request.getInputStream().readNBytes(MAX_BODY + 1);
-        JsonNode body;
-        try {
-            if (raw.length > MAX_BODY) {
-                throw new AdminException(HttpStatus.BAD_REQUEST, "invalid_request");
-            }
-            body = json.readTree(raw);
-        } catch (JacksonException e) {
-            throw new AdminException(HttpStatus.BAD_REQUEST, "invalid_request");
-        }
-        VirtualServerService.Create parsed = virtualServers.parse(body);
+        String slug = null;
         VirtualServer link;
         try {
-            link = virtualServers.create(user, parsed);
+            JsonNode body;
+            try {
+                if (raw.length > MAX_BODY) {
+                    throw new AdminException(HttpStatus.BAD_REQUEST, "invalid_request");
+                }
+                body = json.readTree(raw);
+            } catch (JacksonException e) {
+                throw new AdminException(HttpStatus.BAD_REQUEST, "invalid_request");
+            }
+            slug = body != null && body.isObject() && body.get("slug") != null && body.get("slug").isString()
+                    ? body.get("slug").asString() : null;
+            link = virtualServers.create(user, virtualServers.parse(body));
         } catch (AdminException e) {
-            audit.emit(change(requestId, user, parsed.slug()).decision("deny", e.status() == HttpStatus.FORBIDDEN
-                    ? "not_granted" : null).outcome("denied", null));
+            audit.emit(change(requestId, user, slug).decision("deny", e.auditReason()).outcome("denied", errorCode(e)));
             throw e;
         }
-        audit.emit(change(requestId, user, link.slug()).decision("allow", null).outcome("ok", null));
+        audit.emit(change(requestId, user, link.slug()).decision("allow", "vs_created").outcome("ok", null));
         ObjectNode created = json.createObjectNode();
         created.put("slug", link.slug());
         created.put("url", urls.virtualServerUrl(link.slug()));
@@ -143,8 +144,13 @@ public class AdminController {
                                          HttpServletRequest request) {
         String requestId = requestId(request);
         GatewayUser user = GatewayUser.from(token);
-        virtualServers.delete(user, slug);
-        audit.emit(change(requestId, user, slug).decision("allow", null).outcome("ok", null));
+        try {
+            virtualServers.delete(user, slug);
+        } catch (AdminException e) {
+            audit.emit(change(requestId, user, slug).decision("deny", e.auditReason()).outcome("denied", errorCode(e)));
+            throw e;
+        }
+        audit.emit(change(requestId, user, slug).decision("allow", "vs_deleted").outcome("ok", null));
         return ResponseEntity.noContent().header("X-Request-Id", requestId).cacheControl(CacheControl.noStore()).build();
     }
 
@@ -170,6 +176,16 @@ public class AdminController {
         item.set("tools", json.valueToTree(List.copyOf(link.tools())));
         item.put("url", urls.virtualServerUrl(link.slug()));
         return item;
+    }
+
+    /** C10 code for the audit event; a taken slug has none there. */
+    private static String errorCode(AdminException e) {
+        return switch (e.status()) {
+            case FORBIDDEN -> "access_denied";
+            case NOT_FOUND -> "not_found_or_denied";
+            case BAD_REQUEST -> "invalid_argument";
+            default -> null;
+        };
     }
 
     private AuditEvent change(String requestId, GatewayUser user, String slug) {

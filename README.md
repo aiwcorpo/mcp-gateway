@@ -59,7 +59,7 @@ Serwery z konfiguracji statycznej zamiast rejestru manifestów. Co działa, czeg
 - **Audyt C8:** logger `AUDIT`, jedna linia JSON na zdarzenie na stdout; na każde `tools/call` zdarzenia
   `policy_decision` i `tool_call` (bez wartości argumentów, tylko `argsLength`). `requestId` (UUIDv7) wraca do
   klienta w `X-Request-Id`; `X-Request-Id` klienta trafia do `clientRequestId`, jeśli pasuje do wzorca.
-- **Metryki:** `/actuator/prometheus` (tylko port wewnętrzny): `mcp_gateway_tool_calls_total`,
+- **Metryki:** `/actuator/prometheus` (tylko port wewnętrzny, tylko z certyfikatem klienta o CN z `MCP_METRICS_CLIENT_CNS`; domyślnie nikt): `mcp_gateway_tool_calls_total`,
   `mcp_gateway_tool_call_duration_seconds`, `mcp_gateway_credential_cache_total`,
   `mcp_gateway_broker_resolve_total`, `mcp_gateway_requests_total`.
 
@@ -124,7 +124,10 @@ Zmienne środowiska (nazwy z `mcp-platform-dev`, usługa `mcp-gateway` profilu `
 | `MCP_OIDC_TOKEN_URI`, `MCP_OIDC_CLIENT_ID`, `MCP_OIDC_CLIENT_SECRET` | token exchange dla systemów `token-exchange` |
 | `MCP_PUBLIC_URL` | wymagany: publiczny origin portalu i gateway'a (`https://...`, `http://` tylko z `MCP_ALLOW_PLAIN_HTTP`), bez ścieżki; źródło `resource_metadata`, `url` linków i `connectUrl` |
 | `MCP_DB_URL`, `MCP_DB_USER`, `MCP_DB_PASSWORD` | PostgreSQL (baza `gateway`): linki; Flyway zakłada tabelę przy starcie, bez bazy gateway nie wstaje |
-| `MCP_ADMIN_AUDIENCE`, `MCP_ADMIN_CLIENT_CNS` | C5: `aud` tokenu BFF (domyślnie `mcp-gateway-admin`) i dozwolone CN certyfikatów klienta (domyślnie `mcp-portal-bff`) |
+| `MCP_ADMIN_AUDIENCE`, `MCP_ADMIN_AUTHORIZED_PARTY` | C5: `aud` tokenu BFF (domyślnie `mcp-gateway-admin`, token z `aud` `mcp-gateway` jest odrzucany, a token MCP z `aud` admina też) i wymagane `azp` (domyślnie `mcp-portal-bff`) |
+| `MCP_ADMIN_CLIENT_CNS`, `MCP_ADMIN_REGISTRY_CLIENT_CNS` | C5: CN certyfikatów klienta dla operacji BFF (domyślnie `mcp-portal-bff`) i dla zapisu rejestru (domyślnie `mcp-registry-ci`); przydział operacji do listy jest w kodzie wg `x-allowed-client-cn`, operacja spoza kontraktu to 403 dla każdego CN |
+| `MCP_VIRTUAL_SERVERS_MAX_PER_USER` | limit linków na użytkownika (domyślnie 50); nadmiar to 400 `invalid_request` (zdarzenie audytu z powodem `virtual_server_limit`) |
+| `MCP_METRICS_CLIENT_CNS` | CN certyfikatów klienta dla `/actuator/prometheus` (puste = nikt) |
 | `MCP_SERVER_<SYSTEM>_MCP_URL`, `_ENABLED`, `_VERSION` | adres (`https`), wyłącznik i wersja serwera dla JIRA, CONFLUENCE, GITLAB, SERVICEDESK, OPENSEARCH; adresy domyślne `https://mcp-<system>.internal:8443/mcp`, dla Jiry `MCP_SERVER_JIRA_URL` + `/mcp` |
 | `MCP_INTERNAL_PORT` | port wewnętrzny TLS, domyślnie `8443` |
 | `MCP_INTERNAL_JWT_ISSUER` | `iss` C2, domyślnie `https://mcp-gateway.internal` |

@@ -55,6 +55,8 @@ public final class GatewayTestEnvironment {
     public final SSLContext otherComponentTls;
     public final SSLContext foreignCaTls;
     public final SSLContext noClientCertificateTls;
+    /** The Prometheus scraper: a client certificate whose name is listed in gateway.metrics.allowed-client-cns. */
+    public final SSLContext scraperTls;
     /** A server identity of the internal CA (mcp-jira, serverAuth only), as servers use when they fetch the JWKS. */
     public final SSLContext serverIdentityTls;
 
@@ -78,6 +80,7 @@ public final class GatewayTestEnvironment {
         Path gitlabKeystore = pki.issue("gitlab.p12", "mcp-gitlab", List.of("mcp-gitlab.internal", "localhost"), true, false);
         Path wrongKeystore = pki.issue("wrong.p12", "mcp-confluence", List.of("mcp-jira.internal"), true, false);
         Path bffKeystore = pki.issue("bff.p12", "mcp-portal-bff", List.of(), false, true);
+        Path scraperKeystore = pki.issue("scraper.p12", "mcp-prometheus", List.of(), false, true);
         Path ciKeystore = pki.issue("ci.p12", "mcp-registry-ci", List.of(), false, true);
         TestPki foreign = new TestPki(Files.createDirectory(dir.resolve("foreign")));
         Path foreignKeystore = foreign.issue("bff.p12", "mcp-portal-bff", List.of(), false, true);
@@ -126,6 +129,7 @@ public final class GatewayTestEnvironment {
         otherComponentTls = Tls.fromPkcs12(ciKeystore, pki.truststore(), TestPki.PASSWORD);
         foreignCaTls = Tls.fromKeyStores(load(foreignKeystore), TestPki.PASSWORD, load(pki.truststore()));
         noClientCertificateTls = trustOnly;
+        scraperTls = Tls.fromPkcs12(scraperKeystore, pki.truststore(), TestPki.PASSWORD);
         serverIdentityTls = Tls.fromPkcs12(jiraKeystore, pki.truststore(), TestPki.PASSWORD);
     }
 
@@ -163,6 +167,7 @@ public final class GatewayTestEnvironment {
         registry.add("gateway.servers.mcp-gitlab.credential.accepted-types", () -> "user-secret,user-oauth");
         registry.add("gateway.servers.mcp-gitlab.tools.get_issue.risk", () -> "READ_ONLY");
         registry.add("gateway.servers.mcp-gitlab.tools.get_issue.description", () -> "Returns one GitLab issue.");
+        registry.add("gateway.metrics.allowed-client-cns", () -> "mcp-prometheus");
         registry.add("gateway.allowed-origins", () -> "https://allowed.test");
         registry.add("gateway.redis.health-interval", () -> "1s");
         registry.add("gateway.servers.mcp-servicedesk.system", () -> "servicedesk");

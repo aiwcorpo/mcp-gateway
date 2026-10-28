@@ -12,6 +12,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.Ordered;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
 
 import io.lettuce.core.RedisURI;
 import jakarta.servlet.DispatcherType;
@@ -115,13 +116,14 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    VirtualServerStore virtualServerStore(JdbcClient jdbc, JsonMapper gatewayJson) {
-        return new VirtualServerStore(jdbc, gatewayJson);
+    VirtualServerStore virtualServerStore(JdbcClient jdbc, JsonMapper gatewayJson, PlatformTransactionManager transactions) {
+        return new VirtualServerStore(jdbc, gatewayJson, transactions);
     }
 
     @Bean
-    VirtualServerService virtualServerService(VirtualServerStore store, ServerRegistry registry, ToolAuthorizer authorizer) {
-        return new VirtualServerService(store, registry, authorizer);
+    VirtualServerService virtualServerService(VirtualServerStore store, ServerRegistry registry, ToolAuthorizer authorizer,
+                                              GatewayProperties properties) {
+        return new VirtualServerService(store, registry, authorizer, properties.virtualServers().maxPerUser());
     }
 
     @Bean

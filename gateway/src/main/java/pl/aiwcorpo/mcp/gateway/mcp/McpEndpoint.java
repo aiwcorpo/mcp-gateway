@@ -186,7 +186,7 @@ public class McpEndpoint {
             return plain(HttpStatus.NOT_FOUND, requestId);
         }
         sessions.delete(sessionId);
-        upstream.close(legacyConversation(user, sessionId), user, requestId, target.get().virtualSlug());
+        upstream.close(legacyConversation(user, sessionId, null), user, requestId, target.get().virtualSlug());
         return plain(HttpStatus.NO_CONTENT, requestId);
     }
 
@@ -240,7 +240,7 @@ public class McpEndpoint {
             return plain(HttpStatus.ACCEPTED, requestId);
         }
         CallContext ctx = new CallContext(requestId, clientRequestId, user, target, version,
-                legacyConversation(user, sessionId));
+                legacyConversation(user, sessionId, target));
         return dispatch(ctx, message, method, id, false);
     }
 
@@ -280,7 +280,7 @@ public class McpEndpoint {
             return plain(HttpStatus.ACCEPTED, requestId);
         }
         CallContext ctx = new CallContext(requestId, clientRequestId, user, target, bodyVersion,
-                "m|" + user.sub() + "|" + user.client());
+                "m|" + user.sub() + "|" + user.client() + "|" + target.label());
         if ("server/discover".equals(method)) {
             count(method, true);
             ObjectNode result = json.createObjectNode();
@@ -365,8 +365,14 @@ public class McpEndpoint {
         meters.counter("mcp.gateway.requests", "method", tag, "era", modern ? "modern" : "legacy").increment();
     }
 
-    private static String legacyConversation(GatewayUser user, String sessionId) {
-        return "l|" + user.sub() + "|" + sessionId;
+    /**
+     * Upstream sessions are per endpoint: a server that keeps something from {@code initialize} (the link's
+     * {@code vs} and {@code vsc}) must never apply it to calls that came through another link or through /s/.
+     * A null target gives the prefix shared by every endpoint of the session (used to close them all).
+     */
+    private static String legacyConversation(GatewayUser user, String sessionId, Target target) {
+        String prefix = "l|" + user.sub() + "|" + sessionId + "|";
+        return target == null ? prefix : prefix + target.label();
     }
 
     /** Mcp-Name may use the Base64 sentinel {@code =?base64?...?=} (2026-07-28 transport). */

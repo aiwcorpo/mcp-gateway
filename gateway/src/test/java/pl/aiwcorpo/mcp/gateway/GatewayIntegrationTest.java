@@ -107,9 +107,30 @@ class GatewayIntegrationTest extends GatewayTestBase {
                 .build(), HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(404);
         assertThat(http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/actuator/prometheus")).build(),
                 HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(404);
-        HttpResponse<String> metrics = internal.send(HttpRequest.newBuilder(
-                URI.create("https://localhost:" + env.internalPort + "/actuator/prometheus")).build(), HttpResponse.BodyHandlers.ofString());
-        assertThat(metrics.statusCode()).isEqualTo(200);
+        for (String path : List.of("/.well-known/jwks.json", "/actuator/health", "/actuator/prometheus", "/admin/v1/catalog")) {
+            assertThat(http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+                    .POST(HttpRequest.BodyPublishers.ofString("{}")).build(), HttpResponse.BodyHandlers.ofString()).statusCode())
+                    .as("POST " + path + " on the public port is not a 405 that confirms the path").isEqualTo(404);
+        }
+    }
+
+    @Test
+    void prometheusNeedsTheScrapersClientCertificate() throws Exception {
+        URI metrics = URI.create("https://localhost:" + env.internalPort + "/actuator/prometheus");
+        for (var tls : List.of(env.noClientCertificateTls, env.foreignCaTls, env.serverIdentityTls)) {
+            assertThat(java.net.http.HttpClient.newBuilder().sslContext(tls).build()
+                    .send(HttpRequest.newBuilder(metrics).build(), HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(401);
+        }
+        assertThat(java.net.http.HttpClient.newBuilder().sslContext(env.bffTls).build()
+                .send(HttpRequest.newBuilder(metrics).build(), HttpResponse.BodyHandlers.ofString()).statusCode())
+                .as("a valid certificate of another component").isEqualTo(403);
+        HttpResponse<String> scraped = java.net.http.HttpClient.newBuilder().sslContext(env.scraperTls).build()
+                .send(HttpRequest.newBuilder(metrics).build(), HttpResponse.BodyHandlers.ofString());
+        assertThat(scraped.statusCode()).isEqualTo(200);
+        assertThat(scraped.body()).contains("jvm_memory");
+        assertThat(java.net.http.HttpClient.newBuilder().sslContext(env.scraperTls).build()
+                .send(HttpRequest.newBuilder(URI.create("https://localhost:" + env.internalPort + "/actuator/health")).build(),
+                        HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(200);
     }
 
     // --- Legacy clients (2025-11-25): sessions, tools, C2/C3 towards the server ---------------------------
@@ -242,6 +263,18 @@ class GatewayIntegrationTest extends GatewayTestBase {
         }
         assertThat(upstreamSessionOwner.values()).contains(ALICE_SUB, BOB_SUB);
         assertThat(env.jira.requests()).noneMatch(r -> "session_of_other_user".equals(r.rejectReason()));
+    }
+
+    @Test
+    void aSessionCannotBeDeletedByAnotherUser() throws Exception {
+        String aliceToken = aliceToken();
+        String aliceSession = initialize(aliceToken, "2025-11-25");
+        HttpResponse<String> foreignDelete = http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/s/mcp-jira/mcp"))
+                .header("Authorization", "Bearer " + bobToken()).header("Mcp-Session-Id", aliceSession).DELETE().build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(foreignDelete.statusCode()).isEqualTo(404);
+        assertThat(rpc(aliceToken, aliceSession, "2025-11-25", "tools/list", null).path("result").path("tools").size())
+                .as("the owner's session survived").isEqualTo(2);
     }
 
     @Test

@@ -36,7 +36,10 @@ public class VirtualServerService {
     private final ServerRegistry registry;
     private final ToolAuthorizer authorizer;
 
-    public VirtualServerService(VirtualServerStore store, ServerRegistry registry, ToolAuthorizer authorizer) {
+    private final int maxPerUser;
+
+    public VirtualServerService(VirtualServerStore store, ServerRegistry registry, ToolAuthorizer authorizer, int maxPerUser) {
+        this.maxPerUser = maxPerUser;
         this.store = store;
         this.registry = registry;
         this.authorizer = authorizer;
@@ -83,20 +86,24 @@ public class VirtualServerService {
         return new Create(slug, displayName, List.copyOf(tools));
     }
 
-    /** Creates the link; 403 access_denied when any tool is unknown, disabled or not granted to the creator. */
+    /** Creates the link; 403 access_denied when any tool is unknown, disabled or not granted to the creator; 400 at the per-user limit. */
     public VirtualServer create(GatewayUser owner, Create request) {
         for (String name : request.tools()) {
             boolean allowed = registry.resolve(name)
                     .map(resolved -> authorizer.decide(owner, resolved.server(), resolved.tool()).allowed())
                     .orElse(false);
             if (!allowed) {
-                throw new AdminException(HttpStatus.FORBIDDEN, "access_denied");
+                throw new AdminException(HttpStatus.FORBIDDEN, "access_denied", "not_granted");
             }
         }
         VirtualServer server = new VirtualServer(request.slug(), owner.sub(), request.displayName(), request.tools(),
                 Instant.now());
-        if (!store.insert(server)) {
-            throw new AdminException(HttpStatus.CONFLICT, "slug_taken");
+        switch (store.insert(server, maxPerUser)) {
+            case SLUG_TAKEN -> throw new AdminException(HttpStatus.CONFLICT, "slug_taken");
+            // C5 has no code for this; invalid_request is the nearest one it defines (proposal CC in STATUS.md).
+            case LIMIT_REACHED -> throw new AdminException(HttpStatus.BAD_REQUEST, "invalid_request", "virtual_server_limit");
+            case CREATED -> {
+            }
         }
         return server;
     }
