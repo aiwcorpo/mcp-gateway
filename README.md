@@ -5,9 +5,9 @@ tokenem z IdP (C1), pobiera z brokera poświadczenie użytkownika do systemu (C4
 i przekazuje wywołanie do serwera MCP po mTLS z nagłówkami C3. Każde wywołanie narzędzia zostawia zdarzenia
 audytu C8 z jednym `requestId`.
 
-Stan: kamień M2 (wirtualne serwery, API C5 dla BFF, jedna domena) na M1 (OAuth RS, broker, C2/C3, audyt).
-Serwery z konfiguracji statycznej zamiast rejestru manifestów. Co działa, czego nie ma i odstępstwa:
-[STATUS.md](STATUS.md). Kontrakty: `mcp-contracts` 2.2.5.
+Stan: kamień M3 (potwierdzenia TOTP akcji DESTRUCTIVE, Cedar z podpisanych paczek, `/activity/calls`, definicje z
+manifestu, 503 przy niedostępnym JWKS) na M2 (wirtualne serwery, API C5 dla BFF, jedna domena) i M1 (OAuth RS, broker,
+C2/C3, audyt). Co działa, czego nie ma i odstępstwa: [STATUS.md](STATUS.md). Kontrakty: `mcp-contracts` 3.1.0.
 
 ## Moduły
 
@@ -108,9 +108,42 @@ actuatora.
   'none'; sandbox`; nigdy `Set-Cookie`; `Cookie` klienta jest ukrywany przed aplikacją (do serwera i brokera i tak
   idą nagłówki budowane od zera); odpowiedzi to `application/json` także przy `Accept: text/html`. Reverse proxy
   (ws-01) dokłada te same nagłówki i usuwa `Cookie` na `/s/`, `/v/` i `/.well-known/oauth-protected-resource*`.
-- **Serwery:** konfiguracja statyczna wszystkich pięciu systemów (`application.yml`, narzędzia i ryzyko z ws-04);
-  `enabled`, `version`, `title`, `description`, `action` i `disabled` per narzędzie. Autoryzacja nadal grupami
-  `mcp-<system>-read|write` (Cedar i paczka polityk nie weszły do M2, STATUS.md).
+- **Serwery:** konfiguracja wszystkich pięciu systemów (`application.yml`): adres, polityka poświadczeń, `enabled`,
+  przełącznik `disabled` narzędzia i minimalne ryzyko. Narzędzia pochodzą od M3 z zatwierdzonego manifestu (niżej).
+
+## Co dochodzi w M3
+
+- **Potwierdzenia TOTP (C11).** Narzędzie `DESTRUCTIVE` przy pierwszym wywołaniu tworzy oczekujące wywołanie w Redis
+  (klucz: `sub`, serwer, narzędzie, SHA-256 kanonicznych argumentów bez `confirmation_code`; TTL 120 s, 3 próby) i
+  odpowiada `confirmation_required` z `confirmationId`, `description`, `previewUrl`, `expiresAt`. Ponowienie z tymi samymi
+  argumentami i `confirmation_code` (6 cyfr z aplikacji Authenticator) sprawdza broker (`POST /v1/authenticator/verify`);
+  kod nie trafia do serwera, logów ani audytu. Stan użytkownika to jedna wartość w Redis zmieniana skryptem
+  compare-and-set (`RedisConfirmationStore`), więc utworzenie oczekującego i unieważnienie poprzedniego, rezerwacja próby i
+  zużycie przy `ok` są atomowe; reguły są w `ConfirmationRules` (funkcje czyste, wektory `confirmation-binding/`).
+  Jedna oczekująca DESTRUCTIVE na użytkownika, po otwarciu podglądu pierwsza wygrywa (`confirmation_blocked`), tworzenie
+  nowej po obejrzanej woła `invalidate-codes`, `cancel` też. Utrata stanu to brak potwierdzenia; po utracie znacznika epoki
+  (`gw:conf:epoch`) przez 210 s pierwsze tworzenie na `sub` pali kody. C5: `GET /confirmations/{id}`, `POST .../viewed`,
+  `POST .../cancel`.
+- **Polityka.** `ToolAuthorizer` to ocena Cedar `call` (`CedarToolAuthorizer`) z paczek podpisanych Ed25519, pobieranych
+  przez `PolicyService` (`latest.json` z ETag, bez przekierowań, do 16 MiB; główna co 30 s, `overrides` co 5 s) i ładowanych
+  przez `PolicyStore` (podpis, schemat, rewizja rosnąca, stan na dysku `MCP_POLICY_STATE_DIR`). Bez paczki głównej gateway
+  nie startuje; po restarcie z aktywnymi `overrides` czeka na nie `MCP_POLICY_*` do końca okresu karencji. Do Cedar idą
+  grupy z tokenu, zasoby z `resourceRefs` (kontekst `refs`) i link (`virtualServer`, `vsScopes`); `prv` w JWT to rewizja
+  paczki głównej.
+- **Rejestr.** Tryb `required` (domyślny, `MCP_REGISTRY_MODE`): serwer ma tylko narzędzia z zatwierdzonego manifestu C6.
+  Zatwierdza `PUT /admin/v1/registry/servers/{serverId}` (CI), a gdy serwer nie ma żadnego wiersza, jednorazowo
+  manifest, który sam serwuje pod `/mcp-manifest`. Definicja z `tools/list` musi dawać zatwierdzony `definitionHash`,
+  inaczej narzędzie znika z listy i wywołanie to `tool_disabled`. Obniżenie ryzyka (także po usunięciu i dodaniu narzędzia)
+  jest odrzucane. Przypinanie i diff (CC-097) to M4.
+- **Aktywność.** `GET /admin/v1/activity/calls`: jeden wiersz na wywołanie (zdarzenia z PostgreSQL, agregacja według
+  wektorów `activity-calls/`), kursor `X-Next-Cursor` z HMAC związanym z `sub`; `GET /admin/v1/activity` to ostatnie zdarzenia.
+- **Uwierzytelnianie.** Niedostępny JWKS IdP (także nieznany `kid`) to 503 `upstream_unavailable` z `Retry-After`; odrzucone
+  certyfikaty klienta i tokeny BFF na porcie C5 to zdarzenia `authentication`, próbkowane po jednym na adres na minutę;
+  `missing_token` i `malformed` mają osobne budżety 20 zdarzeń na sekundę, nadmiar zlicza
+  `mcp_audit_authentication_suppressed_total{component,reason}`.
+
+Przebieg na żywo: `scripts/m3-demo.sh` (po uruchomieniu skryptów z sekcji niżej; atrapa brokera z
+`MCP_TEST_BROKER_TOTP=<sub>=<ziarno>`, kody z `mcpdev.py otp alice`).
 
 ## Konfiguracja
 
@@ -136,7 +169,13 @@ Zmienne środowiska (nazwy z `mcp-platform-dev`, usługa `mcp-gateway` profilu `
 | `MCP_BROKER_URL`, `MCP_BROKER_TLS_NAME` | broker i nazwa w jego certyfikacie (CC-035) |
 | `MCP_REDIS_HOST`, `MCP_REDIS_PORT`, `MCP_REDIS_USER`, `MCP_REDIS_PASSWORD`, `MCP_REDIS_KEY_PREFIX` | Redis (ACL `gateway`, `gw:*`, `credential.invalidated`) |
 | `MCP_SERVER_JIRA_URL` albo `MCP_SERVER_JIRA_MCP_URL` | adres `mcp-jira`; do pierwszego dopisywane jest `/mcp` |
-| `MCP_POLICY_REVISION` | `prv` w C2 do czasu paczki polityk, domyślnie `00000000000000-0000000` |
+| `MCP_POLICY_MAIN_URL`, `MCP_POLICY_OVERRIDES_URL` | wymagany katalog paczki głównej (`.../policies/main/`) i opcjonalny `overrides`; w compose `http://policies.internal:8080/policies/...` |
+| `MCP_POLICY_MAIN_KEY_ID`, `MCP_POLICY_MAIN_KEY_FILE`, `MCP_POLICY_OVERRIDES_KEY_ID`, `MCP_POLICY_OVERRIDES_KEY_FILE` | identyfikatory i pliki PEM kluczy publicznych Ed25519 obu kanałów |
+| `MCP_POLICY_ALLOW_TEST_KEYS` | tylko dev: klucze `test-*` (CC-044) |
+| `MCP_POLICY_STATE_DIR`, `MCP_POLICY_MINIMUM_MAIN_REVISION`, `MCP_POLICY_MINIMUM_OVERRIDES_REVISION` | ochrona przed cofnięciem po restarcie (CC-066): katalog stanu jednej instancji (w obrazie `/app/state`) i rewizje minimalne |
+| `MCP_POLICY_MAIN_INTERVAL`, `MCP_POLICY_OVERRIDES_INTERVAL`, `MCP_POLICY_STARTUP_TIMEOUT` | 30 s, 5 s, 2 min do rezygnacji ze startu bez paczki |
+| `MCP_REGISTRY_MODE`, `MCP_REGISTRY_BOOTSTRAP` | `required` (domyślnie) albo `static`; pobranie pierwszego manifestu od serwera bez zatwierdzenia (domyślnie tak). Przełącznik `manifest` per serwer w `application.yml` |
+| `MCP_ACTIVITY_CURSOR_KEY` | klucz HMAC kursora `/activity/calls` (min. 16 bajtów); puste = losowy na proces |
 | `MCP_ALLOWED_ORIGINS` | dozwolone `Origin` (lista); żądanie (POST, GET, DELETE) z innym `Origin` -> 403, bez `Origin` przechodzi |
 | `MCP_ALLOW_PLAIN_HTTP` | tylko dev: `http` dla endpointu tokenów IdP (token exchange); bez flagi token exchange jest wyłączony, broker i serwery zawsze `https` |
 
@@ -215,7 +254,7 @@ komponentów zbiera `python3 ../mcp-platform-dev/scripts/mcpdev.py audit <reques
 
 ### W compose (profil `full`)
 
-Obraz `mcp-gateway:dev` pasuje do usługi `mcp-gateway`; w M2 potrzebuje `MCP_PUBLIC_URL` na origin proxy
+Obraz `mcp-gateway:dev` (glibc, bo `cedar-java` nie ma bibliotek dla musl) pasuje do usługi `mcp-gateway`; potrzebuje `MCP_POLICY_*`, `/app/state` jako wolumenu per instancja i `MCP_PUBLIC_URL` na origin proxy
 (`http://localhost:${PROXY_PORT}`, nie port gateway'a), `MCP_DB_*` i adresów pozostałych serwerów
 (`MCP_SERVER_<SYSTEM>_MCP_URL`, domyślne `https://mcp-<system>.internal:8443/mcp` zgadzają się z aliasami profilu
 `m2`). Serwer testowy może zastąpić `mcp-jira` przez `MCP_JIRA_IMAGE=mcp-gateway-test-server:dev`. Tego wariantu
@@ -227,7 +266,11 @@ w M2 nie uruchamiałem (STATUS.md).
 pl.aiwcorpo.mcp.gateway
 ├── admin/     C5: AdminController (katalog, linki), mTLS: ClientCertificateVerifier i filtr CN
 ├── auth/      C1: GatewayUser, 401 z resource_metadata, PublicUrls, adresy RFC 9728
-├── authz/     ToolAuthorizer (grupy C9 zamiast Cedar)
+├── authz/     ToolAuthorizer: CedarToolAuthorizer (ocena `call` z paczki)
+├── policy/    PolicyService, BundleFetcher: paczki polityk C7
+├── confirm/   C11: ConfirmationRules, ConfirmationService, RedisConfirmationStore
+├── activity/  /activity/calls: ActivityStore, ActivityAggregator, ActivityCursor
+├── registry/  zatwierdzone manifesty C6, DefinitionCheck, RegistryStore
 ├── edge/      jedna domena: PublicEdgeFilter, WellKnownGuard, błędy tylko JSON
 ├── virtual/   linki: VirtualServerStore (PostgreSQL), VirtualServerService
 ├── audit/     zdarzenia C8 na loggerze AUDIT
@@ -235,15 +278,14 @@ pl.aiwcorpo.mcp.gateway
 ├── config/    właściwości, beany, Spring Security, drugi connector Tomcat
 ├── jwt/       C2: klucze, wystawca, JWKS, rozdział portów, UUIDv7
 ├── mcp/       endpoint MCP (obie ery), sesje klientów, tools/list i tools/call, błędy C10
-├── server/    konfiguracja statyczna serwerów (M1 w miejscu rejestru)
+├── server/    serwery: konfiguracja i narzędzia z zatwierdzonego manifestu
 ├── tls/       mTLS i sprawdzanie SAN serwera
 └── upstream/  klient Streamable HTTP do serwerów, sesje per użytkownik
 ```
 
-Miejsca na dalsze kamienie: `ToolAuthorizer` (Cedar z `PolicyStore` z `mcp-policy-bundle`, `prv` z rewizji
-paczki), `ServerRegistry` (rejestr C5/C6 z `mcp-manifest` zamiast konfiguracji narzędzi), `vsc` w
-`InternalTokenIssuer` (zawężanie zasobów, uśpione).
+Miejsca na M4: pinning i diff w rejestrze (CC-097), `rate_limited` per użytkownik, HA (klucze C2, klucz kursora i rejestr
+współdzielone przez instancje), paczka `overrides` jako osobny pipeline.
 
 ## Audyt odrzuconych tokenów: ryzyko zalewu
 
-Zdarzenie `authentication` powstaje dla każdej ścieżki poza znanym szumem (`OPTIONS`, `/`, `/favicon.ico`, `/robots.txt`); lista dopuszczająca ścieżki MCP pomijałaby warianty zapisu (`%73`, `;x=1`, `//`, wielkość liter), które łańcuch security dopasowuje do tras MCP. Żądania bez tokenu nic nie kosztują wołającego, dlatego `missing_token` ma limit 20 zdarzeń na sekundę na proces; nadmiar zwiększa `gateway_audit_authentication_suppressed_total` i nie trafia do C8. Odrzucone tokeny (zły podpis, wygasły) nie mają limitu: wymagają zdarzenia dla każdego odrzucenia, więc brzeg (nginx `limit_req` per adres) powinien ograniczać ich liczbę.
+Zdarzenie `authentication` powstaje dla każdej ścieżki poza znanym szumem (`OPTIONS`, `/`, `/favicon.ico`, `/robots.txt`); lista dopuszczająca ścieżki MCP pomijałaby warianty zapisu (`%73`, `;x=1`, `//`, wielkość liter), które łańcuch security dopasowuje do tras MCP. Żądania bez tokenu nic nie kosztują wołającego, dlatego `missing_token` i `malformed` mają osobne limity po 20 zdarzeń na sekundę na proces; nadmiar zwiększa `mcp_audit_authentication_suppressed_total{component,reason}` i nie trafia do C8. Odrzucone tokeny (zły podpis, wygasły) nie mają limitu: wymagają zdarzenia dla każdego odrzucenia, więc brzeg (nginx `limit_req` per adres) powinien ograniczać ich liczbę.

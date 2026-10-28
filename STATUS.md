@@ -1,20 +1,129 @@
 # Status ws-05 (mcp-gateway)
 
-Kamień: **M3** (fala z 2026-10-28) na kontraktach `mcp-contracts` **3.0.1**. Poniżej plan kamieni pośrednich M3, a pod nim
-(od sekcji "Kamień M2") stan z M2, który M3 rozwija. Gdzie M3 zmienia zachowanie z M2, wiersz M2 jest oznaczony "zastąpione w M3".
+Kamień: **M3** (fala z 2026-10-28) na kontraktach `mcp-contracts` **3.1.0** (K1 na 3.0.1, K2-K3 na 3.0.2). Poniżej stan M3;
+od sekcji "Kamień: M2" stan z M2, który M3 rozwija (wiersze zastąpione w M3 są oznaczone). M4 nie jest zaczęte.
 
 ## Kamienie pośrednie M3
 
-| Kamień | Zakres | Commit |
-| --- | --- | --- |
-| K1 | kontrakty 3.0.1 (od K2 3.0.2); 503 `upstream_unavailable` z `Retry-After` przy niedostępnym JWKS (CC-124, kolejność decyzji, własny zestaw kluczy `IdpKeySet`, powody odrzucenia bez parsowania komunikatów bibliotek: LOW-4); audyt odrzuceń mTLS i tokenów BFF na C5 (CC-125); `virtual_server_change` (CC-116); limity zdarzeń `missing_token` i `malformed` z osobnym budżetem i `mcp_audit_authentication_suppressed_total{component,reason}` | K1 |
-| K2 | potwierdzenia TOTP DESTRUCTIVE (C11): oczekujące wywołania w Redis, weryfikacja kodu u brokera, "jedna oczekująca", "pierwsza wygrywa", `invalidate-codes`, C5 podgląd/`viewed`/`cancel`, fail-closed; wektory `confirmation-binding/`, `tool-errors/`, `totp/` | |
-| K3 | `/admin/v1/activity/calls` (CC-095, kursor HMAC), rejestr w zakresie M3 (manifest, `definitionHash`, ukrycie niezgodnej definicji, `title` i zamknięty `inputSchema`) | |
-| K4 | Cedar z podpisanej paczki (pull, podpis, monotoniczna rewizja, brak paczki = brak startu, `prv`), ocena `call` z `refs` i `vsScopes` zamiast grup C9; obraz glibc | |
+| Kamień | Zakres | Commit | Obraz |
+| --- | --- | --- | --- |
+| K1 | kontrakty 3.0.1; 503 `upstream_unavailable` z `Retry-After` przy niedostępnym JWKS, także nieznany `kid` (CC-124, własny `IdpKeySet` z regułą "najwyżej jedno pobranie na odstęp", kolejność decyzji z README); powody odrzucenia bez parsowania komunikatów bibliotek (LOW-4: własne sprawdzenie klucza i podpisu, nazwane walidatory); audyt odrzuceń mTLS i tokenów BFF na C5, próbkowanie (CC-125); `virtual_server_change` (CC-116); osobne budżety `missing_token` i `malformed` | `dd2aa21` | `m3-dd2aa21` |
+| K2 | potwierdzenia TOTP DESTRUCTIVE (C11): stan w Redis, `verify`, jedna oczekująca, "pierwsza wygrywa", `invalidate-codes`, C5 podgląd/`viewed`/`cancel`, fail-closed, utrata stanu; wektory `confirmation-binding/` (77), `totp/` (46, na atrapie brokera), `tool-errors/`; kontrakty 3.0.2 | `156e98e` | `m3-156e98e` |
+| K3 | `/admin/v1/activity/calls` i `/activity` (CC-095, kursor HMAC, wektory `activity-calls/` 40 i `activity-cursor/` 9); rejestr: manifest, `definitionHash`, ukrycie niezgodnej definicji, `title` i zamknięty `inputSchema` (wektory `manifests/` 52); kontrakty 3.1.0 | `d04df49` | `m3-d04df49` |
+| K4 | Cedar z podpisanych paczek (pull, podpis, monotoniczna rewizja, brak startu bez paczki, `prv`, `overrides`), ocena `call` z `refs` i `vsScopes` zamiast grup C9 (wektory `policy-decisions/` gw-*: 23); poprawki przeglądu rejestru (najwyższe zatwierdzone ryzyko, atomowa rejestracja, bootstrap tylko INSERT); obraz glibc; demo na żywo | `408c4e1` | `m3-408c4e1` |
 
-Kamień: **M2** (fala z 2026-10-28) na kontraktach `mcp-contracts` **2.2.5**: wirtualne serwery, API C5 dla BFF
+## M3: zakres z zadania
+
+| Punkt | Stan |
+| --- | --- |
+| 1. Kontrakty 3.0.1 -> 3.1.0 | 503 z `Retry-After` (domyślnie 10 s, 1..60) bez `WWW-Authenticate`, ciało i nagłówki z wektorów `gateway-authentication/` (13) i `-decision/` (12); 401 bez `error="invalid_token"` w nagłówku, ciało "Authentication required."; `client_certificate_rejected` (401 `unauthenticated`, 403 `access_denied`) bez danych z certyfikatu, jedno zdarzenie na adres źródłowy na interwał (domyślnie 1 min), reszta w `mcp_audit_authentication_suppressed_total{component="gateway",reason}`; tokeny BFF odrzucone na C5 z powodem tokenu; `virtual_server_change`; manifest: `title` i `inputSchema` według `ManifestRules` i schematu; `identity_mismatch` w gateway'u nie występował (nic do usunięcia) |
+| 2. Potwierdzenia TOTP | kod w `confirmation_code`, pole dokładane do `inputSchema` w `tools/list` dla narzędzi DESTRUCTIVE (poza hashem); `ConfirmationRules` (port `scripts/lib/confirmation.mjs`) przechodzi wszystkie wektory `confirmation-binding/` razem z `auditReason`; `ConfirmationService` woła brokera (`GET /v1/authenticator`, `verify`, `invalidate-codes`; JWT użytkownika z `tool`, `X-Request-Id` = `rid`); mapowanie `ok`/`invalid`/`replayed`/`burned`/`locked`/`disabled`/`not_registered`/błąd; rezerwacja próby przed pytaniem brokera, zużycie przy `ok` jako compare-and-delete, anulowanie i zastąpienie w trakcie pytania wygrywają; testy na Redis: 12 równoległych złych kodów = 3 pytania do brokera, 6 równoległych dobrych = jedno wykonanie, 6 równoległych różnych operacji = jedna oczekująca. Poprawka z 3.0.1 (burn po potwierdzonym A także dla tej samej operacji) w wektorze `first-call-preview-viewed-confirmed-same-operation-burns`. Utrata stanu: brak rekordu = `confirmation_failed`; brak znacznika epoki (`gw:conf:epoch`) = przez 210 s pierwsze tworzenie na `sub` pali kody (błąd brokera = 503, nic nie powstaje). Niezaimplementowane: kanał elicitation URL / `InputRequiredResult` (tylko `confirmation_required` jako wynik narzędzia w obu erach) |
+| 3. `/activity/calls` | jeden wiersz na wywołanie (zdarzenia w tabeli `activity_events`, 30 dni, `call_key` = `confirmationId` albo `requestId`, nie opuszcza gateway'a), `ActivityAggregator` przechodzi 21 wektorów agregacji i 19 kształtu wiersza; filtry `from`, `to`, `result` (grupy ok/denied/error/confirmation), `q`; kursor HMAC-SHA-256 (128 bitów, 15 min, związany z `sub`), wektory kursora; tylko własne wywołania; zdarzenia `policy_decision allow` nie są zapisywane |
+| 4. Cedar | `PolicyService` + `BundleFetcher` + `PolicyStore` z `mcp-policy-bundle`: ETag, bez przekierowań, 16 MiB, podpis, schemat, rewizja rosnąca (CC-066: stan na dysku, rewizje minimalne), `overrides` co 5 s, oczekiwanie na `overrides` po restarcie, brak startu bez paczki (CC-068); `prv` = rewizja paczki głównej; grupy C9 zastąpione oceną Cedar `call` z `refs`, linkiem (`virtualServer`; `vsScopes` puste, bo zawężanie jest uśpione, CC-085); błąd oceny, błąd w diagnostyce i brak paczki = odmowa; argument nie będący identyfikatorem swojego typu = `invalid_argument`; reguły `destructive-requires-fresh-mfa` nie ma w paczkach testowych gateway'a ani w dev ws-09. Zadziałało z prawdziwą paczką dev ws-09 (`20261028201639-742561e`, główna i `overrides`) |
+| 5. Rejestr w zakresie M3 | patrz "Decyzje i odstępstwa M3" |
+| 6. LOW-4 | zamknięte: zakaz zależności od brzmienia komunikatów Nimbusa/Spring Security. Klucz (nieznany `kid`) i podpis (`bad_signature`) sprawdza `ClassifyingJwtDecoder` sam; `expired`/`not_yet_valid` to nazwane walidatory; tekst żadnej biblioteki nie decyduje o powodzie |
+| 7. Limit zdarzeń | `missing_token` i `malformed` po 20/s na proces, osobne budżety; licznik `mcp_audit_authentication_suppressed_total{component,reason}` (starter ma `mcp_server_audit_...`), propozycja CC niżej |
+
+## Testy (stan po K4)
+
+```
+./mvnw -B install
+test-server: 103 testów (wektory JWT C2 57, wektory totp/ 46 na atrapie brokera)
+gateway:     418 testów, 0 błędów
+  nowe w M3: ConfirmationVectorsTest 77, ConfirmationFlowTest 16 (Redis, atrapa brokera z TOTP), ActivityVectorsTest 50,
+  ActivityApiTest 6, ManifestVectorsTest 52, RegistryTest 6, RegistryStoreTest 6 (PostgreSQL, wyścigi), RegistryServiceTest 4,
+  CedarDecisionVectorsTest 23, PolicyServiceTest 7, PolicyDistributionTest 5, IdpKeySetDecisionTest 13,
+  GatewayAuthenticationVectorsTest 13, AdminAuthenticationAuditTest 6, AuthenticationEventLimiterTest 4, ToolErrorVectorsTest 2
+```
+
+Wektory uruchamiane z artefaktu `test-vectors` w wersji zależności (3.1.0). Jar 3.0.0 i 3.0.1 miał nieaktualne pliki wektorów (49);
+w K1 i K2 były odfiltrowane listą, od 3.0.2 nie są (lista usunięta).
+
+Mutacji w M3 nie robiłem. Test `parallelRightCodesExecuteOnce` znalazł prawdziwy błąd podczas pisania (równoległe złe kody wyczerpywały
+licznik, zanim dobry kod wrócił od brokera, i dobry kod nie wykonywał narzędzia); poprawione w `ConfirmationRules.settle`.
+
+## Przebieg na hoście (2026-10-28, `scripts/m3-demo.sh`)
+
+Prawdziwy Keycloak (alice z grupą `mcp-jira-destructive`, wymiana tokenu BFF), PostgreSQL i Redis z `mcp-platform-dev`, prawdziwa
+paczka dev ws-09 (główna i `overrides`) z serwera paczek ws-01, serwer testowy w miejscu `mcp-jira` (manifest pobrany i
+zatwierdzony), atrapa brokera z ziarnem dev alice (kody z `mcpdev.py otp alice`). Wynik (skrót):
+
+```
+tools/list: jira__delete_issue True ^[0-9]{6}$
+pierwsze wywołanie: confirmation_required (confirmationId, description, previewUrl, expiresAt), nic nie usunięte
+podgląd BFF: tool, system, resource {Jira::Issue ABC-123, parent Jira::Project::ABC}, arguments; viewed 204
+inna operacja DESTRUCTIVE przy otwartym podglądzie: confirmation_blocked (retryAfterSeconds 120)
+token innego użytkownika: 404; zły kod: confirmation_failed; cancel 204 -> ponowienie confirmation_cancelled
+nowa operacja, po 65 s dobry kod: {"deleted":"ABC-124"}; ten sam kod ponownie: confirmation_failed;
+kolejna operacja z użytym kodem: confirmation_failed
+activity/calls: confirmation_pending (ABC-125, 1 zły kod), confirmed (ABC-124), blocked_by_pending (ABC-999), cancelled (ABC-123, 1 zły kod)
+```
+
+Nie sprawdzone: prawdziwy broker M3 (w compose działa obraz M2 brokera; testowałem na atrapie, która liczy TOTP według tych samych
+wektorów), proxy i Claude Code na `/v/<slug>/mcp`, start kontenera `mcp-gateway:m3-408c4e1` w compose (obraz zbudowany, `java -version`
+działa, natywna biblioteka Cedar dla glibc niesprawdzona w kontenerze; macOS działa), UI portalu.
+
+## Decyzje i odstępstwa M3
+
+- **Rejestr bez zatwierdzania przez administratora.** Zatwierdzeniem jest rejestracja: `PUT /admin/v1/registry/servers/{serverId}`
+  (CN `mcp-registry-ci`) zastępuje zatwierdzony zbiór całym manifestem, a serwer bez żadnego wiersza w `registry_servers` dostaje
+  jednorazowo manifest, który sam serwuje (`INSERT ... ON CONFLICT DO NOTHING`, nigdy nie nadpisuje). C5 mówi, że nowe i zmienione
+  narzędzia są `pending_approval`; to jest M4 (CC-097), więc wszystkie wpisy mają `status: approved`, brak `getPendingTool`/`approveTool`.
+  Zamiast zatwierdzenia obniżenia ryzyka: odrzucenie `422 manifest_rejected`. Najwyższe kiedykolwiek zatwierdzone ryzyko per
+  (serwer, narzędzie) leży w `registry_risk_floor` i nie znika z narzędziem; do tego minimalne ryzyko z konfiguracji. Zapisany manifest,
+  który przestał być akceptowalny, zostawia serwer bez narzędzi (nie ma wtedy bootstrapu).
+- **Tryb rejestru `required` jest domyślny**, a `static` (narzędzia z `application.yml`) tylko jawnie, per serwer (`manifest: static`) albo
+  globalnie. Testy mają `static` dla serwerów bez manifestu i `required` dla `mcp-gitlab`.
+- **Kontrola definicji przy wywołaniu:** wynik ostatniego sprawdzenia serwera żyje 30 s (`gateway.registry.definition-check-ttl`); po tym czasie
+  wywołanie robi `tools/list` na serwerze. Zmiana opisu na serwerze: zniknięcie z `tools/list` natychmiast, odmowa wywołania najpóźniej po TTL.
+- **Wywołanie wymaga grupy z paczki, nie z nazwy:** `requiredEntitlements` w `access_denied` i katalogu to nadal konwencja C9
+  (`mcp-<system>-read|write|destructive`), informacyjna; przy `forbid` z polityki pole jest pominięte.
+- **Powody w audycie spoza listy znanych wartości C8:** `link_scope` (narzędzie poza linkiem, jak w wektorach `activity-calls/`),
+  `policy_unavailable`, `policy_error`, `invalid_argument`, `rate_limited` (zdarzenie `confirmation`). `policy_decision` z odmową ma teraz
+  `outcome: denied` i `errorCode`.
+- **Wywołania DESTRUCTIVE w M2 były `tool_disabled`** (odstępstwo z M2): zdjęte, `confirmation_required` zastępuje je.
+- **Klucze Redis** (wszystkie pod `gw:`): `gw:conf:u:<sha256(sub)>` (cały stan użytkownika jako JSON, zapis skryptem EVAL), `gw:conf:epoch`,
+  `gw:conf:eb:<epoka>:<sha256(sub)>`. Nie użyłem prefiksów `gw:confirm:pending|trace|count` z propozycji ws-01 (jeden klucz na użytkownika
+  zamiast trzech rodzin); ACL gateway'a z `redis/gateway.rules` wystarcza (EVAL, bez SCRIPT).
+- **`description` w `confirmation_required`:** `<narzędzie> (<system>): nazwa=wartość, ...`, wartości JSON, znaki zakazane (CC-121) jako `\uXXXX`,
+  200 znaków na wartość, 50 argumentów, 1000 znaków łącznie. `resource.parent` tylko dla `Jira::Issue` (z klucza zgłoszenia).
+- **Aktywność:** zapis zdarzeń jest synchroniczny; błąd zapisu zwiększa `gateway_activity_write_failures_total` i nie psuje wywołania. Wynik wiersza
+  dla `tool_call` z `credential_required`/`rate_limited` to nazwany wynik, nie `error` (rozszerzenie względem referencji, wektory nie obejmują).
+- **HA (M4):** rejestr, klucz kursora (`MCP_ACTIVITY_CURSOR_KEY`) i klucze C2 muszą być wspólne dla instancji; zatwierdzenia z innej instancji
+  gateway widzi po restarcie.
+
+## Co potrzebuję od innych strumieni
+
+- **ws-01:** wolumen na `/app/state` (stan ochrony przed cofnięciem paczek) i `MCP_POLICY_*` w usłudze `mcp-gateway` (klucze publiczne dev z
+  `mcp-policies/keys/dev`, `MCP_POLICY_ALLOW_TEST_KEYS=true`), `MCP_REGISTRY_BOOTSTRAP` zostaje domyślnie włączony dla dev; `redis` z
+  `appendonly yes` i `noeviction` (stan potwierdzeń); ewentualnie `MCP_ACTIVITY_CURSOR_KEY`. Obraz jest na glibc (`eclipse-temurin:25-jre`).
+- **ws-06 (broker):** `GET /v1/authenticator`, `verify`, `invalidate-codes` z JWT użytkownika z `tool` i `X-Request-Id`; mój klient oczekuje `204` dla
+  `invalidate-codes` i dla `verify` jednego z `ok|invalid|replayed|burned|locked|disabled|not_registered`.
+- **ws-07/ws-08:** `viewed` po wyrenderowaniu podglądu, `cancel`, odpytywanie podglądu (404 po zastąpieniu); `X-Next-Cursor` przekazywany bez zmian.
+- **ws-04 (serwery):** `GET /mcp-manifest` na korzeniu adresu serwera (gateway pobiera `<origin>/mcp-manifest` z JWT serwisowym) i narzędzie
+  `delete_issue` (DESTRUCTIVE, `resourceRefs` `issueKey`) w demie.
+- **ws-09:** paczka produkcyjna musi mieć `forbid` tylko tam, gdzie zamierzone; gateway wymaga `schemaVersion` zgodnego z 3.1.0 (ma).
+
+## Propozycje CC (do ws-00)
+
+10. **Nazwa licznika wspólna dla komponentów:** `mcp_audit_authentication_suppressed_total{component,reason}` (gateway: `component="gateway"`).
+    Starter ma `mcp_server_audit_authentication_suppressed_total{reason}`, M2 gateway `gateway_audit_authentication_suppressed_total`. Kontrakt tego nie
+    określa; do README (C8) razem z regułą "osobny budżet na powód dla `missing_token` i `malformed`, nadmiar tylko w liczniku".
+11. **Wektory `gateway-authentication/`:** `resourcePath` to trasa (`/s/mcp-jira`), a gateway odsyła metadane zasobu równego adresowi endpointu
+    (`/s/mcp-jira/mcp`, jak w M2 i RFC 9728). Doprecyzować w README albo wektorach.
+12. **C8 `reason` i aktywność:** dopisać do słownika `link_scope` (zdarzenie `policy_decision` dla narzędzia poza linkiem), `policy_unavailable`,
+    `policy_error`; `ActivityCall.result` dla `tool_call` ze `reason` `credential_required`/`rate_limited`; grupy filtra `result` (ok = ok;
+    denied = `denied_*`, `tool_disabled`, `step_up_required`; error = `error`, `credential_required`, `rate_limited`; confirmation = reszta).
+13. **C5 rejestr w M3:** zapis `PUT` jako zatwierdzenie do czasu CC-097 oraz `422` dla obniżenia ryzyka (także po usunięciu narzędzia), `getPendingTool`
+    i `approveTool` nieobsługiwane (404) do M4. Doprecyzować `internalUrl` w manifeście: gateway porównuje host z adresem z konfiguracji albo z nazwą TLS
+    `<serverId>.internal` i port.
+14. **Znacznik epoki stanu potwierdzeń (README, "Utrata stanu"):** nazwać go w kontrakcie i opisać zachowanie wielu instancji (u mnie `gw:conf:epoch`
+    w tym samym Redisie co stan, ważny 210 s po utracie), bo brak definicji grozi różnymi implementacjami u różnych instancji.
+15. **Klient pobierania paczek** (CC-A ws-09) nadal po mojej stronie (`BundleFetcher`); jeśli wejdzie do `mcp-policy-bundle`, usunę własny.
+
+Kamień: **M2** (zastąpiony przez M3 wyżej) na kontraktach `mcp-contracts` **2.2.5**: wirtualne serwery, API C5 dla BFF
 (katalog, linki), `credential_required` z linkiem do portalu, jedna domena (CC-089). Pod spodem M1 (OAuth RS,
-broker, C2/C3, audyt, jeden serwer). M3 (potwierdzenia, zawężanie zasobów, `overrides`) i M4 nie są zaczęte.
+broker, C2/C3, audyt, jeden serwer). 
 
 ## Kamienie pośrednie M2
 

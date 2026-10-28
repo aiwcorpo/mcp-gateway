@@ -23,7 +23,7 @@ set +a
 export MCP_GATEWAY_PORT="${MCP_GATEWAY_PORT:-18700}"
 export MCP_INTERNAL_PORT="${MCP_INTERNAL_PORT:-18701}"
 export MCP_PUBLIC_URL="${MCP_PUBLIC_URL:-http://localhost:$MCP_GATEWAY_PORT}"
-export MCP_OIDC_ISSUER=http://localhost:18080/realms/corp
+export MCP_OIDC_ISSUER="${MCP_OIDC_ISSUER:-https://localhost:18746/realms/corp}"
 export MCP_OIDC_JWKS_URI=http://localhost:18080/realms/corp/protocol/openid-connect/certs
 export MCP_OIDC_TOKEN_URI=http://localhost:18080/realms/corp/protocol/openid-connect/token
 export MCP_OIDC_CLIENT_ID=mcp-gateway
