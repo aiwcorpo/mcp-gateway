@@ -13,7 +13,7 @@ broker, C2/C3, audyt, jeden serwer). M3 (potwierdzenia, zawężanie zasobów, `o
 | K3 | port wewnętrzny rozpoznawany po znormalizowanej ścieżce (`//admin/v1`, `/%61dmin/v1`), szersze testy negatywne ścieżek; mutacje testów (3 z 3 zabite) | `1aed158` |
 | K4 | poprawki przeglądu Opus (LOW 1-10, MEDIUM-1 odroczone do M3); obraz `mcp-gateway:m2-8dc1d7a` | `8dc1d7a` |
 | K5 | kontrakty 2.2.5: CC-118 (`not_found_or_denied` dla narzędzia spoza linku), CC-119 (409 `virtual_server_limit_reached`), CC-120 (zdarzenie `authentication` z gateway'a dla odrzuconych tokenów C1) | `7ffa55d` |
-| K7 | poprawki automatycznego przeglądu e4608ea: audyt `authentication` fail-closed (wyjątki tylko dla szumu), `InvalidationListener` traktuje zdarzenie nieznanego połączenia jako utratę subskrypcji | patrz `git log` |
+| K7 | poprawki automatycznego przeglądu e4608ea: audyt `authentication` fail-closed (wyjątki tylko dla szumu), `InvalidationListener` traktuje zdarzenie nieznanego połączenia jako utratę subskrypcji | `d65088f` |
 | K6 | poprawki przeglądu 7ffa55d: awaria JWKS -> 401 i zdarzenie, domyślne walidatory (`typ`, `cnf`) z powrotem, audyt `authentication` tylko dla `/s/*/mcp` i `/v/*/mcp` z limitem `missing_token`, stabilizacja testu Redis | `e4608ea` |
 
 ## M2: zakres z zadania
