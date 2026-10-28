@@ -83,8 +83,8 @@ class VirtualServerServiceTest {
         when(store.insert(any(), eq(2))).thenReturn(VirtualServerStore.Inserted.LIMIT_REACHED);
         assertThatThrownBy(() -> service.create(reader, new VirtualServerService.Create("link", "Link", List.of("jira__get_issue"))))
                 .isInstanceOfSatisfying(AdminException.class, e -> {
-                    assertThat(e.status()).isEqualTo(HttpStatus.BAD_REQUEST);
-                    assertThat(e.code()).isEqualTo("invalid_request");
+                    assertThat(e.status()).isEqualTo(HttpStatus.CONFLICT);
+                    assertThat(e.code()).isEqualTo("virtual_server_limit_reached");
                     assertThat(e.auditReason()).isEqualTo("virtual_server_limit");
                 });
     }

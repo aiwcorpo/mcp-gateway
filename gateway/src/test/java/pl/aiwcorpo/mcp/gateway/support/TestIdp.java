@@ -105,6 +105,33 @@ public final class TestIdp implements AutoCloseable {
         }
     }
 
+    /** Claims of a valid alice token for {@code mcp-gateway}; tests change what they want to break. */
+    public JWTClaimsSet.Builder validClaims(String sub, String username) {
+        Instant now = Instant.now();
+        return new JWTClaimsSet.Builder()
+                .issuer(ISSUER).subject(sub).audience(List.of("mcp-gateway"))
+                .issueTime(Date.from(now)).expirationTime(Date.from(now.plusSeconds(900)))
+                .claim("azp", "claude-code").claim("preferred_username", username).claim("groups", List.of("mcp-jira-read"))
+                .jwtID(UUID.randomUUID().toString());
+    }
+
+    /** Signs with the IdP key (ES256, the right kid). */
+    public String sign(JWTClaimsSet claims) {
+        return sign(claims, key);
+    }
+
+    /** Signs with another key under the given header: a token the IdP never issued. */
+    public String sign(JWTClaimsSet claims, ECKey signer) {
+        try {
+            SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.ES256).keyID(signer.getKeyID())
+                    .type(JOSEObjectType.JWT).build(), claims);
+            jwt.sign(new ECDSASigner(signer));
+            return jwt.serialize();
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     @Override
     public void close() {
         server.stop(0);

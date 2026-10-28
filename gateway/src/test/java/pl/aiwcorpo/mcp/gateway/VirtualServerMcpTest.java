@@ -74,14 +74,14 @@ class VirtualServerMcpTest extends GatewayTestBase {
         link("narrow", List.of("jira__get_issue"));
         HttpResponse<String> call = sendVirtual(aliceToken(), "narrow", "tools/call", "jira__search_issues",
                 "{\"name\":\"jira__search_issues\",\"arguments\":{\"project\":\"ABC\"}}");
-        assertThat(toolError(call).path("error").asString()).isEqualTo("tool_disabled");
+        assertThat(toolError(call).path("error").asString()).isEqualTo("not_found_or_denied");
         assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
         assertThat(resolveCount()).isZero();
         assertThat(toolError(sendVirtual(aliceToken(), "narrow", "tools/call", "gitlab__get_issue",
                 "{\"name\":\"gitlab__get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}")).path("error").asString())
-                .isEqualTo("tool_disabled");
+                .isEqualTo("not_found_or_denied");
         assertThat(toolError(sendVirtual(aliceToken(), "narrow", "tools/call", "jira__nope", "{\"name\":\"jira__nope\",\"arguments\":{}}"))
-                .path("error").asString()).isEqualTo("tool_disabled");
+                .path("error").asString()).isEqualTo("not_found_or_denied");
         assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
     }
 

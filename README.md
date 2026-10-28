@@ -7,7 +7,7 @@ audytu C8 z jednym `requestId`.
 
 Stan: kamień M2 (wirtualne serwery, API C5 dla BFF, jedna domena) na M1 (OAuth RS, broker, C2/C3, audyt).
 Serwery z konfiguracji statycznej zamiast rejestru manifestów. Co działa, czego nie ma i odstępstwa:
-[STATUS.md](STATUS.md). Kontrakty: `mcp-contracts` 2.2.1.
+[STATUS.md](STATUS.md). Kontrakty: `mcp-contracts` 2.2.5.
 
 ## Moduły
 
@@ -32,7 +32,7 @@ Serwery z konfiguracji statycznej zamiast rejestru manifestów. Co działa, czeg
   metadanymi.
 - **Autoryzacja (tymczasowa, grupy zamiast Cedar):** `READ_ONLY` wymaga grupy `mcp-<system>-read`, `UPDATE` grupy
   `mcp-<system>-write`, `DESTRUCTIVE` zawsze odmowa (brak potwierdzeń przed M3). Interfejs `ToolAuthorizer` dostanie
-  implementację Cedar z `PolicyStore`. Narzędzie spoza konfiguracji jest ukryte i daje `tool_disabled`.
+  implementację Cedar z `PolicyStore`. Narzędzie spoza konfiguracji jest ukryte i daje `not_found_or_denied`.
 - **Poświadczenia (C4):** `POST /v1/credentials/resolve` po mTLS (certyfikat CN `mcp-gateway`, nazwa brokera
   z konfiguracji) z JWT C2 `aud=mcp-credential-broker` i `tool`; `409` -> `credential_required` z `connectUrl`;
   każde `5xx`, brak połączenia, timeout -> `upstream_unavailable`; `4xx` inne niż `409` i odpowiedź spoza C4
@@ -78,7 +78,7 @@ actuatora.
     nie-obiekt -> `invalid_request`), puste lub brak -> przyjęte i nigdy nie zwracane (CC-085);
   - użycie: link ma tylko właściciel; cudzy lub nieistniejący slug daje to samo `404` (także `DELETE` sesji), slug
     spoza wzorca `VirtualServerSlug` nie trafia do bazy; `tools/list` pokazuje tylko narzędzia linku, które
-    użytkownik może teraz wywołać; `tools/call` spoza linku -> `tool_disabled`, narzędzie linku bez uprawnienia ->
+    użytkownik może teraz wywołać; `tools/call` spoza linku -> `not_found_or_denied`, narzędzie linku bez uprawnienia ->
     `access_denied` (decyzja z bieżącego tokenu, nie z chwili utworzenia linku); link do kilku serwerów łączy ich
     listy (padnięty serwer jest pomijany, chyba że padły wszystkie);
   - claimy C2: każde żądanie przez link niesie `vs` = slug i `vsc` = `{}` (zawężanie zasobów uśpione); audyt C8 ma
@@ -126,7 +126,7 @@ Zmienne środowiska (nazwy z `mcp-platform-dev`, usługa `mcp-gateway` profilu `
 | `MCP_DB_URL`, `MCP_DB_USER`, `MCP_DB_PASSWORD` | PostgreSQL (baza `gateway`): linki; Flyway zakłada tabelę przy starcie, bez bazy gateway nie wstaje |
 | `MCP_ADMIN_AUDIENCE`, `MCP_ADMIN_AUTHORIZED_PARTY` | C5: `aud` tokenu BFF (domyślnie `mcp-gateway-admin`, token z `aud` `mcp-gateway` jest odrzucany, a token MCP z `aud` admina też) i wymagane `azp` (domyślnie `mcp-portal-bff`) |
 | `MCP_ADMIN_CLIENT_CNS`, `MCP_ADMIN_REGISTRY_CLIENT_CNS` | C5: CN certyfikatów klienta dla operacji BFF (domyślnie `mcp-portal-bff`) i dla zapisu rejestru (domyślnie `mcp-registry-ci`); przydział operacji do listy jest w kodzie wg `x-allowed-client-cn`, operacja spoza kontraktu to 403 dla każdego CN |
-| `MCP_VIRTUAL_SERVERS_MAX_PER_USER` | limit linków na użytkownika (domyślnie 50); nadmiar to 400 `invalid_request` (zdarzenie audytu z powodem `virtual_server_limit`) |
+| `MCP_VIRTUAL_SERVERS_MAX_PER_USER` | limit linków na użytkownika (domyślnie 50); nadmiar to 409 `virtual_server_limit_reached` (zdarzenie audytu z powodem `virtual_server_limit`) |
 | `MCP_METRICS_CLIENT_CNS` | CN certyfikatów klienta dla `/actuator/prometheus` (puste = nikt) |
 | `MCP_SERVER_<SYSTEM>_MCP_URL`, `_ENABLED`, `_VERSION` | adres (`https`), wyłącznik i wersja serwera dla JIRA, CONFLUENCE, GITLAB, SERVICEDESK, OPENSEARCH; adresy domyślne `https://mcp-<system>.internal:8443/mcp`, dla Jiry `MCP_SERVER_JIRA_URL` + `/mcp` |
 | `MCP_INTERNAL_PORT` | port wewnętrzny TLS, domyślnie `8443` |
@@ -170,13 +170,15 @@ docker build -t mcp-gateway-test-server:dev -f test-server/Dockerfile .
 
 | Test | Co sprawdza |
 | --- | --- |
-| `InternalJwtVerifierVectorTest` (test-server) | odbiorca C2 serwera testowego daje wynik i powód z każdego z 51 wektorów `test-vectors/jwt` (2.2.1) |
+| `InternalJwtVerifierVectorTest` (test-server) | odbiorca C2 serwera testowego daje wynik i powód z każdego z 51 wektorów `test-vectors/jwt` (2.2.5) |
 | `InternalTokenIssuerTest` | JWT gateway'a zgodny z `internal-jwt.schema.json` i przyjmowany przez odbiorcę; `tool` tylko przy `tools/call`; wariant serwisowy tylko na `GET /v1/systems`; odrzucenie kluczy `test-` i opublikowanych kluczy testowych |
 | `CredentialCacheTest`, `CredentialServiceTest` | TTL, `expiresAt`, unieważnienie (sub, system), wyścig resolve/unieważnienie, pomijanie cache bez subskrypcji, typ poświadczenia, token exchange |
 | `StreamableHttpClientTest` | limit bajtów odpowiedzi (SSE bez znaku nowej linii, JSON), limit czasu na milczący strumień SSE, wybór odpowiedzi z SSE po `id` |
 | `GroupToolAuthorizerTest` | trzy poziomy ryzyka: `-read`, `-write`, DESTRUCTIVE zawsze odmowa |
 | `AdminApiTest` | C5 przez mTLS: certyfikat BFF, innego komponentu, obcego CA, serwera (serverAuth) i brak; token dla złego `aud`; JWKS nadal pobierany przez klientów z dowolnym certyfikatem; katalog z polityki (odpowiedź zgodna ze schematem `Catalog`); tworzenie, lista, usuwanie linku; 409 `slug_taken`; cudzy link nie do usunięcia; 403 dla narzędzia ponad uprawnienia (nic nie zapisane); 21 błędnych ciał -> 400; kolejność kontroli `resourceDefaults` |
-| `VirtualServerMcpTest` | `/v/<slug>/mcp`: lista tylko z narzędzi linku (kilka serwerów, padnięty serwer pominięty), `vs` i puste `vsc` w JWT do serwera i w audycie, narzędzie spoza linku -> `tool_disabled`, utracone uprawnienie -> `access_denied` bez resolve i bez wywołania serwera, cudzy i nieistniejący slug -> identyczne 404 (POST, DELETE, obie ery), slugi spoza wzorca, usunięcie linku działa od razu, `connectUrl` z adresu publicznego |
+| `ClientTokenAuditTest` | zdarzenie `authentication` z gateway'a dla każdego powodu odrzucenia tokenu C1, tylko pola ze schematu, treść tokenu ani claimy nie trafiają do zdarzenia ani logu, awaria JWKS -> `jwks_unavailable` |
+| `AuditVectorsTest` | wszystkie wektory `audit-events` 2.2.5 oceniane schematem C8 zgodnie z `expected.valid` |
+| `VirtualServerMcpTest` | `/v/<slug>/mcp`: lista tylko z narzędzi linku (kilka serwerów, padnięty serwer pominięty), `vs` i puste `vsc` w JWT do serwera i w audycie, narzędzie spoza linku -> `not_found_or_denied`, utracone uprawnienie -> `access_denied` bez resolve i bez wywołania serwera, cudzy i nieistniejący slug -> identyczne 404 (POST, DELETE, obie ery), slugi spoza wzorca, usunięcie linku działa od razu, `connectUrl` z adresu publicznego |
 | `PublicEdgeTest`, `PublicEdgeFilterTest` | nosniff, CSP, brak `Set-Cookie` i JSON na ponad 20 odpowiedziach (gniazdo surowe: błędy aplikacji i kontenera, `Accept: text/html`), `Cookie` klienta nie dociera do serwera ani brokera, metadane RFC 9728 na adresie publicznym mimo fałszywego `Host`/`X-Forwarded-*`, metadane tylko dla kształtów endpointów MCP, wyzwanie bez znaków z żądania |
 | `ClientCertificateVerifierTest`, `PublicUrlsTest`, `ResourceMetadataTest`, `ServerRegistryTest`, `VirtualServerServiceTest` | łańcuch, daty i cel certyfikatu klienta; origin publiczny; kształty ścieżek metadanych; rozwiązywanie nazw narzędzi i walidacja konfiguracji; walidacja ciała linku, brak zapytań do bazy dla złych slugów, tylko właściciel |
 | `GatewayIntegrationTest` | prawdziwy gateway z IdP, brokerem i serwerem testowym po mTLS: 401 + RFC 9728, sesje i ich właściciel, obie ery protokołu, nagłówki klienta nie docierają do serwera, `credential_required`, `upstream_unavailable` (503 i zerwane połączenie), unieważnienie <= 1 s, TTL, SAN serwera, JWKS tylko na porcie wewnętrznym, audyt zgodny ze schematem C8, brak sekretów w logach; DESTRUCTIVE i UPDATE bez `-write`, poświadczenie spoza ASCII (bez wartości w logu), odpowiedzi brokera spoza C4, wstrzymanie kontenera Redis (cache pomijany, powrót po subskrypcji), tokeny C1 za długie i z `sub` `system:`, limit 1 MiB, `Origin` |

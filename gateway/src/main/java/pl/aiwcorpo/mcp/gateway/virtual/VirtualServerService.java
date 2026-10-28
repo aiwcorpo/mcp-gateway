@@ -86,7 +86,7 @@ public class VirtualServerService {
         return new Create(slug, displayName, List.copyOf(tools));
     }
 
-    /** Creates the link; 403 access_denied when any tool is unknown, disabled or not granted to the creator; 400 at the per-user limit. */
+    /** Creates the link; 403 access_denied when any tool is unknown, disabled or not granted to the creator; 409 virtual_server_limit_reached at the per-user limit. */
     public VirtualServer create(GatewayUser owner, Create request) {
         for (String name : request.tools()) {
             boolean allowed = registry.resolve(name)
@@ -100,8 +100,7 @@ public class VirtualServerService {
                 Instant.now());
         switch (store.insert(server, maxPerUser)) {
             case SLUG_TAKEN -> throw new AdminException(HttpStatus.CONFLICT, "slug_taken");
-            // C5 has no code for this; invalid_request is the nearest one it defines (proposal CC in STATUS.md).
-            case LIMIT_REACHED -> throw new AdminException(HttpStatus.BAD_REQUEST, "invalid_request", "virtual_server_limit");
+            case LIMIT_REACHED -> throw new AdminException(HttpStatus.CONFLICT, "virtual_server_limit_reached", "virtual_server_limit");
             case CREATED -> {
             }
         }

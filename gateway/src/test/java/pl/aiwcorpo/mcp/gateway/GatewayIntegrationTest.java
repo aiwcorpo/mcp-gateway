@@ -386,14 +386,14 @@ class GatewayIntegrationTest extends GatewayTestBase {
     }
 
     @Test
-    void unconfiguredToolIsHiddenAndDisabled() throws Exception {
+    void unconfiguredToolIsNotFound() throws Exception {
         HttpResponse<String> call = sendModern(aliceToken(), "tools/call", "jira__drop_project",
                 "{\"name\":\"jira__drop_project\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
-        assertThat(toolError(call).path("error").asString()).isEqualTo("tool_disabled");
+        assertThat(toolError(call).path("error").asString()).isEqualTo("not_found_or_denied");
         assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
         HttpResponse<String> unprefixed = sendModern(aliceToken(), "tools/call", "get_issue",
                 "{\"name\":\"get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
-        assertThat(toolError(unprefixed).path("error").asString()).isEqualTo("tool_disabled");
+        assertThat(toolError(unprefixed).path("error").asString()).isEqualTo("not_found_or_denied");
     }
 
     // --- Credentials: broker errors, cache, invalidation ---------------------------------------------------

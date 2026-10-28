@@ -1,6 +1,6 @@
 # Status ws-05 (mcp-gateway)
 
-Kamień: **M2** (fala z 2026-10-28) na kontraktach `mcp-contracts` **2.2.1**: wirtualne serwery, API C5 dla BFF
+Kamień: **M2** (fala z 2026-10-28) na kontraktach `mcp-contracts` **2.2.5**: wirtualne serwery, API C5 dla BFF
 (katalog, linki), `credential_required` z linkiem do portalu, jedna domena (CC-089). Pod spodem M1 (OAuth RS,
 broker, C2/C3, audyt, jeden serwer). M3 (potwierdzenia, zawężanie zasobów, `overrides`) i M4 nie są zaczęte.
 
@@ -12,12 +12,13 @@ broker, C2/C3, audyt, jeden serwer). M3 (potwierdzenia, zawężanie zasobów, `o
 | K2 | mTLS C5 (certyfikat klienta oceniany w filtrze, nie w handshake: regresja pobierania JWKS przez serwery); konfiguracja pięciu systemów; atrapa brokera, skrypty hosta na portach 18700-18703, demo na żywo z Keycloakiem, PostgreSQL i Redisem; README | `db8454b` |
 | K3 | port wewnętrzny rozpoznawany po znormalizowanej ścieżce (`//admin/v1`, `/%61dmin/v1`), szersze testy negatywne ścieżek; mutacje testów (3 z 3 zabite) | `1aed158` |
 | K4 | poprawki przeglądu Opus (LOW 1-10, MEDIUM-1 odroczone do M3); obraz `mcp-gateway:m2-8dc1d7a` | `8dc1d7a` |
+| K5 | kontrakty 2.2.5: CC-118 (`not_found_or_denied` dla narzędzia spoza linku), CC-119 (409 `virtual_server_limit_reached`), CC-120 (zdarzenie `authentication` z gateway'a dla odrzuconych tokenów C1) | patrz `git log` |
 
 ## M2: zakres z zadania
 
 | Punkt | Stan |
 | --- | --- |
-| 1. Kontrakty 2.2.1 | `pom.xml` 2.2.1, 51 wektorów JWT (odbiorca serwera testowego zna `server/discover`), schemat audytu C8 (`virtualServer`, `admin_change`), katalog i `VirtualServer*` walidowane schematami z OpenAPI C5 w testach. Zdarzenie `authentication` (2.1.0/2.1.1) jest dla odbiorców JWT (serwery, broker), gateway go nie emituje. `no-store` na odpowiedziach potwierdzeń: potwierdzenia to M3. Pivot 3.0.0 nietknięty |
+| 1. Kontrakty 2.2.5 | `pom.xml` 2.2.5 (od K5; K1-K4 na 2.2.1), 51 wektorów JWT (odbiorca serwera testowego zna `server/discover`), schemat audytu C8 (`virtualServer`, `admin_change`), katalog i `VirtualServer*` walidowane schematami z OpenAPI C5 w testach. Zdarzenie `authentication` gateway emituje od K5 (CC-120): `ClassifyingJwtDecoder` + `McpAuthenticationEntryPoint`, powody `missing_token`, `malformed`, `alg_not_allowed`, `bad_signature`, `unknown_kid`, `wrong_issuer`, `wrong_audience`, `expired`, `not_yet_valid`, `invalid_claims`, `jwks_unavailable` (errorCode `upstream_unavailable`); tylko pola ze schematu, bez niczego z niezweryfikowanego tokenu; `X-Request-Id` w odpowiedzi 401. `client_certificate_rejected` i `replay_store_unavailable` nie dotyczą tokenu C1 gateway'a (mTLS C5 i magazyn jti istnieją u odbiorców C2), więc nie są emitowane. `no-store` na odpowiedziach potwierdzeń: potwierdzenia to M3. Pivot 3.0.0 nietknięty |
 | 2. Wirtualne serwery | CRUD, 409 `slug_taken`, filtr `tools/list` i `tools/call` do narzędzi linku i do uprawnień bieżącego tokenu, `vs`/`vsc` w C2, `resource_defaults_unsupported` (kolejność z README 2.2.1); link tylko dla właściciela |
 | 3. Katalog C5 | `GET /admin/v1/catalog` z `title`, `disabled`, `requiresConfirmation`, `access`, `requiredEntitlements`; `enabled` serwera (CC-088) przez `disabled` wszystkich jego narzędzi. **Bez** `credential`, `connection`, `status`, `actions`: w kontrakcie to katalog portalu C12 (`PortalCatalogServer`), składany przez BFF z C5, C4 `GET /v1/systems` i `GET /v1/connections`; schemat C5 ma `additionalProperties: false`. `GET /admin/v1/registry/servers` (tam leży `RegistryServer.enabled`) nie jest zrobione |
 | 4. `credential_required` | `connectUrl` = `<publicBaseUrl>/connections?system=<system>`, adres z konfiguracji; `connectUrl` z odpowiedzi brokera jest sprawdzany i nie przekazywany klientowi |
@@ -28,9 +29,10 @@ broker, C2/C3, audyt, jeden serwer). M3 (potwierdzenia, zawężanie zasobów, `o
 
 ```
 ./mvnw -B install
-test-server: Tests run: 51, Failures: 0, Errors: 0   (InternalJwtVerifierVectorTest, wszystkie wektory C2 2.2.1)
-gateway:     Tests run: 120, Failures: 0, Errors: 0   (stan po K4, 8dc1d7a)
+test-server: Tests run: 51, Failures: 0, Errors: 0   (InternalJwtVerifierVectorTest, wszystkie wektory C2 2.2.5, bez zmian liczby)
+gateway:     Tests run: 128, Failures: 0, Errors: 0   (stan po K5; po K4 było 120)
   GatewayIntegrationTest 32, AdminApiTest 16, VirtualServerMcpTest 12, PublicEdgeTest 8, InternalTokenIssuerTest 8,
+  ClientTokenAuditTest 7, AuditVectorsTest 1 (wszystkie wektory audit-events 2.2.5),
   VirtualServerServiceTest 7, CredentialCacheTest 6, GroupToolAuthorizerTest 5, ClientCertificateVerifierTest 5,
   CredentialServiceTest 4, StreamableHttpClientTest 4, InternalPortFilterTest 3, ServerRegistryTest 3,
   ResourceMetadataTest 3, PublicUrlsTest 2, PublicEdgeFilterTest 2
@@ -41,7 +43,7 @@ Scenariusze negatywne z zadania i gdzie siedzą: link z narzędziem ponad uprawn
 `access_denied`, zero wywołań brokera i serwera), cudzy slug (`someoneElsesSlugIsNotFoundForEveryMethodAndEra`: to samo
 404 co dla nieistniejącego, POST/DELETE, obie ery), slug spoza wzorca (`slugsOutsideThePatternAreNotFound...` i
 `VirtualServerServiceTest`: zapytanie do bazy nie jest wykonywane), narzędzie spoza linku (`toolOutsideTheLink...`:
-`tool_disabled`), `Cookie` od klienta (`PublicEdgeTest.clientCookies...`, `PublicEdgeFilterTest`). Mutacje: link bez
+`not_found_or_denied`), `Cookie` od klienta (`PublicEdgeTest.clientCookies...`, `PublicEdgeFilterTest`). Mutacje: link bez
 filtra (5 testów czerwonych), link dostępny dla każdego (2), tworzenie bez sprawdzania uprawnień (2).
 
 ### Przebieg na hoście (2026-10-28, `scripts/m2-demo.sh`)
@@ -59,7 +61,7 @@ z `mcp-platform-dev`, gateway na 18700/18701, serwer testowy w miejscu `mcp-jira
 == no token on the link  HTTP/1.1 401, nosniff, CSP, WWW-Authenticate: Bearer resource_metadata="http://localhost:18700/.well-known/oauth-protected-resource/v/m2-demo/mcp"
 == tools/list on the link  ['jira__get_issue', 'jira__search_issues']
 == tools/call jira__get_issue on the link  {"key":"ABC-1","summary":"Login page returns 500"}   (PAT z atrapy brokera, przez serwer testowy do mocka Jiry)
-== a tool the user may call but the link does not name  {"error":"tool_disabled", ...}
+== a tool the user may call but the link does not name  {"error":"not_found_or_denied", ...}
 == delete the link: HTTP 204; potem /v/m2-demo/mcp -> {"error":"not_found"}
 bob (bez PAT) na /s/mcp-jira/mcp z Cookie: connectUrl http://localhost:18700/connections?system=jira, 0 wystąpień wartości cookie w logach trzech procesów
 ```
@@ -82,7 +84,7 @@ nginx przed gateway'em (ws-01), prawdziwy broker z M2 (ws-06) na jego portach, k
 - **DESTRUCTIVE w katalogu:** `access: denied`, `disabled: true`, `requiresConfirmation: true`, `requiredEntitlements`
   `mcp-<system>-destructive`, bo wywołanie jest `tool_disabled` do M3 (brak potwierdzeń).
 - **Narzędzie spoza linku** (znane z konfiguracji, ale nie w linku) i narzędzie spoza konfiguracji: ten sam wynik
-  `tool_disabled`, audyt `deny`/`tool_disabled`. Kontrakt C10 nie ma kodu "nie ma tego w linku" (propozycja niżej).
+  `not_found_or_denied`, audyt `deny`/`not_found_or_denied` (CC-118; `tool_disabled` tylko dla wyłączenia przez administratora).
 - **Link do kilku serwerów:** padnięty serwer jest pomijany w `tools/list`; błąd tylko gdy padły wszystkie.
 - **Rejestr:** serwery i narzędzia (ryzyko, tytuły, opisy) z `application.yml`; manifesty, `definitionHash` i
   zatwierdzanie (`PUT/GET /admin/v1/registry/...`) nie są zrobione. Konfiguracja pięciu systemów odpowiada narzędziom
@@ -119,7 +121,7 @@ nginx przed gateway'em (ws-01), prawdziwy broker z M2 (ws-06) na jego portach, k
 
 ## Propozycje CC (do przeniesienia przez koordynatora do ws-00)
 
-1. **C10/C5: kod dla "narzędzia nie ma w linku".** Dziś gateway używa `tool_disabled` ("administrator wyłączył") dla
+1. **(przyjęte w 2.2.5 jako CC-118) C10/C5: kod dla "narzędzia nie ma w linku".** Dziś gateway używa `tool_disabled` ("administrator wyłączył") dla
    narzędzia poza linkiem, co jest mylące w audycie i w komunikacie. Opcje: `not_found_or_denied` (spójne z niezmiennikiem
    8) albo opis w C10, że `tool_disabled` obejmuje "niedostępne w tym endpoincie".
 2. **C4 `CredentialRequired.connectUrl`:** gateway buduje link z `publicBaseUrl` i ignoruje wartość brokera (dwa źródła
@@ -128,10 +130,10 @@ nginx przed gateway'em (ws-01), prawdziwy broker z M2 (ws-06) na jego portach, k
 3. **C5/README, port wewnętrzny:** dopisać, że `/admin/v1/*` i JWKS C2 są na jednym porcie TLS, a klienci JWKS mogą
    przedstawić certyfikat tylko serverAuth, więc cel certyfikatu klienta (clientAuth) wolno sprawdzać dopiero w warstwie
    aplikacji dla `/admin/v1`, nie w handshake. Bez tego ten sam błąd zrobi następna implementacja (broker, starter).
-4. **C8: zdarzenie odrzuconego uwierzytelnienia po stronie gateway'a** (token C1): `authentication` z `component:
+4. **(przyjęte w 2.2.5 jako CC-120) C8: zdarzenie odrzuconego uwierzytelnienia po stronie gateway'a** (token C1): `authentication` z `component:
    gateway` i słownikiem `reason` dla C1 (`expired`, `wrong_audience`, `bad_signature`, ...); schemat 2.1.1 wymienia
    tylko powody JWT wewnętrznego i zakazuje pól z niezweryfikowanego tokenu, więc wystarczy rozszerzyć słownik.
-5. **C5 `POST /virtual-servers`: odpowiedź na przekroczenie limitu linków.** Kontrakt zna tylko 409 `slug_taken` i 400
+5. **(przyjęte w 2.2.5 jako CC-119) C5 `POST /virtual-servers`: odpowiedź na przekroczenie limitu linków.** Kontrakt zna tylko 409 `slug_taken` i 400
    `invalid_request`; gateway odpowiada 400 `invalid_request` (409 `slug_taken` kazałby kreatorowi szukać innego sluga w
    nieskończoność). Propozycja: 409 z kodem `virtual_server_limit_reached` (wzorzec `^[a-z][a-z0-9_]*$` pozwala) albo 429, plus
    limit w opisie operacji, żeby kreator pokazał "usuń nieużywany link".
@@ -192,7 +194,7 @@ Raport: scratchpad/review-gateway-M2.md. 0 CRITICAL, 0 HIGH, 1 MEDIUM, 10 LOW. P
 | Znalezisko | Status |
 | --- | --- |
 | MEDIUM-1 rejestr z `definitionHash`, Cedar `call` z paczką, `GET /admin/v1/activity`, odmowa startu bez paczki (CC-068) | **odroczone do M3** (decyzja koordynatora 2026-10-28, wiersz "Gateway M2 bez rejestru definicji" w tabeli decyzji STATUS.md planu; 00-overview: M3 = Cedar i dystrybucja paczek, M4 = przypinanie definicji). Nic z tego nie zaimplementowane. Do tego czasu: grupy C9 zamiast Cedar, `prv` = `00000000000000-0000000`, opisy narzędzi z konfiguracji (nie z `tools/list` serwera) idą do katalogu C5, ale `tools/list` na `/s/` i `/v/` nadal przekazuje definicję serwera bez porównania z zatwierdzoną; tanie zabezpieczenie z raportu (porównanie `description`/`inputSchema` z konfiguracją) nie zrobione, bo nie jest w zakresie decyzji |
-| LOW-1 brak limitu linków na użytkownika | poprawione: 50 (konfigurowalne), 400 `invalid_request` (C5 nie ma kodu; propozycja CC 5), zdarzenie audytu z powodem `virtual_server_limit`; testy: 50 + 1, limit per użytkownik, zwolnienie po DELETE, 16 równoległych POST przy 45 istniejących daje dokładnie 5 sukcesów |
+| LOW-1 brak limitu linków na użytkownika | poprawione: 50 (konfigurowalne), 409 `virtual_server_limit_reached` (od K5, CC-119; wcześniej 400), zdarzenie audytu z powodem `virtual_server_limit`; testy: 50 + 1, limit per użytkownik, zwolnienie po DELETE, 16 równoległych POST przy 45 istniejących daje dokładnie 5 sukcesów |
 | LOW-2 409 `slug_taken` zdradza cudzy slug | bez zmian: tak stanowi kontrakt C5 (zgłoszone w przeglądzie jako uwaga do kontraktu) |
 | LOW-3 audyt `admin_change` | poprawione: powód `vs_created` / `vs_deleted` / `slug_taken` / `not_granted` / `invalid_request` / `virtual_server_limit` / `not_found_or_denied`, zdarzenia także dla 400, 403, 404, 409 (`deny`, `denied`, `errorCode` z C10 gdzie istnieje), slug w zdarzeniu tylko gdy zgodny ze wzorcem; testy sprawdzają każde zdarzenie schematem C8. Lista narzędzi linku w zdarzeniu: nie ma pola w C8 (propozycja CC 6) |
 | LOW-4 `azp` i `aud` tokenu C5 | poprawione: C5 wymaga `azp` = `mcp-portal-bff` (`MCP_ADMIN_AUTHORIZED_PARTY`) i odrzuca `aud` zawierające `mcp-gateway`; `/s/` i `/v/` odrzucają `aud` z `mcp-gateway-admin`. Sprawdzone na żywym Keycloaku: wymieniony token BFF ma `azp: mcp-portal-bff` |

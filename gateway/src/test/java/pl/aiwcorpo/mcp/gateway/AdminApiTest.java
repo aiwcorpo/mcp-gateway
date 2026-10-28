@@ -330,8 +330,8 @@ class AdminApiTest extends GatewayTestBase {
             assertThat(createLink(BOB_SUB, "bob", BOB_GROUPS, "link-" + i, "Link " + i, tools).statusCode()).as("link " + i).isEqualTo(201);
         }
         HttpResponse<String> over = createLink(BOB_SUB, "bob", BOB_GROUPS, "link-50", "One too many", tools);
-        assertThat(over.statusCode()).isEqualTo(400);
-        assertThat(JSON.readTree(over.body()).path("error").asString()).isEqualTo("invalid_request");
+        assertThat(over.statusCode()).isEqualTo(409);
+        assertThat(JSON.readTree(over.body()).path("error").asString()).isEqualTo("virtual_server_limit_reached");
         assertThat(JSON.readTree(admin("GET", "/admin/v1/virtual-servers", BOB_SUB, "bob", BOB_GROUPS, null).body()).size())
                 .isEqualTo(50);
         assertThat(createLink(ALICE_SUB, "alice", ALICE_GROUPS, "alice-link", "Alice", tools).statusCode())
@@ -385,6 +385,16 @@ class AdminApiTest extends GatewayTestBase {
         assertThat(refused.path("reason").asString()).isEqualTo("not_granted");
         assertThat(refused.path("errorCode").asString()).isEqualTo("access_denied");
         assertThat(refused.path("virtualServer").asString()).isEqualTo("refused");
+
+        for (int i = 0; i < 49; i++) {
+            assertThat(createLink(ALICE_SUB, "alice", ALICE_GROUPS, "fill-" + i, "Fill", List.of("jira__get_issue")).statusCode())
+                    .isEqualTo(201);
+        }
+        JsonNode limited = onlyEvent(output, change("POST", "/admin/v1/virtual-servers", token,
+                "{\"slug\":\"one-too-many\",\"displayName\":\"x\",\"tools\":[\"jira__get_issue\"]}"), 409);
+        assertThat(limited.path("reason").asString()).isEqualTo("virtual_server_limit");
+        assertThat(limited.path("decision").asString()).isEqualTo("deny");
+        assertThat(limited.path("outcome").asString()).isEqualTo("denied");
 
         JsonNode malformed = onlyEvent(output, change("POST", "/admin/v1/virtual-servers", token, "{\"slug\":\"Bad Slug\"}"), 400);
         assertThat(malformed.path("reason").asString()).isEqualTo("invalid_request");

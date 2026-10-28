@@ -164,11 +164,12 @@ public class McpGatewayService {
         Optional<ServerRegistry.Resolved> resolved = registry.resolve(clientName)
                 .filter(r -> inScope(ctx, r.server(), r.tool()));
         if (resolved.isEmpty()) {
-            // Outside the configuration or outside the link: the same answer, the link hides what it does not name.
+            // Outside the configuration or outside the link: the same answer, the link hides what it does not name
+            // (C10: tool_disabled is only for a tool an administrator switched off).
             McpServer addressed = ctx.target().server();
-            decisionEvent(ctx, addressed, null, "deny", "tool_disabled");
-            return finish(ctx, addressed, null, null, started, argsLength, "deny", "tool_disabled", null,
-                    errors.error("tool_disabled", "This tool is not available."));
+            decisionEvent(ctx, addressed, null, "deny", "not_found_or_denied");
+            return finish(ctx, addressed, null, null, started, argsLength, "deny", "not_found_or_denied", null,
+                    errors.error("not_found_or_denied", "This tool was not found or is not available to you."));
         }
         McpServer server = resolved.get().server();
         ToolDefinition tool = resolved.get().tool();

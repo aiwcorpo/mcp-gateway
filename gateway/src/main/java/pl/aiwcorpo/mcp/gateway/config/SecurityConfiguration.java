@@ -17,7 +17,8 @@ import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
 import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.security.oauth2.jwt.JwtValidators;
+import org.springframework.security.oauth2.jwt.JwtIssuerValidator;
+import org.springframework.security.oauth2.jwt.JwtTimestampValidator;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.AuthenticationEntryPoint;
@@ -27,6 +28,8 @@ import jakarta.servlet.http.HttpServletResponse;
 import pl.aiwcorpo.mcp.gateway.admin.AdminClientCertificateFilter;
 import pl.aiwcorpo.mcp.gateway.admin.AdminOperations;
 import pl.aiwcorpo.mcp.gateway.admin.ClientCertificateVerifier;
+import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
+import pl.aiwcorpo.mcp.gateway.auth.ClassifyingJwtDecoder;
 import pl.aiwcorpo.mcp.gateway.auth.McpAuthenticationEntryPoint;
 import pl.aiwcorpo.mcp.gateway.auth.ResourceMetadata;
 import pl.aiwcorpo.mcp.gateway.jwt.JwksController;
@@ -41,7 +44,8 @@ public class SecurityConfiguration {
 
     @Bean
     JwtDecoder jwtDecoder(GatewayProperties properties) {
-        return decoder(properties.oidc(), properties.oidc().audience(), properties.admin().audience(), null);
+        return new ClassifyingJwtDecoder(
+                decoder(properties.oidc(), properties.oidc().audience(), properties.admin().audience(), null));
     }
 
     /** The BFF's user token exchanged for the admin audience (C5): same issuer, keys and claim rules. */
@@ -67,17 +71,23 @@ public class SecurityConfiguration {
                 && !jwt.getAudience().contains(forbiddenAudience)
                 && (requiredAzp == null || requiredAzp.equals(jwt.getClaimAsString("azp")))
                 ? OAuth2TokenValidatorResult.success()
-                : OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "audience", null));
+                : OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "wrong_audience", null));
         // The claims are copied into C2 and C8, whose schemas bound them; "system:" is the service variant's sub.
         OAuth2TokenValidator<Jwt> claims = jwt -> bounded(jwt.getSubject()) && !jwt.getSubject().startsWith("system:")
                 && bounded(jwt.getClaimAsString("azp")) && bounded(jwt.getClaimAsString("preferred_username"))
                 && jwt.getExpiresAt() != null && jwt.getIssuedAt() != null
                 && !Duration.between(jwt.getIssuedAt(), jwt.getExpiresAt()).minus(oidc.maxTokenLifetime()).isPositive()
                 ? OAuth2TokenValidatorResult.success()
-                : OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "required claims", null));
+                : OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "invalid_claims", null));
         decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
-                List.of(JwtValidators.createDefaultWithIssuer(oidc.issuer()), audience, claims)));
+                List.of(new JwtTimestampValidator(), named("wrong_issuer", new JwtIssuerValidator(oidc.issuer())), audience, claims)));
         return decoder;
+    }
+
+    private static OAuth2TokenValidator<Jwt> named(String reason, OAuth2TokenValidator<Jwt> validator) {
+        return jwt -> validator.validate(jwt).hasErrors()
+                ? OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", reason, null))
+                : OAuth2TokenValidatorResult.success();
     }
 
     /** C5 on the internal port: client certificate name, then the user token with aud mcp-gateway-admin. */
@@ -116,8 +126,8 @@ public class SecurityConfiguration {
     @Order(2)
     SecurityFilterChain securityFilterChain(HttpSecurity http, @Qualifier("jwtDecoder") JwtDecoder decoder,
                                             ResourceMetadata metadata, GatewayProperties properties,
-                                            ClientCertificateVerifier certificates) throws Exception {
-        McpAuthenticationEntryPoint entryPoint = new McpAuthenticationEntryPoint(metadata);
+                                            ClientCertificateVerifier certificates, AuditLog audit) throws Exception {
+        McpAuthenticationEntryPoint entryPoint = new McpAuthenticationEntryPoint(metadata, audit, properties.componentId());
         String authorizationServer = properties.oidc().advertisedAuthorizationServer();
         http.csrf(csrf -> csrf.disable())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
