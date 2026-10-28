@@ -1,7 +1,7 @@
 package pl.aiwcorpo.mcp.gateway.auth;
 
 import java.io.IOException;
-import java.util.regex.Pattern;
+import java.util.Set;
 
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.authentication.AuthenticationCredentialsNotFoundException;
@@ -27,8 +27,12 @@ public final class McpAuthenticationEntryPoint implements AuthenticationEntryPoi
     private final String componentId;
     private final MissingTokenEventLimiter missingTokenLimiter;
 
-    /** The endpoints a client token is presented to; everything else (probes, scanners, preflight) is not audited. */
-    private static final Pattern MCP_ENDPOINT = Pattern.compile("^/[sv]/[^/]+/mcp$");
+    /**
+     * Known noise that is not audited. Everything else is, because the security chain matches paths after
+     * normalization (encoding, ;params, double slashes, case) and a raw-path allowlist would let those variants
+     * of an MCP endpoint skip the audit of a rejected token.
+     */
+    private static final Set<String> NOISE_PATHS = Set.of("/", "/favicon.ico", "/robots.txt");
 
     public McpAuthenticationEntryPoint(ResourceMetadata metadata, AuditLog audit, String componentId,
                                        MissingTokenEventLimiter missingTokenLimiter) {
@@ -56,7 +60,7 @@ public final class McpAuthenticationEntryPoint implements AuthenticationEntryPoi
     }
 
     private void emit(HttpServletRequest request, String requestId, AuthenticationException failure) {
-        if (!MCP_ENDPOINT.matcher(request.getRequestURI()).matches() || "OPTIONS".equals(request.getMethod())) {
+        if ("OPTIONS".equals(request.getMethod()) || NOISE_PATHS.contains(request.getRequestURI())) {
             return;
         }
         String reason = reason(failure);

@@ -121,13 +121,38 @@ class ClientTokenAuditTest extends GatewayTestBase {
     }
 
     @Test
-    void onlyTheMcpEndpointsAreAudited(CapturedOutput output) throws Exception {
-        for (String path : List.of("/", "/favicon.ico", "/wp-admin", "/s/mcp-jira", "/s/mcp-jira/mcp/extra")) {
+    void knownNoiseIsNotAuditedAndEveryOtherPathIs(CapturedOutput output) throws Exception {
+        for (String path : List.of("/", "/favicon.ico", "/robots.txt")) {
             HttpResponse<String> response = send(null, path, "{}", Map.of());
             assertThat(response.statusCode()).as(path).isEqualTo(401);
-            String rid = response.headers().firstValue("X-Request-Id").orElseThrow();
-            assertThat(auditEvents(output, rid)).as(path).isEmpty();
+            assertThat(auditEvents(output, response.headers().firstValue("X-Request-Id").orElseThrow())).as(path).isEmpty();
         }
+    }
+
+    @Test
+    void pathVariantsOfAnMcpEndpointDoNotSkipTheAudit(CapturedOutput output) throws Exception {
+        String bad = env.idp.sign(claims().audience(List.of("nobody")).build());
+        int rejected = 0;
+        for (String path : List.of("/s/mcp-jira/mcp/", "//s/mcp-jira/mcp", "/s/mcp-jira/mcp;x=1", "/%73/mcp-jira/mcp",
+                "/S/mcp-jira/mcp", "/s/mcp-jira%2Fmcp", "/s/mcp-jira/mcp/extra", "/v//x/mcp", "/wp-admin")) {
+            HttpResponse<String> response;
+            try {
+                response = send(bad, path, initializeBody(), Map.of());
+            } catch (java.io.IOException e) {
+                continue;
+            }
+            if (response.statusCode() == 401) {
+                rejected++;
+                List<JsonNode> events = auditEvents(output, response.headers().firstValue("X-Request-Id").orElseThrow());
+                assertThat(events).as(path).hasSize(1);
+                assertThat(events.get(0).path("reason").asString()).as(path).isEqualTo("wrong_audience");
+            }
+        }
+        assertThat(rejected).as("variants answered 401 by the gateway").isGreaterThan(2);
+    }
+
+    @Test
+    void preflightIsNotAudited(CapturedOutput output) throws Exception {
         HttpResponse<String> preflight = http.send(java.net.http.HttpRequest.newBuilder(
                 java.net.URI.create("http://localhost:" + port + "/s/mcp-jira/mcp"))
                 .method("OPTIONS", java.net.http.HttpRequest.BodyPublishers.noBody()).build(),

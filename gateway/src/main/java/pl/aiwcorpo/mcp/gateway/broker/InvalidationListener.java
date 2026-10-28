@@ -42,6 +42,8 @@ public final class InvalidationListener implements SmartLifecycle {
     private RedisClient client;
     private volatile StatefulRedisPubSubConnection<String, String> connection;
     private volatile boolean running;
+    private final Set<Object> abandoned = java.util.Collections.synchronizedSet(
+            java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>()));
 
     public InvalidationListener(RedisURI uri, String channel, CredentialCache cache, JsonMapper json, Duration healthInterval) {
         this.uri = uri;
@@ -71,21 +73,26 @@ public final class InvalidationListener implements SmartLifecycle {
 
             @Override
             public void onRedisDisconnected(RedisChannelHandler<?, ?> handler) {
-                // A late event of a connection already dropped must not clear the cache of the new subscription.
-                if (handler == connection) {
-                    lost("disconnected");
-                }
+                connectionEvent(handler, "disconnected");
             }
 
             @Override
             public void onRedisExceptionCaught(RedisChannelHandler<?, ?> handler, Throwable cause) {
-                if (handler == connection) {
-                    lost("error " + cause.getClass().getSimpleName());
-                }
+                connectionEvent(handler, "error " + cause.getClass().getSimpleName());
             }
         });
         running = true;
         Thread.ofVirtual().name("credential-invalidation").start(this::loop);
+    }
+
+    /**
+     * Only a connection known to be abandoned may be ignored: a late event of it must not clear the cache of the
+     * new subscription. An event of any other connection, including one not yet assigned, is a lost subscription.
+     */
+    void connectionEvent(Object handler, String why) {
+        if (!abandoned.contains(handler)) {
+            lost(why);
+        }
     }
 
     private void loop() {
@@ -128,8 +135,9 @@ public final class InvalidationListener implements SmartLifecycle {
                     }
                 }
             });
-            pubSub.sync().subscribe(channel);
+            // Assigned before the subscribe: its events can arrive before the call returns.
             connection = pubSub;
+            pubSub.sync().subscribe(channel);
         } catch (RuntimeException e) {
             lost("subscribe failed: " + e.getClass().getSimpleName());
             drop(pubSub);
@@ -162,6 +170,7 @@ public final class InvalidationListener implements SmartLifecycle {
         if (pubSub == null) {
             return;
         }
+        abandoned.add(pubSub);
         if (connection == pubSub) {
             connection = null;
         }
