@@ -40,4 +40,14 @@ public final class PublicUrls {
     public String connectUrl(String system) {
         return base + "/connections?system=" + system;
     }
+
+    /** Read-only preview of a pending confirmation (C10 confirmation_required, previewUrl). */
+    public String confirmationPreviewUrl(String confirmationId) {
+        return base + "/confirm/" + confirmationId;
+    }
+
+    /** Portal page where the user registers the authenticator (C10 confirmation_required, registerUrl). */
+    public String authenticatorUrl() {
+        return base + "/authenticator";
+    }
 }

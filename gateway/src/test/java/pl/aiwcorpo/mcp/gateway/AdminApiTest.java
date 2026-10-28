@@ -145,7 +145,7 @@ class AdminApiTest extends GatewayTestBase {
         assertThat(delete.path("risk").asString()).isEqualTo("DESTRUCTIVE");
         assertThat(delete.path("action").asString()).isEqualTo("delete");
         assertThat(delete.path("access").asString()).isEqualTo("denied");
-        assertThat(delete.path("disabled").asBoolean()).as("calls are refused until confirmations exist").isTrue();
+        assertThat(delete.path("disabled").asBoolean(true)).as("Alice lacks the group; the tool itself is on").isFalse();
         assertThat(delete.path("requiresConfirmation").asBoolean()).isTrue();
         assertThat(delete.path("requiredEntitlements").toString()).isEqualTo("[\"mcp-jira-destructive\"]");
 

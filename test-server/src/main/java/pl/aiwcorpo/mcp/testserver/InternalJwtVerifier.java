@@ -22,7 +22,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Receiver side of the internal JWT (C2, mcp-contracts 3.0.1) as an MCP server or the broker must implement
+ * Receiver side of the internal JWT (C2, mcp-contracts 3.0.2) as an MCP server or the broker must implement
  * it. Rejection reasons are the ones used in {@code test-vectors/jwt}.
  */
 public final class InternalJwtVerifier {

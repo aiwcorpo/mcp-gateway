@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 import pl.aiwcorpo.mcp.gateway.support.Contracts;
 import pl.aiwcorpo.mcp.gateway.support.Vectors;
 
-/** The C8 vectors of mcp-contracts 3.0.1 (CC-120, CC-125 among them) against the schema the gateway's events are checked with. */
+/** The C8 vectors of mcp-contracts 3.0.2 (CC-120, CC-125 among them) against the schema the gateway's events are checked with. */
 class AuditVectorsTest {
 
     @Test

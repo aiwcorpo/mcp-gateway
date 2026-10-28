@@ -20,6 +20,10 @@ import pl.aiwcorpo.mcp.gateway.authz.ToolDecision;
 import pl.aiwcorpo.mcp.gateway.broker.Credential;
 import pl.aiwcorpo.mcp.gateway.broker.CredentialService;
 import pl.aiwcorpo.mcp.gateway.broker.Resolution;
+import pl.aiwcorpo.mcp.gateway.confirm.ConfirmationRules;
+import pl.aiwcorpo.mcp.gateway.confirm.ConfirmationService;
+import pl.aiwcorpo.mcp.gateway.confirm.OperationDescription;
+import pl.aiwcorpo.mcp.gateway.confirm.PendingCall;
 import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
 import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
@@ -53,10 +57,11 @@ public class McpGatewayService {
     private final JsonMapper json;
     private final MeterRegistry meters;
     private final String componentId;
+    private final ConfirmationService confirmations;
 
     public McpGatewayService(ServerRegistry registry, PublicUrls urls, UpstreamSessions upstream,
                              CredentialService credentials, ToolAuthorizer authorizer, AuditLog audit, ToolErrors errors,
-                             JsonMapper json, MeterRegistry meters, String componentId) {
+                             JsonMapper json, MeterRegistry meters, String componentId, ConfirmationService confirmations) {
         this.registry = registry;
         this.urls = urls;
         this.upstream = upstream;
@@ -67,6 +72,7 @@ public class McpGatewayService {
         this.json = json;
         this.meters = meters;
         this.componentId = componentId;
+        this.confirmations = confirmations;
     }
 
     public ObjectNode listTools(CallContext ctx) throws RpcFailure {
@@ -118,6 +124,9 @@ public class McpGatewayService {
                 }
                 ObjectNode copy = (ObjectNode) tool.deepCopy();
                 copy.put("name", server.qualifiedName(definition.get()));
+                if (definition.get().requiresConfirmation()) {
+                    addConfirmationCode(copy);
+                }
                 out.add(copy);
             }
             cursor = response.path("result").path("nextCursor").asString(null);
@@ -126,6 +135,20 @@ public class McpGatewayService {
             }
         }
         log.warn("{} returned more than {} pages of tools; list truncated", server.serverId(), MAX_LIST_PAGES);
+    }
+
+    /** The code field is added to the schema the client sees; it is not part of the tool's own schema or its hash (C11). */
+    private void addConfirmationCode(ObjectNode tool) {
+        JsonNode schema = tool.get("inputSchema");
+        if (schema instanceof ObjectNode inputSchema && inputSchema.get("properties") instanceof ObjectNode properties) {
+            ObjectNode code = properties.putObject("confirmation_code");
+            code.put("type", "string");
+            code.put("pattern", "^[0-9]{6}$");
+            code.put("minLength", 6);
+            code.put("maxLength", 6);
+            code.put("description", "Current 6-digit code of the MCP Platform account in the authenticator app. Ask the user for "
+                    + "it only after the call answered confirmation_required, then repeat the call with the same arguments.");
+        }
     }
 
     /** The servers behind the endpoint: the one addressed, or those that own the tools of the link. */
@@ -184,6 +207,16 @@ public class McpGatewayService {
         }
         decisionEvent(ctx, server, tool, "allow", null);
 
+        String callKey = null;
+        if (tool.requiresConfirmation()) {
+            Confirmed confirmed = confirm(ctx, server, tool, arguments, started, argsLength);
+            if (confirmed.refusal() != null) {
+                return confirmed.refusal();
+            }
+            callKey = confirmed.confirmationId();
+            arguments = confirmed.arguments();
+        }
+
         Credential credential = null;
         if (server.credential().required()) {
             Resolution resolution = credentials.resolve(ctx.user(), server.system(), server.credential(), tool.name(),
@@ -191,17 +224,17 @@ public class McpGatewayService {
             switch (resolution) {
                 case Resolution.Granted granted -> credential = granted.credential();
                 case Resolution.Required required -> {
-                    return finish(ctx, server, tool, null, started, argsLength, "allow", "credential_required", null,
+                    return finish(callKey, ctx, server, tool, null, started, argsLength, "allow", "credential_required", null,
                             errors.error("credential_required", "Connect your " + server.system() + " account in the portal.",
                                     Map.of("system", required.system(), "connectUrl", urls.connectUrl(required.system()))));
                 }
                 case Resolution.Unavailable unavailable -> {
-                    return finish(ctx, server, tool, null, started, argsLength, "allow", null, null,
+                    return finish(callKey, ctx, server, tool, null, started, argsLength, "allow", null, null,
                             errors.error("upstream_unavailable", "The credential service is unavailable. Try again later."));
                 }
                 case Resolution.Failed failed -> {
                     log.error("credential for rid={} failed: {}", ctx.requestId(), failed.reason());
-                    return finish(ctx, server, tool, null, started, argsLength, "allow", null, null,
+                    return finish(callKey, ctx, server, tool, null, started, argsLength, "allow", null, null,
                             errors.error("internal_error", "The call could not be completed."));
                 }
             }
@@ -220,26 +253,121 @@ public class McpGatewayService {
             String code = e.kind() == UpstreamException.Kind.UNAVAILABLE ? "upstream_unavailable" : "internal_error";
             String message = e.kind() == UpstreamException.Kind.UNAVAILABLE
                     ? "The MCP server is unavailable. Try again later." : "The call could not be completed.";
-            return finish(ctx, server, tool, credential, started, argsLength, "allow", null, null, errors.error(code, message));
+            return finish(callKey, ctx, server, tool, credential, started, argsLength, "allow", null, null, errors.error(code, message));
         } catch (RuntimeException e) {
             // Only the class: JDK messages can quote header values, i.e. the credential.
             log.error("tools/call rid={} to {} failed: {}", ctx.requestId(), server.serverId(), e.getClass().getName());
-            return finish(ctx, server, tool, credential, started, argsLength, "allow", null, null,
+            return finish(callKey, ctx, server, tool, credential, started, argsLength, "allow", null, null,
                     errors.error("internal_error", "The call could not be completed."));
         }
         if (response.has("error")) {
             JsonNode error = response.get("error");
-            finish(ctx, server, tool, credential, started, argsLength, "allow", null, "internal_error", null);
+            finish(callKey, ctx, server, tool, credential, started, argsLength, "allow", null, "internal_error", null);
             int code = error.path("code").isInt() ? error.path("code").asInt() : -32603;
             throw new RpcFailure(code, safeMessage(code), 200);
         }
         JsonNode result = response.path("result");
         if (!result.isObject()) {
-            return finish(ctx, server, tool, credential, started, argsLength, "allow", null, null,
+            return finish(callKey, ctx, server, tool, credential, started, argsLength, "allow", null, null,
                     errors.error("internal_error", "The call could not be completed."));
         }
-        return finish(ctx, server, tool, credential, started, argsLength, "allow", null, null, (ObjectNode) result);
+        return finish(callKey, ctx, server, tool, credential, started, argsLength, "allow", null, null, (ObjectNode) result);
     }
+
+    private record Confirmed(ObjectNode refusal, String confirmationId, JsonNode arguments) {
+    }
+
+    private static final java.util.regex.Pattern CODE = java.util.regex.Pattern.compile("^[0-9]{6}$");
+
+    /**
+     * The confirmation gate of a DESTRUCTIVE tool (C11): without a code a pending call is created and the call stops;
+     * with a code the broker judges it and the call goes on only when it was right. The code never reaches the server.
+     */
+    private Confirmed confirm(CallContext ctx, McpServer server, ToolDefinition tool, JsonNode arguments, long started,
+                              int argsLength) {
+        ServerAndTool at = new ServerAndTool(server, tool);
+        ObjectNode withoutCode = ((ObjectNode) arguments).deepCopy();
+        JsonNode codeNode = withoutCode.remove("confirmation_code");
+        String code = null;
+        if (codeNode != null) {
+            if (!codeNode.isString() || !CODE.matcher(codeNode.asString()).matches()) {
+                return new Confirmed(finish(ctx, server, tool, null, started, argsLength, "allow", null, "invalid_argument",
+                        errors.error("invalid_argument", "confirmation_code must be the 6 digits shown in the authenticator app.")),
+                        null, null);
+            }
+            code = codeNode.asString();
+        }
+        ConfirmationRules.Operation operation = new ConfirmationRules.Operation(server.serverId(), tool.name(),
+                tool.risk().name(), OperationDescription.argumentsHash(withoutCode));
+        PendingCall.Display display = OperationDescription.of(json, server.qualifiedName(tool), server.system(), withoutCode,
+                tool.resourceRefs());
+        ConfirmationService.CallInfo info = new ConfirmationService.CallInfo(ctx.user(), ctx.requestId(), ctx.clientRequestId(),
+                ctx.target().virtualSlug(), server.serverId(), tool.name(), operation, display);
+        if (code == null) {
+            return new Confirmed(firstCall(at, started, info), null, null);
+        }
+        ConfirmationService.RetryResult result = confirmations.retry(info, code);
+        if (result instanceof ConfirmationService.RetryResult.Execute execute) {
+            return new Confirmed(null, execute.confirmationId(), withoutCode);
+        }
+        return new Confirmed(refuse(at, started, retryError(result)), null, null);
+    }
+
+    private ObjectNode firstCall(ServerAndTool at, long started, ConfirmationService.CallInfo info) {
+        ConfirmationService.FirstCallResult result = confirmations.firstCall(info);
+        return switch (result) {
+            case ConfirmationService.FirstCallResult.Pending pending -> {
+                PendingCall call = pending.call();
+                java.time.Instant expires = java.time.Instant.ofEpochMilli(call.expiresAt(ConfirmationRules.TTL_MILLIS))
+                        .truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+                Map<String, Object> extra = new LinkedHashMap<>();
+                extra.put("confirmationId", call.confirmationId());
+                extra.put("description", call.display().description());
+                extra.put("previewUrl", urls.confirmationPreviewUrl(call.confirmationId()));
+                extra.put("expiresAt", expires.toString());
+                yield refuse(at, started, errors.error("confirmation_required", CODE_REQUIRED, extra));
+            }
+            case ConfirmationService.FirstCallResult.Register register -> refuse(at, started, registerError());
+            case ConfirmationService.FirstCallResult.Blocked blocked -> refuse(at, started,
+                    errors.error("confirmation_blocked", BLOCKED, Map.of("retryAfterSeconds", blocked.retryAfterSeconds())));
+            case ConfirmationService.FirstCallResult.RateLimited limited -> refuse(at, started,
+                    errors.error("rate_limited", "Too many operations wait for confirmation. Try again later.",
+                            Map.of("retryAfterSeconds", limited.retryAfterSeconds())));
+            case ConfirmationService.FirstCallResult.Unavailable unavailable -> refuse(at, started, unavailableError());
+        };
+    }
+
+    private ObjectNode retryError(ConfirmationService.RetryResult result) {
+        return switch (result) {
+            case ConfirmationService.RetryResult.Superseded s -> errors.error("confirmation_superseded",
+                    "This operation was replaced by a newer one. Start it again if you still want it.");
+            case ConfirmationService.RetryResult.Cancelled c -> errors.error("confirmation_cancelled",
+                    "The user cancelled this operation. Start it again if it is still wanted.");
+            case ConfirmationService.RetryResult.RateLimited r -> errors.error("rate_limited",
+                    "Too many wrong codes. Try again later.", Map.of("retryAfterSeconds", r.retryAfterSeconds()));
+            case ConfirmationService.RetryResult.Register r -> registerError();
+            case ConfirmationService.RetryResult.Unavailable u -> unavailableError();
+            default -> errors.error("confirmation_failed", "Confirmation failed.");
+        };
+    }
+
+    private ObjectNode registerError() {
+        return errors.error("confirmation_required", "Register the authenticator in the portal first, then repeat the call.",
+                Map.of("registerUrl", urls.authenticatorUrl()));
+    }
+
+    private ObjectNode unavailableError() {
+        return errors.error("upstream_unavailable", "The confirmation service is unavailable. Try again later.");
+    }
+
+    private ObjectNode refuse(ServerAndTool at, long started, ObjectNode error) {
+        return refuse(at, started, errors.codeOf(error), error);
+    }
+
+    private static final String CODE_REQUIRED = "Type the current 6-digit code of the MCP Platform account from your "
+            + "authenticator app and retry the call with confirmation_code.";
+    private static final String BLOCKED = "Another destructive operation of this user is waiting for confirmation. Do not ask "
+            + "the user for a code for this call; tell them that another operation awaits confirmation and try again later.";
 
     private JsonNode callUpstream(CallContext ctx, McpServer server, ObjectNode request, String tool, Credential credential)
             throws RpcFailure {
@@ -289,6 +417,13 @@ public class McpGatewayService {
     private ObjectNode finish(CallContext ctx, McpServer server, ToolDefinition tool, Credential credential,
                               long startedNanos, int argsLength, String decision, String reason, String forcedErrorCode,
                               ObjectNode result) {
+        return finish(null, ctx, server, tool, credential, startedNanos, argsLength, decision, reason, forcedErrorCode, result);
+    }
+
+    /** {@code callKey}: the confirmation the call was confirmed by, so that its events form one row of the activity. */
+    private ObjectNode finish(String callKey, CallContext ctx, McpServer server, ToolDefinition tool, Credential credential,
+                              long startedNanos, int argsLength, String decision, String reason, String forcedErrorCode,
+                              ObjectNode result) {
         long latencyNanos = System.nanoTime() - startedNanos;
         String errorCode = result != null ? errors.codeOf(result) : forcedErrorCode;
         String outcome = "deny".equals(decision) ? "denied" : errorCode == null ? "ok" : "error";
@@ -299,7 +434,22 @@ public class McpGatewayService {
                 .credentialType(credential == null ? null : credential.type())
                 .outcome(outcome, errorCode)
                 .latencyMs(latencyNanos / 1_000_000)
-                .argsLength(argsLength));
+                .argsLength(argsLength)
+                .callKey(callKey));
+        count(server, tool, outcome, errorCode, latencyNanos);
+        return result;
+    }
+
+    /** A refusal of the confirmation gate: the confirmation event already says what happened, there is no tool_call. */
+    private ObjectNode refuse(ServerAndTool at, long startedNanos, String errorCode, ObjectNode result) {
+        count(at.server(), at.tool(), "denied".equals(errorCode) ? "denied" : "error", errorCode, System.nanoTime() - startedNanos);
+        return result;
+    }
+
+    private record ServerAndTool(McpServer server, ToolDefinition tool) {
+    }
+
+    private void count(McpServer server, ToolDefinition tool, String outcome, String errorCode, long latencyNanos) {
         String toolTag = tool == null ? "unknown" : tool.name();
         String serverTag = server == null ? "virtual" : server.serverId();
         meters.counter("mcp.gateway.tool.calls", List.of(
@@ -309,7 +459,6 @@ public class McpGatewayService {
                 io.micrometer.core.instrument.Tag.of("error", errorCode == null ? "none" : errorCode))).increment();
         Timer.builder("mcp.gateway.tool.call.duration").tag("server", serverTag).tag("tool", toolTag)
                 .register(meters).record(java.time.Duration.ofNanos(latencyNanos));
-        return result;
     }
 
     private AuditEvent base(CallContext ctx, McpServer server, String event, ToolDefinition tool) {

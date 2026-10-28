@@ -120,14 +120,26 @@ gateway:
           risk: READ_ONLY
           title: Pobranie zgłoszenia
           description: Returns one Jira issue by key.
+          resource-refs:
+            - {argument: issueKey, type: 'Jira::Issue'}
         add_comment:
           risk: UPDATE
           title: Dodanie komentarza
           description: Adds a comment to a Jira issue.
+          resource-refs:
+            - {argument: issueKey, type: 'Jira::Issue'}
         transition_issue:
           risk: UPDATE
           title: Zmiana statusu zgłoszenia
           description: Moves a Jira issue to another status.
+          resource-refs:
+            - {argument: issueKey, type: 'Jira::Issue'}
+        delete_issue:
+          risk: DESTRUCTIVE
+          title: Usunięcie zgłoszenia
+          description: Permanently deletes a Jira issue; confirmed with the code of the authenticator app.
+          resource-refs:
+            - {argument: issueKey, type: 'Jira::Issue'}
     mcp-confluence:
       system: confluence
       version: ${MCP_SERVER_CONFLUENCE_VERSION:1.0.0}

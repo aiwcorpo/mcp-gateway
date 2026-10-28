@@ -303,6 +303,18 @@ public final class TestMcpServer implements AutoCloseable {
                     return out;
                 });
             }
+            case "delete_issue" -> {
+                String key = arguments.path("issueKey").asString("");
+                if (arguments.has("confirmation_code")) {
+                    yield toolError("internal_error", "The confirmation code reached the server.");
+                }
+                if (!ISSUE_KEY.matcher(key).matches()) {
+                    yield toolError("invalid_argument", "issueKey must look like ABC-123.");
+                }
+                ObjectNode out = JSON.createObjectNode();
+                out.put("deleted", key);
+                yield toolResult(out, false);
+            }
             default -> toolError("invalid_argument", "Unknown tool.");
         };
     }
@@ -341,7 +353,6 @@ public final class TestMcpServer implements AutoCloseable {
         tools.add(tool("get_issue", "Returns the key and summary of one Jira issue.", "issueKey", "Issue key, e.g. ABC-123.",
                 true));
         tools.add(tool("search_issues", "Lists issues of one Jira project.", "project", "Project key, e.g. ABC.", true));
-        // Deliberately absent from the gateway's static configuration: the gateway must hide it.
         tools.add(tool("delete_issue", "Deletes one Jira issue.", "issueKey", "Issue key, e.g. ABC-123.", false));
         return tools;
     }

@@ -125,6 +125,6 @@ class VirtualServerServiceTest {
     }
 
     private static GatewayProperties.Tool tool(String risk) {
-        return new GatewayProperties.Tool(risk, "A tool.", null, null, false);
+        return new GatewayProperties.Tool(risk, "A tool.", null, null, false, List.of());
     }
 }

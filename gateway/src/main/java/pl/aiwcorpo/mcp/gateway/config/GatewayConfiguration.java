@@ -20,6 +20,10 @@ import io.micrometer.core.instrument.MeterRegistry;
 import pl.aiwcorpo.mcp.gateway.admin.AdminController;
 import pl.aiwcorpo.mcp.gateway.admin.ClientCertificateVerifier;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
+import pl.aiwcorpo.mcp.gateway.admin.ConfirmationAdminController;
+import pl.aiwcorpo.mcp.gateway.confirm.ConfirmationService;
+import pl.aiwcorpo.mcp.gateway.confirm.ConfirmationStore;
+import pl.aiwcorpo.mcp.gateway.confirm.RedisConfirmationStore;
 import pl.aiwcorpo.mcp.gateway.auth.PublicUrls;
 import pl.aiwcorpo.mcp.gateway.auth.ResourceMetadata;
 import pl.aiwcorpo.mcp.gateway.authz.GroupToolAuthorizer;
@@ -245,11 +249,33 @@ public class GatewayConfiguration {
     }
 
     @Bean
+    ConfirmationStore confirmationStore(StringRedisTemplate redis, JsonMapper gatewayJson, GatewayProperties properties) {
+        return new RedisConfirmationStore(redis, gatewayJson, properties.redis().keyPrefix());
+    }
+
+    @Bean
+    ConfirmationService confirmationService(ConfirmationStore store, BrokerClient broker, AuditLog audit, Clock clock,
+                                            GatewayProperties properties) {
+        java.security.SecureRandom random = new java.security.SecureRandom();
+        return new ConfirmationService(store, broker, audit, properties.componentId(), clock,
+                properties.confirmations().pendingLimit(), () -> {
+                    byte[] bytes = new byte[16];
+                    random.nextBytes(bytes);
+                    return "cnf_" + java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+                });
+    }
+
+    @Bean
+    ConfirmationAdminController confirmationAdminController(ConfirmationService confirmations, JsonMapper gatewayJson) {
+        return new ConfirmationAdminController(confirmations, gatewayJson);
+    }
+
+    @Bean
     McpGatewayService mcpGatewayService(ServerRegistry registry, PublicUrls urls, UpstreamSessions upstream,
                                         CredentialService credentials, ToolAuthorizer authorizer, AuditLog audit,
                                         ToolErrors errors, JsonMapper gatewayJson, MeterRegistry meters,
-                                        GatewayProperties properties) {
+                                        GatewayProperties properties, ConfirmationService confirmations) {
         return new McpGatewayService(registry, urls, upstream, credentials, authorizer, audit, errors, gatewayJson, meters,
-                properties.componentId());
+                properties.componentId(), confirmations);
     }
 }

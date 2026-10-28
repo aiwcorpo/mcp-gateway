@@ -40,6 +40,7 @@ public record GatewayProperties(
         @Valid @NotNull VirtualServers virtualServers,
         @Valid @NotNull Metrics metrics,
         @DefaultValue @Valid Audit audit,
+        @DefaultValue @Valid Confirmations confirmations,
         @DefaultValue("00000000000000-0000000") @Pattern(regexp = "^[0-9]{14}-[0-9a-f]{7}$") String policyRevision,
         /* Dev only: allows http for the IdP token endpoint (token exchange); never for the broker or servers. */
         @DefaultValue("false") boolean allowPlainHttp,
@@ -138,6 +139,12 @@ public record GatewayProperties(
             @DefaultValue("50") @Min(1) int maxPerUser) {
     }
 
+    /** Confirmations of DESTRUCTIVE calls (C11); TTL, attempts and the validity of a code are fixed by the contract. */
+    public record Confirmations(
+            /* Pending confirmations of a risk other than DESTRUCTIVE (required by policy) per user. */
+            @DefaultValue("3") @Min(1) int pendingLimit) {
+    }
+
     /** Caps on authentication events that cost the sender nothing (CC-120, CC-125). */
     public record Audit(
             /* Per second and per reason, for missing_token and malformed. */
@@ -175,6 +182,11 @@ public record GatewayProperties(
             @NotBlank String description,
             String title,
             String action,
-            @DefaultValue("false") boolean disabled) {
+            @DefaultValue("false") boolean disabled,
+            /* Resource identifiers among the arguments (C6 resourceRefs); the manifest replaces this from M3 K3 on. */
+            @DefaultValue List<ResourceRefConfig> resourceRefs) {
+    }
+
+    public record ResourceRefConfig(@NotBlank String argument, @NotBlank String type) {
     }
 }

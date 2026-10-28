@@ -7,9 +7,9 @@ import pl.aiwcorpo.mcp.gateway.server.McpServer;
 import pl.aiwcorpo.mcp.gateway.server.ToolDefinition;
 
 /**
- * Stand-in for the Cedar evaluation: the C9 group {@code mcp-<system>-read|write} by risk. DESTRUCTIVE tools
- * are always denied, because confirmations (C11) do not exist before M3. A disabled server or tool is denied
- * first. Deny is the default (invariant 6).
+ * Stand-in for the Cedar evaluation: the C9 group {@code mcp-<system>-read|write|destructive} by risk. A DESTRUCTIVE
+ * tool is allowed for the group and still waits for the code of the authenticator (C11). A disabled server or tool
+ * is denied first. Deny is the default (invariant 6).
  */
 public final class GroupToolAuthorizer implements ToolAuthorizer {
 
@@ -18,13 +18,8 @@ public final class GroupToolAuthorizer implements ToolAuthorizer {
         if (!server.enabled() || tool.disabled()) {
             return ToolDecision.deny("tool_disabled", List.of());
         }
-        return switch (tool.risk()) {
-            case DESTRUCTIVE -> ToolDecision.deny("tool_disabled", List.of());
-            case READ_ONLY, UPDATE -> {
-                String required = requiredEntitlements(server, tool).getFirst();
-                yield user.hasGroup(required) ? ToolDecision.allow() : ToolDecision.deny("not_granted", List.of(required));
-            }
-        };
+        String required = requiredEntitlements(server, tool).getFirst();
+        return user.hasGroup(required) ? ToolDecision.allow() : ToolDecision.deny("not_granted", List.of(required));
     }
 
     @Override

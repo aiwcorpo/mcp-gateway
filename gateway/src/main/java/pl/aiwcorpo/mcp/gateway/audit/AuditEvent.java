@@ -18,6 +18,7 @@ public final class AuditEvent {
     private static final Pattern TOOL_NAME = Pattern.compile("^[a-z][a-z0-9]*(_[a-z0-9]+)*$");
 
     private final Map<String, Object> fields = new LinkedHashMap<>();
+    private String callKey;
 
     private AuditEvent(String event, String requestId, String componentId) {
         fields.put("ts", Instant.now().truncatedTo(ChronoUnit.MILLIS).toString());
@@ -36,6 +37,49 @@ public final class AuditEvent {
         put("username", user.username());
         put("client", user.client());
         return this;
+    }
+
+    /** The actor of an administrative call: the sub and the name, not the client of the BFF token. */
+    public AuditEvent userWithoutClient(GatewayUser user) {
+        put("sub", user.sub());
+        put("username", user.username());
+        return this;
+    }
+
+    public AuditEvent client(String client) {
+        return put("client", client);
+    }
+
+    /** Main resource of the call (C8 {@code resource}); ignored when the identifier is not log-safe. */
+    public AuditEvent resource(pl.aiwcorpo.mcp.gateway.confirm.PendingCall.Resource resource) {
+        if (resource != null) {
+            Map<String, Object> value = new LinkedHashMap<>();
+            value.put("type", resource.type());
+            value.put("id", resource.id());
+            if (resource.parent() != null) {
+                value.put("parent", resource.parent());
+            }
+            fields.put("resource", value);
+        }
+        return this;
+    }
+
+    /**
+     * Internal link between the events of one call (the confirmation id of a pending call, else the request id). It is
+     * not a C8 field: it goes to the activity store only and never to the log line.
+     */
+    public AuditEvent callKey(String key) {
+        this.callKey = key;
+        return this;
+    }
+
+    public String callKey() {
+        return callKey;
+    }
+
+    /** A copy of the C8 fields (the call key is not among them). */
+    public Map<String, Object> view() {
+        return new LinkedHashMap<>(fields);
     }
 
     /** Client-supplied X-Request-Id; dropped when outside the log-safe alphabet (CC-031). */

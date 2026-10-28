@@ -11,7 +11,8 @@ import javax.net.ssl.SSLContext;
 
 /**
  * Runs {@link TestBroker} on the host for the gateway demo. {@code MCP_TEST_BROKER_PATS} lists
- * {@code user=pat} pairs separated by commas; a user that is not listed gets credential_required.
+ * {@code user=pat} pairs separated by commas; a user that is not listed gets credential_required. {@code MCP_TEST_BROKER_TOTP}
+ * lists {@code sub=base32seed} pairs: those users have an authenticator.
  */
 public final class TestBrokerMain {
 
@@ -31,7 +32,14 @@ public final class TestBrokerMain {
         TestBroker broker = new TestBroker(tls,
                 new JwksKeySource(URI.create(required("MCP_GATEWAY_JWKS_URI")), tls, Duration.ofSeconds(10)),
                 env("MCP_GATEWAY_ISSUER", "https://mcp-gateway.internal"), pats, required("MCP_PORTAL_CONNECT_URL"),
-                new InetSocketAddress(Integer.parseInt(env("MCP_PORT", "8443")))).start();
+                new InetSocketAddress(Integer.parseInt(env("MCP_PORT", "8443"))));
+        for (String pair : env("MCP_TEST_BROKER_TOTP", "").split(",")) {
+            int eq = pair.indexOf('=');
+            if (eq > 0) {
+                broker.enroll(pair.substring(0, eq).trim(), pair.substring(eq + 1).trim());
+            }
+        }
+        broker.start();
         System.err.println("test broker on :" + broker.port() + " for users " + pats.keySet());
     }
 

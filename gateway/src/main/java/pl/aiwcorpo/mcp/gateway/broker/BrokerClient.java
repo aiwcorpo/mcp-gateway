@@ -26,7 +26,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /** Client of the credential broker (C4) over mTLS with a fresh internal JWT per request. */
-public class BrokerClient {
+public class BrokerClient implements AuthenticatorPort {
 
     public static final String AUDIENCE = "mcp-credential-broker";
     private static final Logger log = LoggerFactory.getLogger(BrokerClient.class);
@@ -99,6 +99,94 @@ public class BrokerClient {
                 yield new Resolution.Failed("broker_" + status);
             }
         };
+    }
+
+    /** {@code GET /v1/authenticator}; {@code tool} is the server-side name of the tool being confirmed (C2, CC-092). */
+    @Override
+    public State state(GatewayUser user, String tool, String requestId) {
+        try {
+            HttpResponse<InputStream> response = http.send(authenticatorRequest(user, tool, requestId, "GET", "/v1/authenticator", null),
+                    HttpResponse.BodyHandlers.ofInputStream());
+            byte[] body = readBounded(response);
+            if (response.statusCode() != 200) {
+                return State.UNAVAILABLE;
+            }
+            return switch (json.readTree(body).path("state").asString("")) {
+                case "none" -> State.NONE;
+                case "active" -> State.ACTIVE;
+                case "disabled" -> State.DISABLED;
+                default -> State.UNAVAILABLE;
+            };
+        } catch (IOException | JacksonException e) {
+            log.warn("broker authenticator rid={} failed: {}", requestId, e.getClass().getSimpleName());
+            return State.UNAVAILABLE;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return State.UNAVAILABLE;
+        }
+    }
+
+    /** {@code POST /v1/authenticator/verify}. The code is only in the request body, never logged. */
+    @Override
+    public Verdict verify(GatewayUser user, String tool, String code, String requestId) {
+        try {
+            HttpResponse<InputStream> response = http.send(authenticatorRequest(user, tool, requestId, "POST",
+                    "/v1/authenticator/verify", json.writeValueAsString(Map.of("code", code))), HttpResponse.BodyHandlers.ofInputStream());
+            byte[] body = readBounded(response);
+            if (response.statusCode() != 200) {
+                log.warn("broker verify rid={} answered {}", requestId, response.statusCode());
+                return new Verdict("unavailable", 0);
+            }
+            JsonNode node = json.readTree(body);
+            String result = node.path("result").asString("");
+            if (!Set.of("ok", "invalid", "replayed", "burned", "locked", "disabled", "not_registered").contains(result)) {
+                return new Verdict("unavailable", 0);
+            }
+            return new Verdict(result, node.path("retryAfterSeconds").asInt(1));
+        } catch (IOException | JacksonException e) {
+            log.warn("broker verify rid={} failed: {}", requestId, e.getClass().getSimpleName());
+            return new Verdict("unavailable", 0);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new Verdict("unavailable", 0);
+        }
+    }
+
+    /** {@code POST /v1/authenticator/invalidate-codes}: true only for a 204 (fail-closed for the caller otherwise). */
+    @Override
+    public boolean invalidateCodes(GatewayUser user, String tool, String requestId) {
+        try {
+            HttpResponse<InputStream> response = http.send(authenticatorRequest(user, tool, requestId, "POST",
+                    "/v1/authenticator/invalidate-codes", null), HttpResponse.BodyHandlers.ofInputStream());
+            readBounded(response);
+            return response.statusCode() == 204;
+        } catch (IOException e) {
+            log.warn("broker invalidate-codes rid={} failed: {}", requestId, e.getClass().getSimpleName());
+            return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    private HttpRequest authenticatorRequest(GatewayUser user, String tool, String requestId, String method, String path,
+                                             String body) {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(baseUrl.resolve(path)).timeout(timeout)
+                .header("Authorization", "Bearer " + tokens.forUser(AUDIENCE, user, tool, requestId))
+                .header("X-Request-Id", requestId)
+                .header("Accept", "application/json");
+        if (body != null) {
+            builder.header("Content-Type", "application/json").method(method, HttpRequest.BodyPublishers.ofString(body));
+        } else {
+            builder.method(method, HttpRequest.BodyPublishers.noBody());
+        }
+        return builder.build();
+    }
+
+    private static byte[] readBounded(HttpResponse<InputStream> response) throws IOException {
+        try (InputStream in = new BoundedInputStream(response.body(), MAX_BODY)) {
+            return in.readAllBytes();
+        }
     }
 
     /** {@code GET /v1/systems} with the service variant (CC-030), used as a start-up configuration check. */

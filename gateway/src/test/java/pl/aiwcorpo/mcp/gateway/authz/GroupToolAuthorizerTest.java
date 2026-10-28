@@ -38,10 +38,12 @@ class GroupToolAuthorizerTest {
     }
 
     @Test
-    void destructiveIsAlwaysDeniedBeforeConfirmationsExist() {
-        ToolDecision decision = authorizer.decide(all, jira, tool(Risk.DESTRUCTIVE));
+    void destructiveNeedsItsGroupAndStillAwaitsTheCode() {
+        assertThat(authorizer.decide(all, jira, tool(Risk.DESTRUCTIVE)).allowed()).isTrue();
+        ToolDecision decision = authorizer.decide(user("mcp-jira-read", "mcp-jira-write"), jira, tool(Risk.DESTRUCTIVE));
         assertThat(decision.allowed()).isFalse();
-        assertThat(decision.reason()).isEqualTo("tool_disabled");
+        assertThat(decision.reason()).isEqualTo("not_granted");
+        assertThat(decision.requiredEntitlements()).containsExactly("mcp-jira-destructive");
     }
 
     @Test
@@ -50,7 +52,7 @@ class GroupToolAuthorizerTest {
         ToolDecision server = authorizer.decide(all, disabledServer, tool(Risk.READ_ONLY));
         assertThat(server.allowed()).isFalse();
         assertThat(server.reason()).isEqualTo("tool_disabled");
-        ToolDefinition off = new ToolDefinition("some_tool", Risk.READ_ONLY, "read", null, "A tool.", true);
+        ToolDefinition off = new ToolDefinition("some_tool", Risk.READ_ONLY, "read", null, "A tool.", true, List.of());
         assertThat(authorizer.decide(all, jira, off).reason()).isEqualTo("tool_disabled");
     }
 
@@ -67,7 +69,7 @@ class GroupToolAuthorizerTest {
     }
 
     private static ToolDefinition tool(Risk risk) {
-        return new ToolDefinition("some_tool", risk, "read", null, "A tool.", false);
+        return new ToolDefinition("some_tool", risk, "read", null, "A tool.", false, List.of());
     }
 
     private static GatewayUser user(String... groups) {

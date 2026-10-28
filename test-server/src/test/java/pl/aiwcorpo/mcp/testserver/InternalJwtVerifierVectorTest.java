@@ -27,7 +27,7 @@ import com.nimbusds.jose.jwk.JWKSet;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-/** The test server's receiver must agree with every C2 vector of mcp-contracts 3.0.1, including the reason. */
+/** The test server's receiver must agree with every C2 vector of mcp-contracts 3.0.2, including the reason. */
 class InternalJwtVerifierVectorTest {
 
     private static final String ROOT = "mcp-contracts/test-vectors/";
@@ -39,7 +39,7 @@ class InternalJwtVerifierVectorTest {
         URL dir = getClass().getClassLoader().getResource(ROOT + "jwt/valid.json");
         assertThat(dir).as("test-vectors jar on the classpath").isNotNull();
         FileSystem fs = dir.getProtocol().equals("jar")
-                ? FileSystems.newFileSystem(dir.toURI(), Map.of())
+                ? zip(dir.toURI())
                 : null;
         Path jwtDir = (fs != null ? fs.provider().getPath(dir.toURI()) : Path.of(dir.toURI())).getParent();
         try (Stream<Path> stream = Files.list(jwtDir)) {
@@ -47,6 +47,15 @@ class InternalJwtVerifierVectorTest {
         }
         assertThat(files).hasSizeGreaterThanOrEqualTo(40);
         return files.stream().map(file -> DynamicTest.dynamicTest(file.getFileName().toString(), () -> check(file)));
+    }
+
+    /** Other tests open the same jar; the file system is shared and stays open for the JVM. */
+    private static FileSystem zip(java.net.URI location) throws IOException {
+        try {
+            return FileSystems.newFileSystem(location, Map.of());
+        } catch (java.nio.file.FileSystemAlreadyExistsException e) {
+            return FileSystems.getFileSystem(location);
+        }
     }
 
     private void check(Path file) throws IOException, ParseException, URISyntaxException {

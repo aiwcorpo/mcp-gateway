@@ -21,6 +21,7 @@ import com.sun.net.httpserver.HttpsParameters;
 import com.sun.net.httpserver.HttpsServer;
 
 import pl.aiwcorpo.mcp.testserver.InternalJwtVerifier;
+import pl.aiwcorpo.mcp.testserver.AuthenticatorEndpoints;
 
 /**
  * Credential broker stand-in (C4 resolve and systems): mTLS with client CN mcp-gateway, strict C2
@@ -40,6 +41,30 @@ public final class BrokerStub implements AutoCloseable {
     private volatile Mode mode = Mode.GRANT;
     private volatile String secret = "alice-pat";
     private volatile int cacheTtlSeconds = 60;
+    private final AuthenticatorEndpoints authenticators = new AuthenticatorEndpoints(Clock.systemUTC());
+
+    /** Registers the authenticator of a user; the test makes its codes with {@code Totp.currentCode}. */
+    public void enroll(String sub, String secretBase32) {
+        authenticators.enroll(sub, secretBase32);
+    }
+
+    public void removeAuthenticator(String sub) {
+        authenticators.remove(sub);
+    }
+
+    /** The authenticator endpoints answer 503 (the credential endpoints are not affected). */
+    public void authenticatorDown(boolean down) {
+        authenticators.down(down);
+    }
+
+    /** Only {@code invalidate-codes} answers 503. */
+    public void invalidateFails(boolean fails) {
+        authenticators.invalidateFails(fails);
+    }
+
+    public long count(String path) {
+        return received.stream().filter(r -> r.path().equals(path)).count();
+    }
 
     public BrokerStub(SSLContext tls, InternalJwtVerifier.KeySource gatewayKeys) throws IOException {
         this.verifier = new InternalJwtVerifier("https://mcp-gateway.internal", "mcp-credential-broker", false, gatewayKeys,
@@ -112,6 +137,10 @@ public final class BrokerStub implements AutoCloseable {
                 send(exchange, 401, "{\"error\":\"unauthenticated\"}");
                 return;
             }
+            if (path.startsWith("/v1/authenticator")) {
+                authenticator(exchange, method, path, body, (String) auth.claims().get("sub"));
+                return;
+            }
             if ("GET".equals(method) && "/v1/systems".equals(path)) {
                 send(exchange, 200, "[{\"system\":\"jira\",\"supportedTypes\":[\"user-oauth\",\"user-secret\"],"
                         + "\"defaultType\":\"user-secret\",\"oauthScopes\":[]}]");
@@ -127,6 +156,15 @@ public final class BrokerStub implements AutoCloseable {
                 case REJECT -> send(exchange, 401, "{\"error\":\"unauthenticated\"}");
                 case BAD_BODY -> send(exchange, 200, "{\"scheme\":\"Bearer\",\"type\":\"user-secret\",\"cacheTtlSeconds\":60}");
             }
+        }
+    }
+
+    private void authenticator(HttpExchange exchange, String method, String path, String body, String sub) throws IOException {
+        AuthenticatorEndpoints.Response response = authenticators.handle(method, path, body, sub);
+        if (response.status() == 204) {
+            exchange.sendResponseHeaders(204, -1);
+        } else {
+            send(exchange, response.status(), response.body());
         }
     }
 

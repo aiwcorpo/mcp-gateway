@@ -12,7 +12,8 @@ import tools.jackson.databind.node.ObjectNode;
 public final class ToolErrors {
 
     public static final Set<String> CODES = Set.of("unauthenticated", "access_denied", "tool_disabled",
-            "confirmation_required", "confirmation_failed", "confirmation_declined", "credential_required",
+            "confirmation_required", "confirmation_failed", "confirmation_superseded", "confirmation_cancelled",
+            "confirmation_blocked", "credential_required",
             "not_found_or_denied", "invalid_argument", "rate_limited", "step_up_required", "upstream_unavailable",
             "internal_error");
 

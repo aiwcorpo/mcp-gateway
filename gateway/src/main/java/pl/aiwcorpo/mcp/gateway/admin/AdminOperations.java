@@ -22,7 +22,9 @@ public final class AdminOperations {
                 Rule.of("POST", "/admin/v1/registry/servers/{serverId}/tools/{tool}/approve", portalBff),
                 Rule.of("GET", "/admin/v1/activity", portalBff),
                 Rule.of("GET", "/admin/v1/confirmations/{confirmationId}", portalBff),
-                Rule.of("POST", "/admin/v1/confirmations/{confirmationId}", portalBff),
+                Rule.of("POST", "/admin/v1/confirmations/{confirmationId}/viewed", portalBff),
+                Rule.of("POST", "/admin/v1/confirmations/{confirmationId}/cancel", portalBff),
+                Rule.of("GET", "/admin/v1/activity/calls", portalBff),
                 Rule.of("GET", "/admin/v1/policy/status", portalBff));
     }
 

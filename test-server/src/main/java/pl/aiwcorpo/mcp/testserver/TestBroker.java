@@ -35,6 +35,7 @@ public final class TestBroker implements AutoCloseable {
     private final InternalJwtVerifier verifier;
     private final Map<String, String> patsByUser;
     private final String connectUrl;
+    private final AuthenticatorEndpoints authenticators = new AuthenticatorEndpoints(Clock.systemUTC());
 
     public TestBroker(SSLContext tls, InternalJwtVerifier.KeySource gatewayKeys, String issuer, Map<String, String> patsByUser,
                       String connectUrl, InetSocketAddress address) throws IOException {
@@ -51,6 +52,12 @@ public final class TestBroker implements AutoCloseable {
             }
         });
         server.createContext("/v1/", this::handle);
+    }
+
+    /** Gives a user (by {@code sub}) an authenticator with this Base32 seed; the demo makes its codes from the same seed. */
+    public TestBroker enroll(String sub, String secretBase32) {
+        authenticators.enroll(sub, secretBase32);
+        return this;
     }
 
     public TestBroker start() {
@@ -71,7 +78,7 @@ public final class TestBroker implements AutoCloseable {
         try (exchange) {
             String method = exchange.getRequestMethod();
             String path = exchange.getRequestURI().getPath();
-            exchange.getRequestBody().readAllBytes();
+            String requestBody = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             if (!"mcp-gateway".equals(commonName(exchange))) {
                 send(exchange, 403, "{\"error\":\"forbidden\"}");
                 return;
@@ -81,6 +88,16 @@ public final class TestBroker implements AutoCloseable {
             if (!auth.valid()) {
                 System.err.println("test broker: rejected " + method + " " + path + ": " + auth.reason());
                 send(exchange, 401, "{\"error\":\"unauthenticated\"}");
+                return;
+            }
+            if (AuthenticatorEndpoints.handles(path)) {
+                AuthenticatorEndpoints.Response response = authenticators.handle(method, path, requestBody,
+                        String.valueOf(auth.claims().get("sub")));
+                if (response.status() == 204) {
+                    exchange.sendResponseHeaders(204, -1);
+                } else {
+                    send(exchange, response.status(), response.body());
+                }
                 return;
             }
             if ("GET".equals(method) && "/v1/systems".equals(path)) {

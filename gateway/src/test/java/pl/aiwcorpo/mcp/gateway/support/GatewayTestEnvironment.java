@@ -32,8 +32,11 @@ public final class GatewayTestEnvironment {
     public static final String POSTGRES_PASSWORD = "gateway-db-test-password";
     /** publicBaseUrl in tests; no request to the gateway ever carries this host. */
     public static final String PUBLIC_URL = "https://mcp.aiwcorpo.pl";
-    private static final String DATA_COMMANDS = "-@all +get +set +setnx +getdel +getex +mget +del +unlink +exists +expire "
-            + "+pexpire +ttl +pttl +incr +incrby +decr +hset +hget +hdel +hgetall +hexists +hincrby +multi +exec +discard "
+    /** The command list of the gateway's ACL in mcp-platform-dev (redis/gateway.rules, ws-01). */
+    private static final String DATA_COMMANDS = "-@all +get +set +setnx +setex +psetex +getdel +getex +mget +del +unlink "
+            + "+exists +expire +pexpire +expireat +pexpireat +persist +ttl +pttl +incr +incrby +decr +decrby +hset +hsetnx "
+            + "+hget +hmget +hdel +hgetall +hexists +hincrby +hlen +sadd +srem +scard +sismember +smembers +zadd +zrem +zcard "
+            + "+zscore +zcount +zrange +zrangebyscore +zremrangebyscore +multi +exec +discard +watch +unwatch +eval +evalsha "
             + "+ping +auth +hello +client|setname +client|setinfo +reset +quit";
 
     private static GatewayTestEnvironment instance;
@@ -163,6 +166,8 @@ public final class GatewayTestEnvironment {
         registry.add("gateway.servers.mcp-jira.internal-url", () -> "https://127.0.0.1:" + jira.port() + "/mcp");
         registry.add("gateway.servers.mcp-jira.tools.delete_issue.risk", () -> "DESTRUCTIVE");
         registry.add("gateway.servers.mcp-jira.tools.delete_issue.description", () -> "Deletes one Jira issue.");
+        registry.add("gateway.servers.mcp-jira.tools.delete_issue.resource-refs[0].argument", () -> "issueKey");
+        registry.add("gateway.servers.mcp-jira.tools.delete_issue.resource-refs[0].type", () -> "Jira::Issue");
         registry.add("gateway.servers.mcp-jira.tools.delete_issue.title", () -> "Usuni\u0119cie zg\u0142oszenia");
         registry.add("gateway.servers.mcp-gitlab.system", () -> "gitlab");
         registry.add("gateway.servers.mcp-gitlab.internal-url", () -> "https://127.0.0.1:" + gitlab.port() + "/mcp");

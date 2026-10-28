@@ -94,7 +94,9 @@ public final class ServerRegistry {
                 throw new IllegalStateException("gateway.servers." + serverId + ".tools." + name + ".action: " + action);
             }
             String title = tool.title() == null || tool.title().isBlank() ? null : tool.title();
-            tools.put(name, new ToolDefinition(name, risk, action, title, tool.description(), tool.disabled()));
+            java.util.List<pl.aiwcorpo.mcp.cedar.entities.ResourceRef> refs = tool.resourceRefs().stream()
+                    .map(ref -> new pl.aiwcorpo.mcp.cedar.entities.ResourceRef(ref.argument(), ref.type())).toList();
+            tools.put(name, new ToolDefinition(name, risk, action, title, tool.description(), tool.disabled(), refs));
         });
         return new McpServer(serverId, server.system(), server.internalUrl(), server.version(), server.enabled(),
                 new CredentialPolicy(credential.required(), Set.copyOf(accepted), List.copyOf(credential.scopes()),

@@ -489,14 +489,21 @@ class GatewayIntegrationTest extends GatewayTestBase {
     // --- Review M1 findings: authorization levels, credential charset, Redis outage, limits ---------------
 
     @Test
-    void destructiveToolIsHiddenAndDisabledEvenWithTheDestructiveGroup() throws Exception {
+    void destructiveToolNeedsItsGroupAndThenAConfirmation() throws Exception {
+        String withoutGroup = env.idp.token("de570000-0000-4000-8000-000000000009", "dan", List.of("mcp-jira-read", "mcp-jira-write"));
+        assertThat(sendModern(withoutGroup, "tools/list", null, "{}").body()).doesNotContain("jira__delete_issue");
+        HttpResponse<String> refused = sendModern(withoutGroup, "tools/call", "jira__delete_issue",
+                "{\"name\":\"jira__delete_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
+        assertThat(toolError(refused).path("error").asString()).isEqualTo("access_denied");
+
         String token = env.idp.token("de570000-0000-4000-8000-000000000010", "dora",
                 List.of("mcp-jira-read", "mcp-jira-write", "mcp-jira-destructive"));
-        HttpResponse<String> list = sendModern(token, "tools/list", null, "{}");
-        assertThat(list.body()).doesNotContain("jira__delete_issue").contains("jira__get_issue");
+        assertThat(sendModern(token, "tools/list", null, "{}").body()).contains("jira__delete_issue").contains("confirmation_code");
         HttpResponse<String> call = sendModern(token, "tools/call", "jira__delete_issue",
                 "{\"name\":\"jira__delete_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
-        assertThat(toolError(call).path("error").asString()).isEqualTo("tool_disabled");
+        JsonNode error = toolError(call);
+        assertThat(error.path("error").asString()).isEqualTo("confirmation_required");
+        assertThat(error.path("registerUrl").asString()).as("Dora has no authenticator").endsWith("/authenticator");
         assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
         assertThat(resolveCount()).isZero();
     }

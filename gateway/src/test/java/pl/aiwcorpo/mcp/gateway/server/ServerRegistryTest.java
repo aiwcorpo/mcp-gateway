@@ -45,6 +45,6 @@ class ServerRegistryTest {
         return new ServerRegistry(Map.of("mcp-jira", new GatewayProperties.Server("jira",
                 URI.create("https://mcp-jira.internal:8443/mcp"), version, true,
                 new GatewayProperties.Credential(true, List.of("user-secret"), List.of(), false),
-                Map.of(tool, new GatewayProperties.Tool(risk, "Description.", null, action, false)))));
+                Map.of(tool, new GatewayProperties.Tool(risk, "Description.", null, action, false, List.of())))));
     }
 }
