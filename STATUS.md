@@ -13,7 +13,7 @@ broker, C2/C3, audyt, jeden serwer). M3 (potwierdzenia, zawężanie zasobów, `o
 | K3 | port wewnętrzny rozpoznawany po znormalizowanej ścieżce (`//admin/v1`, `/%61dmin/v1`), szersze testy negatywne ścieżek; mutacje testów (3 z 3 zabite) | `1aed158` |
 | K4 | poprawki przeglądu Opus (LOW 1-10, MEDIUM-1 odroczone do M3); obraz `mcp-gateway:m2-8dc1d7a` | `8dc1d7a` |
 | K5 | kontrakty 2.2.5: CC-118 (`not_found_or_denied` dla narzędzia spoza linku), CC-119 (409 `virtual_server_limit_reached`), CC-120 (zdarzenie `authentication` z gateway'a dla odrzuconych tokenów C1) | `7ffa55d` |
-| K6 | poprawki przeglądu 7ffa55d: awaria JWKS -> 401 i zdarzenie, domyślne walidatory (`typ`, `cnf`) z powrotem, audyt `authentication` tylko dla `/s/*/mcp` i `/v/*/mcp` z limitem `missing_token`, stabilizacja testu Redis | patrz `git log` |
+| K6 | poprawki przeglądu 7ffa55d: awaria JWKS -> 401 i zdarzenie, domyślne walidatory (`typ`, `cnf`) z powrotem, audyt `authentication` tylko dla `/s/*/mcp` i `/v/*/mcp` z limitem `missing_token`, stabilizacja testu Redis | `e4608ea` |
 
 ## M2: zakres z zadania
 
@@ -31,7 +31,7 @@ broker, C2/C3, audyt, jeden serwer). M3 (potwierdzenia, zawężanie zasobów, `o
 ```
 ./mvnw -B install
 test-server: Tests run: 51, Failures: 0, Errors: 0   (InternalJwtVerifierVectorTest, wszystkie wektory C2 2.2.5, bez zmian liczby)
-gateway:     Tests run: 131, Failures: 0, Errors: 0   (stan po K6; po K4 było 120)
+gateway:     Tests run: 130, Failures: 0, Errors: 0   (stan po K6; po K4 było 120)
   GatewayIntegrationTest 32, AdminApiTest 16, VirtualServerMcpTest 12, PublicEdgeTest 8, InternalTokenIssuerTest 8,
   ClientTokenAuditTest 9, MissingTokenEventLimiterTest 1, AuditVectorsTest 1 (wszystkie wektory audit-events 2.2.5),
   VirtualServerServiceTest 7, CredentialCacheTest 6, GroupToolAuthorizerTest 5, ClientCertificateVerifierTest 5,
