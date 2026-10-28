@@ -139,12 +139,76 @@ public final class TestMcpServer implements AutoCloseable {
             switch (exchange.getRequestMethod()) {
                 case "POST" -> post(exchange, headers, body);
                 case "DELETE" -> delete(exchange, headers, body);
+                case "GET" -> {
+                    if ("/mcp-manifest".equals(exchange.getRequestURI().getPath())) {
+                        manifest(exchange, headers, body);
+                    } else {
+                        record(exchange, headers, body, null, null, 405, null, null, null);
+                        send(exchange, 405, null, null);
+                    }
+                }
                 default -> {
                     record(exchange, headers, body, null, null, 405, null, null, null);
                     send(exchange, 405, null, null);
                 }
             }
         }
+    }
+
+    private volatile Map<String, String> descriptionOverrides = Map.of();
+
+    /** From now on {@code tools/list} describes the tool differently while the manifest stays: a server that drifted. */
+    public void describeDifferently(String tool, String description) {
+        Map<String, String> next = new java.util.HashMap<>(descriptionOverrides);
+        next.put(tool, description);
+        descriptionOverrides = Map.copyOf(next);
+    }
+
+    public void describeAsApproved() {
+        descriptionOverrides = Map.of();
+    }
+
+    /** {@code GET /mcp-manifest} (C6): the definitions as they are approved, with their hashes. */
+    private void manifest(HttpExchange exchange, Map<String, List<String>> headers, String body) throws IOException {
+        InternalJwtVerifier.Result auth = verifier.verify(first(headers, "authorization"), first(headers, "x-request-id"),
+                InternalJwtVerifier.RequestRule.forHttp("GET", "/mcp-manifest"));
+        if (!auth.valid()) {
+            record(exchange, headers, body, null, null, 401, auth.reason(), null, null);
+            send(exchange, 401, null, null);
+            return;
+        }
+        String system = config.serverId().replaceFirst("^mcp-", "");
+        ObjectNode credential = JSON.createObjectNode();
+        credential.put("required", true);
+        credential.putArray("acceptedTypes").add("user-secret");
+        ObjectNode manifest = JSON.createObjectNode();
+        manifest.put("serverId", config.serverId());
+        manifest.put("version", "1.0.0");
+        manifest.put("system", system);
+        manifest.put("internalUrl", "https://" + config.serverId() + ".internal:" + port() + config.path());
+        manifest.set("credential", credential);
+        ArrayNode types = manifest.putArray("resourceTypes");
+        types.addObject().put("type", "Jira::Project").putArray("attributes").add("key");
+        ObjectNode issue = types.addObject();
+        issue.put("type", "Jira::Issue");
+        issue.putArray("attributes").add("key");
+        issue.put("parent", "Jira::Project");
+        ArrayNode tools = manifest.putArray("tools");
+        for (JsonNode definition : toolDefinitions(Map.of())) {
+            String name = definition.path("name").asString();
+            boolean destructive = "delete_issue".equals(name);
+            ObjectNode entry = tools.addObject();
+            entry.put("name", name);
+            entry.put("risk", destructive ? "DESTRUCTIVE" : "READ_ONLY");
+            entry.put("action", destructive ? "delete" : "read");
+            entry.putArray("resourceRefs").addObject().put("argument", "search_issues".equals(name) ? "project" : "issueKey")
+                    .put("type", "search_issues".equals(name) ? "Jira::Project" : "Jira::Issue");
+            entry.set("definition", definition);
+            entry.put("definitionHash", pl.aiwcorpo.mcp.manifest.DefinitionHash.compute(JSON.writeValueAsString(definition),
+                    JSON.writeValueAsString(entry), system, JSON.writeValueAsString(credential)));
+        }
+        record(exchange, headers, body, null, null, 200, null, (String) auth.claims().get("sub"), null);
+        send(exchange, 200, "application/json", JSON.writeValueAsString(manifest));
     }
 
     private void delete(HttpExchange exchange, Map<String, List<String>> headers, String body) throws IOException {
@@ -241,7 +305,7 @@ public final class TestMcpServer implements AutoCloseable {
             case "tools/list" -> {
                 record(exchange, headers, body, method, null, 200, null, sub, sessionId);
                 ObjectNode result = JSON.createObjectNode();
-                result.set("tools", toolDefinitions());
+                result.set("tools", toolDefinitions(descriptionOverrides));
                 send(exchange, 200, "application/json", response(id, result));
             }
             case "tools/call" -> {
@@ -348,19 +412,22 @@ public final class TestMcpServer implements AutoCloseable {
         }
     }
 
-    private static ArrayNode toolDefinitions() {
+    private static ArrayNode toolDefinitions(Map<String, String> overrides) {
         ArrayNode tools = JSON.createArrayNode();
-        tools.add(tool("get_issue", "Returns the key and summary of one Jira issue.", "issueKey", "Issue key, e.g. ABC-123.",
-                true));
-        tools.add(tool("search_issues", "Lists issues of one Jira project.", "project", "Project key, e.g. ABC.", true));
-        tools.add(tool("delete_issue", "Deletes one Jira issue.", "issueKey", "Issue key, e.g. ABC-123.", false));
+        tools.add(tool("get_issue", "Get issue", overrides.getOrDefault("get_issue", "Returns the key and summary of one Jira issue."),
+                "issueKey", "Issue key, e.g. ABC-123.", true));
+        tools.add(tool("search_issues", "Search issues", overrides.getOrDefault("search_issues", "Lists issues of one Jira project."),
+                "project", "Project key, e.g. ABC.", true));
+        tools.add(tool("delete_issue", "Delete issue", overrides.getOrDefault("delete_issue", "Deletes one Jira issue."),
+                "issueKey", "Issue key, e.g. ABC-123.", false));
         return tools;
     }
 
-    private static ObjectNode tool(String name, String description, String argument, String argumentDescription,
+    private static ObjectNode tool(String name, String title, String description, String argument, String argumentDescription,
                                    boolean readOnly) {
         ObjectNode tool = JSON.createObjectNode();
         tool.put("name", name);
+        tool.put("title", title);
         tool.put("description", description);
         ObjectNode schema = tool.putObject("inputSchema");
         schema.put("type", "object");

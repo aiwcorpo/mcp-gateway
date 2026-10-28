@@ -25,6 +25,8 @@ import pl.aiwcorpo.mcp.gateway.confirm.ConfirmationService;
 import pl.aiwcorpo.mcp.gateway.confirm.OperationDescription;
 import pl.aiwcorpo.mcp.gateway.confirm.PendingCall;
 import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
+import pl.aiwcorpo.mcp.gateway.registry.DefinitionCheck;
+import pl.aiwcorpo.mcp.gateway.registry.DefinitionGuard;
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
 import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
 import pl.aiwcorpo.mcp.gateway.server.ToolDefinition;
@@ -58,10 +60,13 @@ public class McpGatewayService {
     private final MeterRegistry meters;
     private final String componentId;
     private final ConfirmationService confirmations;
+    private final DefinitionCheck definitionCheck;
+    private final DefinitionGuard definitionGuard;
 
     public McpGatewayService(ServerRegistry registry, PublicUrls urls, UpstreamSessions upstream,
                              CredentialService credentials, ToolAuthorizer authorizer, AuditLog audit, ToolErrors errors,
-                             JsonMapper json, MeterRegistry meters, String componentId, ConfirmationService confirmations) {
+                             JsonMapper json, MeterRegistry meters, String componentId, ConfirmationService confirmations,
+                             DefinitionCheck definitionCheck, DefinitionGuard definitionGuard) {
         this.registry = registry;
         this.urls = urls;
         this.upstream = upstream;
@@ -73,6 +78,8 @@ public class McpGatewayService {
         this.meters = meters;
         this.componentId = componentId;
         this.confirmations = confirmations;
+        this.definitionCheck = definitionCheck;
+        this.definitionGuard = definitionGuard;
     }
 
     public ObjectNode listTools(CallContext ctx) throws RpcFailure {
@@ -103,7 +110,29 @@ public class McpGatewayService {
         if (!anyVisible) {
             return;
         }
+        for (JsonNode tool : liveTools(ctx, server)) {
+            String name = tool.path("name").asString(null);
+            Optional<ToolDefinition> definition = name == null ? Optional.empty() : server.tool(name);
+            if (definition.isEmpty() || !visible(ctx, server, definition.get()) || !intact(server, definition.get(), tool)) {
+                continue;
+            }
+            ObjectNode copy = (ObjectNode) tool.deepCopy();
+            copy.put("name", server.qualifiedName(definition.get()));
+            if (definition.get().requiresConfirmation()) {
+                addConfirmationCode(copy);
+            }
+            out.add(copy);
+        }
+    }
+
+    /**
+     * Every tool the server lists now, all pages. The verdict of the approved-definition check for each tool of the server is
+     * recorded on the way, so a call right after a list does not ask the server again.
+     */
+    private List<JsonNode> liveTools(CallContext ctx, McpServer server) throws RpcFailure {
+        List<JsonNode> tools = new ArrayList<>();
         String cursor = null;
+        boolean complete = false;
         for (int page = 0; page < MAX_LIST_PAGES; page++) {
             ObjectNode request = request("tools/list");
             if (cursor != null) {
@@ -113,28 +142,56 @@ public class McpGatewayService {
             if (response.has("error")) {
                 throw new RpcFailure(-32603, "The MCP server could not list its tools.", 502);
             }
-            for (JsonNode tool : response.path("result").path("tools")) {
-                if (!tool.isObject()) {
-                    continue;
+            response.path("result").path("tools").forEach(tool -> {
+                if (tool.isObject()) {
+                    tools.add(tool);
                 }
-                String name = tool.path("name").asString(null);
-                Optional<ToolDefinition> definition = name == null ? Optional.empty() : server.tool(name);
-                if (definition.isEmpty() || !visible(ctx, server, definition.get())) {
-                    continue;
-                }
-                ObjectNode copy = (ObjectNode) tool.deepCopy();
-                copy.put("name", server.qualifiedName(definition.get()));
-                if (definition.get().requiresConfirmation()) {
-                    addConfirmationCode(copy);
-                }
-                out.add(copy);
-            }
+            });
             cursor = response.path("result").path("nextCursor").asString(null);
             if (cursor == null || cursor.isEmpty()) {
-                return;
+                complete = true;
+                break;
             }
         }
-        log.warn("{} returned more than {} pages of tools; list truncated", server.serverId(), MAX_LIST_PAGES);
+        if (!complete) {
+            log.warn("{} returned more than {} pages of tools; list truncated", server.serverId(), MAX_LIST_PAGES);
+        }
+        if (server.approvalRequired()) {
+            java.util.Map<String, Boolean> verdicts = new LinkedHashMap<>();
+            server.tools().keySet().forEach(name -> verdicts.put(name, false));
+            for (JsonNode tool : tools) {
+                String name = tool.path("name").asString(null);
+                Optional<ToolDefinition> approved = name == null ? Optional.empty() : server.tool(name);
+                if (approved.isPresent()) {
+                    boolean intact = definitionCheck.intact(server, approved.get(), tool);
+                    verdicts.put(name, intact);
+                    if (!intact) {
+                        meters.counter("mcp.gateway.definition.mismatch", "server", server.serverId()).increment();
+                        log.warn("{}: the definition of {} differs from the approved one; the tool is hidden", server.serverId(), name);
+                    }
+                }
+            }
+            definitionGuard.record(server.serverId(), verdicts);
+        }
+        return tools;
+    }
+
+    /** A tool of a server with approved definitions is usable only while its live definition is the approved one. */
+    private boolean intact(McpServer server, ToolDefinition approved, JsonNode live) {
+        return !server.approvalRequired() || definitionCheck.intact(server, approved, live);
+    }
+
+    /** The result of the last check of the server's definitions, or a new check when there is none young enough. */
+    private boolean definitionsIntact(CallContext ctx, McpServer server, ToolDefinition tool) throws RpcFailure {
+        if (!server.approvalRequired()) {
+            return true;
+        }
+        Optional<Boolean> fresh = definitionGuard.fresh(server.serverId(), tool.name());
+        if (fresh.isPresent()) {
+            return fresh.get();
+        }
+        liveTools(ctx, server);
+        return definitionGuard.fresh(server.serverId(), tool.name()).orElse(false);
     }
 
     /** The code field is added to the schema the client sees; it is not part of the tool's own schema or its hash (C11). */
@@ -190,7 +247,13 @@ public class McpGatewayService {
             // Outside the configuration or outside the link: the same answer, the link hides what it does not name
             // (C10: tool_disabled is only for a tool an administrator switched off).
             McpServer addressed = ctx.target().server();
-            decisionEvent(ctx, addressed, null, "deny", "not_found_or_denied");
+            Optional<ServerRegistry.Resolved> known = registry.resolve(clientName);
+            if (known.isPresent()) {
+                // A real tool the link does not name: the activity shows it as outside the link.
+                decisionEvent(ctx, known.get().server(), known.get().tool(), "deny", "link_scope", "not_found_or_denied");
+            } else {
+                decisionEvent(ctx, addressed, null, "deny", "not_found_or_denied", "not_found_or_denied");
+            }
             return finish(ctx, addressed, null, null, started, argsLength, "deny", "not_found_or_denied", null,
                     errors.error("not_found_or_denied", "This tool was not found or is not available to you."));
         }
@@ -198,14 +261,25 @@ public class McpGatewayService {
         ToolDefinition tool = resolved.get().tool();
         ToolDecision decision = authorizer.decide(ctx.user(), server, tool);
         if (!decision.allowed()) {
-            decisionEvent(ctx, server, tool, "deny", decision.reason());
+            decisionEvent(ctx, server, tool, "deny", decision.reason(),
+                    "tool_disabled".equals(decision.reason()) ? "tool_disabled" : "access_denied");
             ObjectNode error = "tool_disabled".equals(decision.reason())
                     ? errors.error("tool_disabled", "This tool is not available.")
                     : errors.error("access_denied", "You are not allowed to use this tool.",
                             Map.of("requiredEntitlements", decision.requiredEntitlements()));
             return finish(ctx, server, tool, null, started, argsLength, "deny", decision.reason(), null, error);
         }
-        decisionEvent(ctx, server, tool, "allow", null);
+        try {
+            if (!definitionsIntact(ctx, server, tool)) {
+                decisionEvent(ctx, server, tool, "deny", "tool_disabled", "tool_disabled");
+                return finish(ctx, server, tool, null, started, argsLength, "deny", "tool_disabled", null,
+                        errors.error("tool_disabled", "This tool is not available."));
+            }
+        } catch (RpcFailure failure) {
+            return finish(ctx, server, tool, null, started, argsLength, "allow", null, null,
+                    errors.error("upstream_unavailable", "The MCP server is unavailable. Try again later."));
+        }
+        decisionEvent(ctx, server, tool, "allow", null, null);
 
         String callKey = null;
         if (tool.requiresConfirmation()) {
@@ -405,9 +479,14 @@ public class McpGatewayService {
         return request;
     }
 
-    private void decisionEvent(CallContext ctx, McpServer server, ToolDefinition tool, String decision, String reason) {
-        audit.emit(base(ctx, server, "policy_decision", tool).risk(tool == null ? null : tool.risk().name())
-                .decision(decision, reason).policyRevision(authorizer.policyRevision()));
+    private void decisionEvent(CallContext ctx, McpServer server, ToolDefinition tool, String decision, String reason,
+                               String errorCode) {
+        AuditEvent event = base(ctx, server, "policy_decision", tool).risk(tool == null ? null : tool.risk().name())
+                .decision(decision, reason).policyRevision(authorizer.policyRevision());
+        if ("deny".equals(decision)) {
+            event.outcome("denied", errorCode);
+        }
+        audit.emit(event);
     }
 
     /**

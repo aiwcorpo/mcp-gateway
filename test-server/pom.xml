@@ -35,6 +35,11 @@
             <groupId>com.networknt</groupId>
             <artifactId>json-schema-validator</artifactId>
         </dependency>
+        <!-- definitionHash of the manifest this server serves (C6). -->
+        <dependency>
+            <groupId>pl.aiwcorpo.mcp</groupId>
+            <artifactId>mcp-manifest</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>pl.aiwcorpo.mcp</groupId>

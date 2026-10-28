@@ -9,10 +9,13 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import pl.aiwcorpo.mcp.gateway.config.GatewayProperties;
+import pl.aiwcorpo.mcp.gateway.registry.ApprovedServer;
 
 /**
- * Servers from the static configuration. The registry with approved manifests (C5/C6) is not part of M2; the
- * {@code serverId -> system, internalUrl} binding stays configuration in any case.
+ * The servers behind the gateway. {@code serverId -> system, internalUrl}, the credential policy and the enabled switch come
+ * from the configuration only (C5). The tools come from the approved manifest of the server (C6, registry) when the server is
+ * in mode {@code required}, which is the default: until a manifest is approved the server has no tools. In mode {@code static}
+ * they come from the configuration (development without manifests).
  */
 public final class ServerRegistry {
 
@@ -23,11 +26,29 @@ public final class ServerRegistry {
             "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$");
     private static final Set<String> ACTIONS = Set.of("read", "update", "delete", "admin");
 
-    private final Map<String, McpServer> servers;
+    public static final String MODE_REQUIRED = "required";
+    public static final String MODE_STATIC = "static";
 
-    public ServerRegistry(Map<String, GatewayProperties.Server> config) {
+    private final Map<String, GatewayProperties.Server> config;
+    private volatile Map<String, McpServer> servers;
+
+    public ServerRegistry(Map<String, GatewayProperties.Server> config, String defaultMode) {
+        if (!Set.of(MODE_REQUIRED, MODE_STATIC).contains(defaultMode)) {
+            throw new IllegalStateException("gateway.registry.mode must be required or static");
+        }
+        this.config = Map.copyOf(config);
         Map<String, McpServer> built = new LinkedHashMap<>();
-        config.forEach((serverId, server) -> built.put(serverId, build(serverId, server)));
+        config.forEach((serverId, server) -> {
+            String mode = server.manifest() == null || server.manifest().isBlank() ? defaultMode : server.manifest();
+            if (!Set.of(MODE_REQUIRED, MODE_STATIC).contains(mode)) {
+                throw new IllegalStateException("gateway.servers." + serverId + ".manifest must be required or static");
+            }
+            McpServer fromConfig = build(serverId, server);
+            built.put(serverId, MODE_REQUIRED.equals(mode)
+                    ? new McpServer(fromConfig.serverId(), fromConfig.system(), fromConfig.internalUrl(), fromConfig.version(),
+                            fromConfig.enabled(), fromConfig.credential(), Map.of(), true, null)
+                    : fromConfig);
+        });
         this.servers = Map.copyOf(built);
     }
 
@@ -37,6 +58,34 @@ public final class ServerRegistry {
 
     public List<McpServer> all() {
         return List.copyOf(servers.values());
+    }
+
+    /** Servers whose tools wait for an approved manifest, or have one. */
+    public List<McpServer> requiringApproval() {
+        return servers.values().stream().filter(McpServer::approvalRequired).toList();
+    }
+
+    /**
+     * Takes the approved manifest of a server as its tools: metadata (risk, action, references, texts) and the hash each
+     * live definition must keep. The switches of the configuration stay: a disabled server or tool is disabled whatever the
+     * manifest says.
+     */
+    public synchronized void apply(ApprovedServer approved) {
+        McpServer current = servers.get(approved.serverId());
+        GatewayProperties.Server configured = config.get(approved.serverId());
+        if (current == null || configured == null || !current.approvalRequired()) {
+            throw new IllegalStateException("server " + approved.serverId() + " takes no manifest");
+        }
+        Map<String, ToolDefinition> tools = new LinkedHashMap<>();
+        approved.tools().forEach((name, tool) -> {
+            GatewayProperties.Tool switches = configured.tools().get(name);
+            tools.put(name, new ToolDefinition(name, Risk.valueOf(tool.risk()), tool.action(), tool.title(), tool.description(),
+                    switches != null && switches.disabled(), tool.resourceRefs(), tool.definitionHash()));
+        });
+        Map<String, McpServer> next = new LinkedHashMap<>(servers);
+        next.put(approved.serverId(), new McpServer(current.serverId(), current.system(), current.internalUrl(), approved.version(),
+                current.enabled(), current.credential(), Map.copyOf(tools), true, approved.credentialJson()));
+        this.servers = Map.copyOf(next);
     }
 
     /** A tool as the client names it ({@code <system>__<tool>}) together with its server. */

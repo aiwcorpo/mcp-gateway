@@ -35,7 +35,7 @@ class VirtualServerServiceTest {
     private final VirtualServerStore store = mock(VirtualServerStore.class);
     private final ServerRegistry registry = new ServerRegistry(Map.of(
             "mcp-jira", server("jira", "https://mcp-jira.internal:8443/mcp", Map.of("get_issue", tool("READ_ONLY"), "add_comment", tool("UPDATE"))),
-            "mcp-gitlab", server("gitlab", "https://mcp-gitlab.internal:8443/mcp", Map.of("get_issue", tool("READ_ONLY")))));
+            "mcp-gitlab", server("gitlab", "https://mcp-gitlab.internal:8443/mcp", Map.of("get_issue", tool("READ_ONLY")))), "static");
     private final VirtualServerService service = new VirtualServerService(store, registry, new GroupToolAuthorizer(), 2);
     private final GatewayUser reader = new GatewayUser("sub-reader", "reader", "mcp-portal-bff", List.of("mcp-jira-read"), "t");
 
@@ -120,7 +120,7 @@ class VirtualServerServiceTest {
     }
 
     private static GatewayProperties.Server server(String system, String url, Map<String, GatewayProperties.Tool> tools) {
-        return new GatewayProperties.Server(system, URI.create(url), "1.0.0", true,
+        return new GatewayProperties.Server(system, URI.create(url), "1.0.0", true, "static",
                 new GatewayProperties.Credential(true, List.copyOf(Set.of("user-secret")), List.of(), false), tools);
     }
 

@@ -19,7 +19,22 @@ import jakarta.servlet.DispatcherType;
 import io.micrometer.core.instrument.MeterRegistry;
 import pl.aiwcorpo.mcp.gateway.admin.AdminController;
 import pl.aiwcorpo.mcp.gateway.admin.ClientCertificateVerifier;
+import pl.aiwcorpo.mcp.gateway.activity.ActivityAggregator;
+import pl.aiwcorpo.mcp.gateway.activity.ActivityCursor;
+import pl.aiwcorpo.mcp.gateway.activity.ActivityRecorder;
+import pl.aiwcorpo.mcp.gateway.activity.ActivityRetention;
+import pl.aiwcorpo.mcp.gateway.activity.ActivityService;
+import pl.aiwcorpo.mcp.gateway.activity.ActivityStore;
+import pl.aiwcorpo.mcp.gateway.admin.ActivityController;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
+import pl.aiwcorpo.mcp.gateway.admin.RegistryController;
+import pl.aiwcorpo.mcp.gateway.registry.DefinitionCheck;
+import pl.aiwcorpo.mcp.gateway.registry.DefinitionGuard;
+import pl.aiwcorpo.mcp.gateway.registry.ManifestFetcher;
+import pl.aiwcorpo.mcp.gateway.registry.ManifestValidator;
+import pl.aiwcorpo.mcp.gateway.registry.RegistryBootstrap;
+import pl.aiwcorpo.mcp.gateway.registry.RegistryService;
+import pl.aiwcorpo.mcp.gateway.registry.RegistryStore;
 import pl.aiwcorpo.mcp.gateway.admin.ConfirmationAdminController;
 import pl.aiwcorpo.mcp.gateway.confirm.ConfirmationService;
 import pl.aiwcorpo.mcp.gateway.confirm.ConfirmationStore;
@@ -67,7 +82,7 @@ public class GatewayConfiguration {
 
     @Bean
     ServerRegistry serverRegistry(GatewayProperties properties) {
-        return new ServerRegistry(properties.servers());
+        return new ServerRegistry(properties.servers(), properties.registry().mode());
     }
 
     @Bean
@@ -132,8 +147,10 @@ public class GatewayConfiguration {
 
     @Bean
     AdminController adminController(ServerRegistry registry, ToolAuthorizer authorizer, VirtualServerService virtualServers,
-                                    PublicUrls urls, AuditLog audit, JsonMapper gatewayJson, GatewayProperties properties) {
-        return new AdminController(registry, authorizer, virtualServers, urls, audit, gatewayJson, properties.componentId());
+                                    PublicUrls urls, AuditLog audit, JsonMapper gatewayJson, GatewayProperties properties,
+                                    DefinitionGuard definitionGuard) {
+        return new AdminController(registry, authorizer, virtualServers, urls, audit, gatewayJson, properties.componentId(),
+                definitionGuard);
     }
 
     @Bean
@@ -249,6 +266,47 @@ public class GatewayConfiguration {
     }
 
     @Bean
+    ActivityStore activityStore(JdbcClient jdbc, JsonMapper gatewayJson) {
+        return new ActivityStore(jdbc, gatewayJson);
+    }
+
+    @Bean
+    ActivityRecorder activityRecorder(ActivityStore store, AuditLog audit, MeterRegistry meters) {
+        ActivityRecorder recorder = new ActivityRecorder(store, meters);
+        audit.listen(recorder::record);
+        return recorder;
+    }
+
+    @Bean
+    ActivityService activityService(ActivityStore store, JsonMapper gatewayJson, Clock clock) {
+        return new ActivityService(store, new ActivityAggregator(gatewayJson), clock);
+    }
+
+    /** Key of the cursor MAC: shared by all instances (M4 HA); without one a random key is made at start and cursors die with it. */
+    @Bean
+    ActivityCursor activityCursor(GatewayProperties properties, JsonMapper gatewayJson) {
+        String configured = properties.activity().cursorKey();
+        byte[] key = configured == null || configured.isBlank() ? randomKey() : configured.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        return new ActivityCursor(key, gatewayJson);
+    }
+
+    private static byte[] randomKey() {
+        byte[] key = new byte[32];
+        new java.security.SecureRandom().nextBytes(key);
+        return key;
+    }
+
+    @Bean
+    ActivityController activityController(ActivityService activity, ActivityCursor cursors, Clock clock, JsonMapper gatewayJson) {
+        return new ActivityController(activity, cursors, clock, gatewayJson);
+    }
+
+    @Bean
+    ActivityRetention activityRetention(ActivityStore store, Clock clock) {
+        return new ActivityRetention(store, clock);
+    }
+
+    @Bean
     ConfirmationStore confirmationStore(StringRedisTemplate redis, JsonMapper gatewayJson, GatewayProperties properties) {
         return new RedisConfirmationStore(redis, gatewayJson, properties.redis().keyPrefix());
     }
@@ -274,8 +332,48 @@ public class GatewayConfiguration {
     McpGatewayService mcpGatewayService(ServerRegistry registry, PublicUrls urls, UpstreamSessions upstream,
                                         CredentialService credentials, ToolAuthorizer authorizer, AuditLog audit,
                                         ToolErrors errors, JsonMapper gatewayJson, MeterRegistry meters,
-                                        GatewayProperties properties, ConfirmationService confirmations) {
+                                        GatewayProperties properties, ConfirmationService confirmations,
+                                        DefinitionCheck definitionCheck, DefinitionGuard definitionGuard) {
         return new McpGatewayService(registry, urls, upstream, credentials, authorizer, audit, errors, gatewayJson, meters,
-                properties.componentId(), confirmations);
+                properties.componentId(), confirmations, definitionCheck, definitionGuard);
+    }
+
+    @Bean
+    DefinitionCheck definitionCheck(JsonMapper gatewayJson) {
+        return new DefinitionCheck(gatewayJson);
+    }
+
+    @Bean
+    DefinitionGuard definitionGuard(Clock clock, GatewayProperties properties) {
+        return new DefinitionGuard(clock, properties.registry().definitionCheckTtl());
+    }
+
+    @Bean
+    RegistryStore registryStore(JdbcClient jdbc, JsonMapper gatewayJson) {
+        return new RegistryStore(jdbc, gatewayJson);
+    }
+
+    @Bean
+    ManifestFetcher manifestFetcher(InternalTls tls, InternalTokenIssuer tokens, JsonMapper gatewayJson) {
+        return new ManifestFetcher(tls, tokens, gatewayJson);
+    }
+
+    @Bean
+    RegistryService registryService(ServerRegistry servers, RegistryStore store, ManifestFetcher fetcher, DefinitionGuard guard,
+                                    JsonMapper gatewayJson) {
+        RegistryService registry = new RegistryService(servers, store, new ManifestValidator(gatewayJson), fetcher, guard);
+        registry.load();
+        return registry;
+    }
+
+    /** Servers that wait for a manifest get the one they serve, retried until it works. */
+    @Bean
+    RegistryBootstrap registryBootstrap(RegistryService registry, GatewayProperties properties) {
+        return new RegistryBootstrap(registry, properties.registry().bootstrapFromServer(), properties.registry().bootstrapRetry());
+    }
+
+    @Bean
+    RegistryController registryController(RegistryService registry, ServerRegistry servers, JsonMapper gatewayJson) {
+        return new RegistryController(registry, servers, gatewayJson);
     }
 }

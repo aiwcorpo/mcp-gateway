@@ -41,6 +41,8 @@ public record GatewayProperties(
         @Valid @NotNull Metrics metrics,
         @DefaultValue @Valid Audit audit,
         @DefaultValue @Valid Confirmations confirmations,
+        @DefaultValue @Valid Activity activity,
+        @DefaultValue @Valid Registry registry,
         @DefaultValue("00000000000000-0000000") @Pattern(regexp = "^[0-9]{14}-[0-9a-f]{7}$") String policyRevision,
         /* Dev only: allows http for the IdP token endpoint (token exchange); never for the broker or servers. */
         @DefaultValue("false") boolean allowPlainHttp,
@@ -145,6 +147,23 @@ public record GatewayProperties(
             @DefaultValue("3") @Min(1) int pendingLimit) {
     }
 
+    /** Approved definitions of the servers (C6). */
+    public record Registry(
+            /* required: a server serves only tools of an approved manifest; static: the tools of this configuration. */
+            @DefaultValue("required") String mode,
+            /* A required server with no approved manifest gets the one it serves at /mcp-manifest, once, and keeps it. */
+            @DefaultValue("true") boolean bootstrapFromServer,
+            @DefaultValue("10s") Duration bootstrapRetry,
+            /* How long the last check of the live definitions of a server counts before a call checks them again. */
+            @DefaultValue("30s") Duration definitionCheckTtl) {
+    }
+
+    /** The activity views (C5 /activity/calls). */
+    public record Activity(
+            /* Key of the HMAC on the cursor, at least 16 bytes; empty = random per process (cursors do not survive a restart). */
+            String cursorKey) {
+    }
+
     /** Caps on authentication events that cost the sender nothing (CC-120, CC-125). */
     public record Audit(
             /* Per second and per reason, for missing_token and malformed. */
@@ -164,6 +183,8 @@ public record GatewayProperties(
             @NotNull URI internalUrl,
             @DefaultValue("0.1.0") @NotBlank String version,
             @DefaultValue("true") boolean enabled,
+            /* required or static; empty = gateway.registry.mode. */
+            String manifest,
             @Valid @NotNull Credential credential,
             @Valid @NotEmpty Map<String, Tool> tools) {
     }

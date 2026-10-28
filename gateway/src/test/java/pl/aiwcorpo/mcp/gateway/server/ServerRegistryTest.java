@@ -43,8 +43,8 @@ class ServerRegistryTest {
 
     private static ServerRegistry registry(String version, String tool, String risk, String action) {
         return new ServerRegistry(Map.of("mcp-jira", new GatewayProperties.Server("jira",
-                URI.create("https://mcp-jira.internal:8443/mcp"), version, true,
+                URI.create("https://mcp-jira.internal:8443/mcp"), version, true, "static",
                 new GatewayProperties.Credential(true, List.of("user-secret"), List.of(), false),
-                Map.of(tool, new GatewayProperties.Tool(risk, "Description.", null, action, false, List.of())))));
+                Map.of(tool, new GatewayProperties.Tool(risk, "Description.", null, action, false, List.of())))), "static");
     }
 }

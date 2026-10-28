@@ -90,18 +90,16 @@
         <dependency>
             <groupId>pl.aiwcorpo.mcp</groupId>
             <artifactId>mcp-contracts</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>pl.aiwcorpo.mcp</groupId>
-            <artifactId>mcp-contracts</artifactId>
             <classifier>test-vectors</classifier>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>com.networknt</groupId>
             <artifactId>json-schema-validator</artifactId>
-            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>pl.aiwcorpo.mcp</groupId>
+            <artifactId>mcp-contracts</artifactId>
         </dependency>
         <dependency>
             <groupId>org.bouncycastle</groupId>

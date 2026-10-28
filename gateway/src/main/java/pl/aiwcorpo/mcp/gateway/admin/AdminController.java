@@ -27,6 +27,7 @@ import pl.aiwcorpo.mcp.gateway.auth.PublicUrls;
 import pl.aiwcorpo.mcp.gateway.authz.ToolAuthorizer;
 import pl.aiwcorpo.mcp.gateway.authz.ToolDecision;
 import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
+import pl.aiwcorpo.mcp.gateway.registry.DefinitionGuard;
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
 import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
 import pl.aiwcorpo.mcp.gateway.server.ToolDefinition;
@@ -57,9 +58,10 @@ public class AdminController {
     private final AuditLog audit;
     private final JsonMapper json;
     private final String componentId;
+    private final DefinitionGuard definitionGuard;
 
     public AdminController(ServerRegistry registry, ToolAuthorizer authorizer, VirtualServerService virtualServers,
-                           PublicUrls urls, AuditLog audit, JsonMapper json, String componentId) {
+                           PublicUrls urls, AuditLog audit, JsonMapper json, String componentId, DefinitionGuard definitionGuard) {
         this.registry = registry;
         this.authorizer = authorizer;
         this.virtualServers = virtualServers;
@@ -67,6 +69,7 @@ public class AdminController {
         this.audit = audit;
         this.json = json;
         this.componentId = componentId;
+        this.definitionGuard = definitionGuard;
     }
 
     @GetMapping("/catalog")
@@ -92,7 +95,8 @@ public class AdminController {
                 item.put("action", tool.action());
                 item.put("access", decision.allowed() ? "granted" : "denied");
                 item.set("requiredEntitlements", json.valueToTree(authorizer.requiredEntitlements(server, tool)));
-                item.put("disabled", !decision.allowed() && "tool_disabled".equals(decision.reason()));
+                item.put("disabled", (!decision.allowed() && "tool_disabled".equals(decision.reason()))
+                        || (server.approvalRequired() && !definitionGuard.lastKnownIntact(server.serverId(), tool.name())));
                 item.put("requiresConfirmation", tool.requiresConfirmation());
             }
         }
