@@ -1,9 +1,7 @@
 package pl.aiwcorpo.mcp.gateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -38,8 +36,10 @@ class AdminApiTest extends GatewayTestBase {
         assertThat(otherComponent.statusCode()).isEqualTo(403);
         assertThat(JSON.readTree(otherComponent.body()).path("error").asString()).isEqualTo("access_denied");
 
-        assertThatThrownBy(() -> admin(env.foreignCaTls, "GET", "/admin/v1/catalog", token, null))
-                .isInstanceOf(IOException.class);
+        assertThat(admin(env.foreignCaTls, "GET", "/admin/v1/catalog", token, null).statusCode())
+                .as("a certificate of a foreign CA").isEqualTo(401);
+        assertThat(admin(env.serverIdentityTls, "GET", "/admin/v1/catalog", token, null).statusCode())
+                .as("a valid certificate that is not for client authentication").isEqualTo(401);
 
         assertThat(admin(env.bffTls, "GET", "/admin/v1/catalog", null, null).statusCode()).isEqualTo(401);
         String clientToken = env.idp.token(ALICE_SUB, "alice", ALICE_GROUPS, "mcp-gateway", "claude-code");
@@ -47,6 +47,15 @@ class AdminApiTest extends GatewayTestBase {
         assertThat(wrongAudience.statusCode()).as("a token for MCP clients is not an admin token").isEqualTo(401);
         String brokerToken = env.idp.token(ALICE_SUB, "alice", ALICE_GROUPS, "mcp-credential-broker", "mcp-portal-bff");
         assertThat(admin(env.bffTls, "GET", "/admin/v1/catalog", brokerToken, null).statusCode()).isEqualTo(401);
+    }
+
+    @Test
+    void serversThatSendTheirOwnCertificateStillFetchTheJwks() throws Exception {
+        for (var tls : List.of(env.serverIdentityTls, env.bffTls, env.foreignCaTls, env.noClientCertificateTls)) {
+            HttpResponse<String> jwks = admin(tls, "GET", "/.well-known/jwks.json", null, null);
+            assertThat(jwks.statusCode()).isEqualTo(200);
+            assertThat(JSON.readTree(jwks.body()).path("keys").size()).isEqualTo(2);
+        }
     }
 
     @Test

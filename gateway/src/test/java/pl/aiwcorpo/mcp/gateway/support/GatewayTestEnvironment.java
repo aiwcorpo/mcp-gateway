@@ -55,6 +55,8 @@ public final class GatewayTestEnvironment {
     public final SSLContext otherComponentTls;
     public final SSLContext foreignCaTls;
     public final SSLContext noClientCertificateTls;
+    /** A server identity of the internal CA (mcp-jira, serverAuth only), as servers use when they fetch the JWKS. */
+    public final SSLContext serverIdentityTls;
 
     public static synchronized GatewayTestEnvironment get() {
         if (instance == null) {
@@ -124,6 +126,7 @@ public final class GatewayTestEnvironment {
         otherComponentTls = Tls.fromPkcs12(ciKeystore, pki.truststore(), TestPki.PASSWORD);
         foreignCaTls = Tls.fromKeyStores(load(foreignKeystore), TestPki.PASSWORD, load(pki.truststore()));
         noClientCertificateTls = trustOnly;
+        serverIdentityTls = Tls.fromPkcs12(jiraKeystore, pki.truststore(), TestPki.PASSWORD);
     }
 
     public void register(DynamicPropertyRegistry registry) {

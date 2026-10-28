@@ -82,7 +82,7 @@ class GatewayIntegrationTest extends GatewayTestBase {
 
     @Test
     void unknownServerAndUnknownLinkAre404() throws Exception {
-        assertThat(send(aliceToken(), "/s/mcp-opensearch/mcp", initializeBody(), Map.of()).statusCode()).isEqualTo(404);
+        assertThat(send(aliceToken(), "/s/mcp-nothing/mcp", initializeBody(), Map.of()).statusCode()).isEqualTo(404);
         assertThat(send(aliceToken(), "/v/team-a/mcp", initializeBody(), Map.of()).statusCode()).isEqualTo(404);
     }
 

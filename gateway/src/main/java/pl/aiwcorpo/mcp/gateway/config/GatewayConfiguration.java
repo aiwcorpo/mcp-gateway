@@ -17,6 +17,7 @@ import io.lettuce.core.RedisURI;
 import jakarta.servlet.DispatcherType;
 import io.micrometer.core.instrument.MeterRegistry;
 import pl.aiwcorpo.mcp.gateway.admin.AdminController;
+import pl.aiwcorpo.mcp.gateway.admin.ClientCertificateVerifier;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
 import pl.aiwcorpo.mcp.gateway.auth.PublicUrls;
 import pl.aiwcorpo.mcp.gateway.auth.ResourceMetadata;
@@ -77,7 +78,12 @@ public class GatewayConfiguration {
     @Bean
     InternalConnector internalConnector(GatewayProperties properties) {
         return new InternalConnector(properties.internalEndpoint().port(), properties.tls().keystore(),
-                properties.tls().truststore(), properties.tls().storePassword());
+                properties.tls().storePassword());
+    }
+
+    @Bean
+    ClientCertificateVerifier clientCertificateVerifier(GatewayProperties properties) {
+        return new ClientCertificateVerifier(Path.of(properties.tls().truststore()), properties.tls().storePassword().toCharArray());
     }
 
     @Bean

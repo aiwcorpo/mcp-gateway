@@ -29,7 +29,7 @@ public final class McpAuthenticationEntryPoint implements AuthenticationEntryPoi
         challenge.append(" resource_metadata=\"").append(metadata.metadataUrl(request.getRequestURI())).append('"');
         response.setHeader(HttpHeaders.WWW_AUTHENTICATE, challenge.toString());
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-        response.setContentType("application/json");
+        response.setContentType("application/json;charset=UTF-8");
         response.getWriter().write("{\"error\":\"unauthenticated\",\"message\":\"A valid bearer token is required.\"}");
     }
 }

@@ -122,3 +122,88 @@ gateway:
           risk: UPDATE
           title: Zmiana statusu zgłoszenia
           description: Moves a Jira issue to another status.
+    mcp-confluence:
+      system: confluence
+      version: ${MCP_SERVER_CONFLUENCE_VERSION:1.0.0}
+      enabled: ${MCP_SERVER_CONFLUENCE_ENABLED:true}
+      internal-url: ${MCP_SERVER_CONFLUENCE_MCP_URL:https://mcp-confluence.internal:8443/mcp}
+      credential:
+        required: true
+        accepted-types: [user-secret]
+      tools:
+        search_pages:
+          risk: READ_ONLY
+          title: Wyszukiwanie stron
+          description: Searches the current pages of one Confluence space for the given words.
+        get_page:
+          risk: READ_ONLY
+          title: Pobranie strony
+          description: Returns one Confluence page with its metadata and the body as plain text.
+        create_page:
+          risk: UPDATE
+          title: Utworzenie strony
+          description: Creates a Confluence page in a space, under an existing parent page of the same space.
+    mcp-gitlab:
+      system: gitlab
+      version: ${MCP_SERVER_GITLAB_VERSION:1.0.0}
+      enabled: ${MCP_SERVER_GITLAB_ENABLED:true}
+      internal-url: ${MCP_SERVER_GITLAB_MCP_URL:https://mcp-gitlab.internal:8443/mcp}
+      credential:
+        required: true
+        accepted-types: [user-oauth, user-secret]
+      tools:
+        list_projects:
+          risk: READ_ONLY
+          title: Lista projektów grupy
+          description: Lists the projects directly in one GitLab group, ordered by path, at most 100.
+        get_file:
+          risk: READ_ONLY
+          title: Pobranie pliku z repozytorium
+          description: Returns one UTF-8 text file from a GitLab repository at a branch, tag or commit.
+        get_merge_request:
+          risk: READ_ONLY
+          title: Pobranie merge requesta
+          description: Returns one merge request of a GitLab project by its number.
+        comment_merge_request:
+          risk: UPDATE
+          title: Komentarz do merge requesta
+          description: Adds a comment to a merge request of a GitLab project as the calling user.
+    mcp-servicedesk:
+      system: servicedesk
+      version: ${MCP_SERVER_SERVICEDESK_VERSION:1.0.0}
+      enabled: ${MCP_SERVER_SERVICEDESK_ENABLED:true}
+      internal-url: ${MCP_SERVER_SERVICEDESK_MCP_URL:https://mcp-servicedesk.internal:8443/mcp}
+      credential:
+        required: true
+        accepted-types: [service-account]
+      tools:
+        search_tickets:
+          risk: READ_ONLY
+          title: Wyszukiwanie zgłoszeń
+          description: Searches the tickets of one service desk queue for a text.
+        get_ticket:
+          risk: READ_ONLY
+          title: Pobranie zgłoszenia
+          description: Returns one service desk ticket with its status, priority and the text.
+        add_note:
+          risk: UPDATE
+          title: Dodanie notatki
+          description: Adds a note to a service desk ticket.
+    mcp-opensearch:
+      system: opensearch
+      version: ${MCP_SERVER_OPENSEARCH_VERSION:1.0.0}
+      enabled: ${MCP_SERVER_OPENSEARCH_ENABLED:true}
+      internal-url: ${MCP_SERVER_OPENSEARCH_MCP_URL:https://mcp-opensearch.internal:8443/mcp}
+      credential:
+        required: true
+        accepted-types: [token-exchange]
+        token-exchange: true
+      tools:
+        search_logs:
+          risk: READ_ONLY
+          title: Wyszukiwanie w logach
+          description: Searches log documents in the indices matching one index pattern within a time range.
+        get_document:
+          risk: READ_ONLY
+          title: Pobranie dokumentu
+          description: Returns one document by index and id.

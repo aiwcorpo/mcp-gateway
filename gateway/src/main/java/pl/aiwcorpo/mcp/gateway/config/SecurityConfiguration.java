@@ -25,6 +25,7 @@ import org.springframework.security.web.SecurityFilterChain;
 
 import jakarta.servlet.http.HttpServletResponse;
 import pl.aiwcorpo.mcp.gateway.admin.AdminClientCertificateFilter;
+import pl.aiwcorpo.mcp.gateway.admin.ClientCertificateVerifier;
 import pl.aiwcorpo.mcp.gateway.auth.McpAuthenticationEntryPoint;
 import pl.aiwcorpo.mcp.gateway.auth.ResourceMetadata;
 import pl.aiwcorpo.mcp.gateway.jwt.JwksController;
@@ -74,7 +75,7 @@ public class SecurityConfiguration {
     @Bean
     @Order(1)
     SecurityFilterChain adminFilterChain(HttpSecurity http, @Qualifier("adminJwtDecoder") JwtDecoder decoder,
-                                         GatewayProperties properties) throws Exception {
+                                         GatewayProperties properties, ClientCertificateVerifier certificates) throws Exception {
         AuthenticationEntryPoint unauthenticated = (request, response, e) -> {
             response.setHeader(HttpHeaders.WWW_AUTHENTICATE, "Bearer");
             writeError(response, HttpServletResponse.SC_UNAUTHORIZED, "unauthenticated");
@@ -86,7 +87,7 @@ public class SecurityConfiguration {
                 .formLogin(form -> form.disable())
                 .httpBasic(basic -> basic.disable())
                 .logout(logout -> logout.disable())
-                .addFilterBefore(new AdminClientCertificateFilter(properties.admin().allowedClientCns()),
+                .addFilterBefore(new AdminClientCertificateFilter(properties.admin().allowedClientCns(), certificates),
                         BearerTokenAuthenticationFilter.class)
                 .authorizeHttpRequests(auth -> auth.anyRequest().authenticated())
                 .oauth2ResourceServer(rs -> rs.jwt(jwt -> jwt.decoder(decoder)).authenticationEntryPoint(unauthenticated))
@@ -98,7 +99,7 @@ public class SecurityConfiguration {
 
     private static void writeError(HttpServletResponse response, int status, String code) throws java.io.IOException {
         response.setStatus(status);
-        response.setContentType("application/json");
+        response.setContentType("application/json;charset=UTF-8");
         response.getWriter().write("{\"error\":\"" + code + "\"}");
     }
 
