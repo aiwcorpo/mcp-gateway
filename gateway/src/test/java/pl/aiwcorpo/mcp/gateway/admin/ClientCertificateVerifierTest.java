@@ -76,4 +76,23 @@ class ClientCertificateVerifierTest {
         }
         return out;
     }
+
+    @Test
+    void clientNameIsTheSingleCnAndAgreesWithTheSan() throws Exception {
+        assertThat(AdminClientCertificateFilter.commonName(chain(pki.issue("a.p12", "mcp-portal-bff", List.of(), false, true))[0]))
+                .isEqualTo("mcp-portal-bff");
+        assertThat(AdminClientCertificateFilter.commonName(chain(pki.issue("b.p12", "mcp-portal-bff",
+                List.of("mcp-portal-bff"), false, true))[0])).isEqualTo("mcp-portal-bff");
+        assertThat(AdminClientCertificateFilter.commonName(chain(pki.issue("c.p12", "mcp-portal-bff",
+                List.of("mcp-portal-bff.internal"), false, true))[0])).isEqualTo("mcp-portal-bff");
+
+        assertThat(AdminClientCertificateFilter.commonName(chain(pki.issue("d.p12", "mcp-portal-bff,CN=other", List.of(), false, true))[0]))
+                .as("two CNs").isNull();
+        assertThat(AdminClientCertificateFilter.commonName(chain(pki.issue("e.p12", "other,CN=mcp-portal-bff", List.of(), false, true))[0]))
+                .as("two CNs, other order").isNull();
+        assertThat(AdminClientCertificateFilter.commonName(chain(pki.issue("f.p12", "mcp-portal-bff", List.of("mcp-registry-ci"), false, true))[0]))
+                .as("SAN names another component").isNull();
+        assertThat(AdminClientCertificateFilter.commonName(chain(pki.issue("g.p12", "mcp-portal-bff", List.of("mcp-registry-ci", "mcp-portal-bff"), false, true))[0]))
+                .isEqualTo("mcp-portal-bff");
+    }
 }

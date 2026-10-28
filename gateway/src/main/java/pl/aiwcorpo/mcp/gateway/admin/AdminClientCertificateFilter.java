@@ -2,7 +2,9 @@ package pl.aiwcorpo.mcp.gateway.admin;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.security.cert.CertificateParsingException;
 import java.security.cert.X509Certificate;
+import java.util.Collection;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
@@ -55,17 +57,50 @@ public final class AdminClientCertificateFilter extends OncePerRequestFilter {
         chain.doFilter(request, response);
     }
 
+    /**
+     * The one CN of the subject, or null (fail-closed) when there is none, more than one, or a multi-valued RDN.
+     * When the certificate carries DNS names, one of them must be the CN or {@code <CN>.internal} (CC-035), so a
+     * subject and a SAN that name different components are refused.
+     */
     static String commonName(X509Certificate certificate) {
         try {
+            String found = null;
             for (Rdn rdn : new LdapName(certificate.getSubjectX500Principal().getName()).getRdns()) {
+                if (rdn.size() > 1) {
+                    return null;
+                }
                 if ("CN".equals(rdn.getType().toUpperCase(Locale.ROOT))) {
-                    return rdn.getValue().toString();
+                    if (found != null) {
+                        return null;
+                    }
+                    found = rdn.getValue().toString();
                 }
             }
-        } catch (InvalidNameException e) {
+            if (found == null || !sanAgrees(certificate, found)) {
+                return null;
+            }
+            return found;
+        } catch (InvalidNameException | CertificateParsingException e) {
             return null;
         }
-        return null;
+    }
+
+    private static boolean sanAgrees(X509Certificate certificate, String name) throws CertificateParsingException {
+        Collection<List<?>> alternatives = certificate.getSubjectAlternativeNames();
+        if (alternatives == null) {
+            return true;
+        }
+        boolean anyDns = false;
+        for (List<?> entry : alternatives) {
+            if (Integer.valueOf(2).equals(entry.get(0))) {
+                anyDns = true;
+                String dns = String.valueOf(entry.get(1)).toLowerCase(Locale.ROOT);
+                if (dns.equals(name.toLowerCase(Locale.ROOT)) || dns.equals(name.toLowerCase(Locale.ROOT) + ".internal")) {
+                    return true;
+                }
+            }
+        }
+        return !anyDns;
     }
 
     private static void reject(HttpServletResponse response, int status, String code) throws IOException {

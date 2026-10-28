@@ -28,10 +28,10 @@ broker, C2/C3, audyt, jeden serwer). M3 (potwierdzenia, zawężanie zasobów, `o
 ```
 ./mvnw -B install
 test-server: Tests run: 51, Failures: 0, Errors: 0   (InternalJwtVerifierVectorTest, wszystkie wektory C2 2.2.1)
-gateway:     Tests run: 106, Failures: 0, Errors: 0
+gateway:     Tests run: 107, Failures: 0, Errors: 0
   GatewayIntegrationTest 30, VirtualServerMcpTest 11, AdminApiTest 11, PublicEdgeTest 8, InternalTokenIssuerTest 8,
   VirtualServerServiceTest 6, CredentialCacheTest 6, GroupToolAuthorizerTest 5, CredentialServiceTest 4,
-  StreamableHttpClientTest 4, ClientCertificateVerifierTest 3, ServerRegistryTest 3, ResourceMetadataTest 3,
+  StreamableHttpClientTest 4, ClientCertificateVerifierTest 4, ServerRegistryTest 3, ResourceMetadataTest 3,
   PublicUrlsTest 2, PublicEdgeFilterTest 2
 ```
 
@@ -74,6 +74,10 @@ nginx przed gateway'em (ws-01), prawdziwy broker z M2 (ws-06) na jego portach, k
   posiadania klucza), a `ClientCertificateVerifier` w `AdminClientCertificateFilter` sprawdza łańcuch do CA wewnętrznego
   (PKIX), daty, EKU clientAuth i CN, tylko dla `/admin/v1`. Skutek: certyfikat obcego CA lub bez clientAuth daje 401 z JSON,
   nie zerwanie połączenia. Tomcat ostrzega przy starcie o braku PHA w TLS 1.3 (zignorowane, bez renegocjacji).
+- **Tożsamość klienta mTLS (przegląd bezpieczeństwa, MEDIUM):** jedyne miejsce w gateway'u, które rozpoznaje klienta po
+  certyfikacie, to `AdminClientCertificateFilter`. Nazwa to jedyny CN podmiotu; podmiot z kilkoma CN albo RDN wielowartościowym
+  jest odrzucany (403), a gdy certyfikat ma SAN DNS, jeden z nich musi być `<CN>` lub `<CN>.internal` (CC-035). Testy: dwa CN,
+  CN w innej kolejności, SAN innego komponentu. Certyfikaty dev klientów mają SAN `<nazwa>`, więc przechodzą.
 - **DESTRUCTIVE w katalogu:** `access: denied`, `disabled: true`, `requiresConfirmation: true`, `requiredEntitlements`
   `mcp-<system>-destructive`, bo wywołanie jest `tool_disabled` do M3 (brak potwierdzeń).
 - **Narzędzie spoza linku** (znane z konfiguracji, ale nie w linku) i narzędzie spoza konfiguracji: ten sam wynik
