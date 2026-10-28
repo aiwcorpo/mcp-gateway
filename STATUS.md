@@ -113,6 +113,16 @@ działa, natywna biblioteka Cedar dla glibc niesprawdzona w kontenerze; macOS dz
 Testy po poprawkach: gateway 427, test-server 103, 0 błędów. Nowe zdarzenie `reason` `upstream_unavailable` dopisać do słownika C8
 (propozycja 12).
 
+## Profil devstack (N-1 przeglądu środowiska dev)
+
+`config/DevstackGuard`: relaksacje (klucze `test-*` JWT C2 i paczek, bootstrap manifestów, `static`, http dla `public-url`, JWKS, token
+endpointu i paczek, `allow-plain-http`, brak `state-dir`) wymagają jedynego aktywnego profilu `devstack` i dwóch zgód
+(`aiwcorpo.mcp.platform.devstack.acknowledged` oraz `MCP_DEVSTACK_ACKNOWLEDGED`); inaczej start jest odmówiony z listą wszystkich
+problemów, zanim bean użyje relaksowanego ustawienia. WARN `event=devstack_profile` i gauge `mcp_gateway_devstack_active`. Testy
+`DevstackGuardTest` (8): każda relaksacja bez profilu, z profilem i jedną zgodą, z profilem i obiema zgodami, same zgody bez profilu,
+profil z innym profilem, produkcyjna konfiguracja bez profilu; `PolicyServiceTest`: klucz `test-*` odrzucony bez ustawienia. Testy
+integracyjne działają na `@ActiveProfiles("devstack")` z obiema zgodami. Zmienne dla ws-01 w README (sekcja "Profil devstack").
+
 ## Co potrzebuję od innych strumieni
 
 - **ws-01:** wolumen na `/app/state` (stan ochrony przed cofnięciem paczek) i `MCP_POLICY_*` w usłudze `mcp-gateway` (klucze publiczne dev z

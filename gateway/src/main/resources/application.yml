@@ -67,7 +67,7 @@ gateway:
     lifetime: 30s
     keys-file: ${MCP_INTERNAL_JWT_KEYS_FILE:}
     active-kid: ${MCP_INTERNAL_JWT_ACTIVE_KID:}
-    allow-test-keys: false
+    allow-test-keys: ${MCP_INTERNAL_JWT_ALLOW_TEST_KEYS:false}
   internal-endpoint:
     port: ${MCP_INTERNAL_PORT:8443}
   admin:

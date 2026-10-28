@@ -51,6 +51,7 @@ import tools.jackson.databind.json.JsonMapper;
  * JWKS, PostgreSQL and Redis in containers.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@org.springframework.test.context.ActiveProfiles("devstack")
 @ExtendWith(OutputCaptureExtension.class)
 public abstract class GatewayTestBase {
 

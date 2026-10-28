@@ -88,7 +88,7 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    PublicUrls publicUrls(GatewayProperties properties) {
+    PublicUrls publicUrls(GatewayProperties properties, DevstackGuard guard) {
         return new PublicUrls(properties.publicUrl(), properties.allowPlainHttp());
     }
 
@@ -155,8 +155,15 @@ public class GatewayConfiguration {
                 definitionGuard);
     }
 
+    /** Created before anything that uses a relaxed setting: the start is refused here, not after a bundle was pulled over http. */
     @Bean
-    SigningKeys signingKeys(GatewayProperties properties) {
+    DevstackGuard devstackGuard(GatewayProperties properties, org.springframework.core.env.Environment environment,
+                                MeterRegistry meters) {
+        return DevstackGuard.check(properties, environment, meters);
+    }
+
+    @Bean
+    SigningKeys signingKeys(GatewayProperties properties, DevstackGuard guard) {
         GatewayProperties.InternalJwt jwt = properties.internalJwt();
         return SigningKeys.load(jwt.keysFile(), jwt.activeKid(), jwt.allowTestKeys());
     }
@@ -168,7 +175,7 @@ public class GatewayConfiguration {
 
     /** Does not return before a signed main bundle is loaded: the gateway has no start without policies (CC-068). */
     @Bean
-    PolicyService policyService(GatewayProperties properties, BundleFetcher fetcher, MeterRegistry meters) {
+    PolicyService policyService(GatewayProperties properties, BundleFetcher fetcher, MeterRegistry meters, DevstackGuard guard) {
         return new PolicyService(properties.policy(), fetcher, meters).start();
     }
 
@@ -381,7 +388,7 @@ public class GatewayConfiguration {
 
     /** Servers that wait for a manifest get the one they serve, retried until it works. */
     @Bean
-    RegistryBootstrap registryBootstrap(RegistryService registry, GatewayProperties properties) {
+    RegistryBootstrap registryBootstrap(RegistryService registry, GatewayProperties properties, DevstackGuard guard) {
         return new RegistryBootstrap(registry, properties.registry().bootstrapFromServer(), properties.registry().bootstrapRetry());
     }
 

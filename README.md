@@ -166,6 +166,31 @@ linków nie otwiera wywołań narzędzi jego tokenem.
 Przebieg na żywo: `scripts/m3-demo.sh` (po uruchomieniu skryptów z sekcji niżej; atrapa brokera z
 `MCP_TEST_BROKER_TOTP=<sub>=<ziarno>`, kody z `mcpdev.py otp alice`).
 
+## Profil `devstack`: jedyne miejsce na relaksacje dev
+
+Gateway nie wstaje (błąd przy starcie, przed pobraniem czegokolwiek), jeśli konfiguracja używa któregokolwiek z poniższych, a
+aktywny profil nie jest wyłącznie `devstack` z dwiema zgodami: właściwością `aiwcorpo.mcp.platform.devstack.acknowledged=true`
+**i** zmienną `MCP_DEVSTACK_ACKNOWLEDGED=true` (wzorzec startera serwerów; obie mają być w konfiguracji stosu, nie w obrazie).
+Same zgody bez profilu nic nie znaczą, profil bez obu zgód też nie.
+
+| Relaksacja | Ustawienie |
+| --- | --- |
+| klucze podpisu `test-*` JWT C2 | `MCP_INTERNAL_JWT_ALLOW_TEST_KEYS=true` |
+| klucze `test-*` paczek polityk | `MCP_POLICY_ALLOW_TEST_KEYS=true` (bez niego biblioteka paczek odrzuca klucze `test-*`) |
+| bootstrap manifestów z serwera | `MCP_REGISTRY_BOOTSTRAP=true` |
+| narzędzia z `application.yml` zamiast zatwierdzonego manifestu | `MCP_REGISTRY_MODE=static` albo `manifest: static` serwera |
+| http | `MCP_ALLOW_PLAIN_HTTP=true`; `MCP_PUBLIC_URL`, `MCP_OIDC_JWKS_URI`, `MCP_OIDC_TOKEN_URI`, `MCP_POLICY_MAIN_URL`, `MCP_POLICY_OVERRIDES_URL` bez `https` |
+| brak ochrony przed cofnięciem paczek | puste `MCP_POLICY_STATE_DIR` |
+
+Każdy start z profilem loguje `WARN event=devstack_profile` z listą użytych relaksacji, a gauge `mcp_gateway_devstack_active`
+ma wartość 1 (manifest ani audyt nie mają pola na środowisko). Bez profilu odrzucone są także klucze `test-*` (JWT i paczki),
+bootstrap jest wyłączony, a adresy IdP i paczek muszą być `https`.
+
+Dla stosu `mcp-platform-dev` (compose, usługa `mcp-gateway`) ws-01 ustawia: `SPRING_PROFILES_ACTIVE=devstack`,
+`MCP_DEVSTACK_ACKNOWLEDGED=true`, `AIWCORPO_MCP_PLATFORM_DEVSTACK_ACKNOWLEDGED=true` oraz tylko te relaksacje z tabeli, których
+stos naprawdę używa (dziś: `MCP_POLICY_ALLOW_TEST_KEYS=true`, `MCP_ALLOW_PLAIN_HTTP=true`, `MCP_REGISTRY_MODE=static`, adresy
+http IdP i serwera paczek). Czego stos nie używa, zostaje domyślne (odrzucone).
+
 ## Konfiguracja
 
 Zmienne środowiska (nazwy z `mcp-platform-dev`, usługa `mcp-gateway` profilu `full`); pełna lista w

@@ -51,11 +51,13 @@ class PolicyServiceTest {
             + " when { resource.name == \"get_issue\" };";
 
     @Test
-    void outsideDevelopmentTheStateDirectoryIsRequired() {
-        assertThatThrownBy(() -> new PolicyService(new GatewayProperties.Policy(URI.create(server.mainUrl()), null, "policies-main",
-                dir.resolve("main.pem").toString(), null, null, false, null, null, null, Duration.ofMinutes(1), Duration.ofMinutes(1),
-                Duration.ofSeconds(2), Duration.ofSeconds(1)), new BundleFetcher(), meters))
-                .isInstanceOf(IllegalStateException.class).hasMessageContaining("state-dir");
+    void aBundleKeyNamedTestIsRefusedWithoutTheDevelopmentSetting() {
+        server.publishMain(TestBundles.main(TestBundles.revision(5), Map.of()));
+        PolicyService strict = new PolicyService(new GatewayProperties.Policy(URI.create(server.mainUrl()), null, "test-policy-bundle",
+                dir.resolve("main.pem").toString(), null, null, false, dir.resolve("strict-state").toString(), null, null,
+                Duration.ofMinutes(1), Duration.ofMinutes(1), Duration.ofSeconds(2), Duration.ofSeconds(1)), new BundleFetcher(), meters);
+        assertThatThrownBy(strict::start).isInstanceOf(IllegalStateException.class);
+        assertThat(meters.find("gateway_policy_bundle_rejected_total").counters()).isNotEmpty();
     }
 
     @Test

@@ -57,7 +57,7 @@ import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
 public class SecurityConfiguration {
 
     @Bean
-    IdpKeySet idpKeySet(GatewayProperties properties, Clock clock) {
+    IdpKeySet idpKeySet(GatewayProperties properties, Clock clock, DevstackGuard guard) {
         GatewayProperties.Oidc oidc = properties.oidc();
         return IdpKeySet.overHttp(oidc.jwksUri(), clock, oidc.jwksRetryInterval(), oidc.jwksFreshFor(), oidc.jwksUsableFor());
     }

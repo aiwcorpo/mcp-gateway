@@ -52,6 +52,8 @@ export MCP_POLICY_MAIN_KEY_FILE="$policies/keys/dev/test-policies-main-dev.publi
 export MCP_POLICY_OVERRIDES_KEY_ID=test-policies-overrides-dev
 export MCP_POLICY_OVERRIDES_KEY_FILE="$policies/keys/dev/test-policies-overrides-dev.public.pem"
 export MCP_POLICY_ALLOW_TEST_KEYS=true
+# The relaxations of a development stack (test keys, http, bootstrap of manifests) need the devstack profile, acknowledged twice.
+export SPRING_PROFILES_ACTIVE=devstack MCP_DEVSTACK_ACKNOWLEDGED=true AIWCORPO_MCP_PLATFORM_DEVSTACK_ACKNOWLEDGED=true
 export MCP_REGISTRY_BOOTSTRAP="${MCP_REGISTRY_BOOTSTRAP:-true}"
 export MCP_POLICY_STATE_DIR="${MCP_POLICY_STATE_DIR:-$here/gateway/target/policy-state}"
 mkdir -p "$MCP_POLICY_STATE_DIR"
