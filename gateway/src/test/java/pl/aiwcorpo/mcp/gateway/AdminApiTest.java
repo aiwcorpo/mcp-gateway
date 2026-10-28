@@ -354,10 +354,14 @@ class AdminApiTest extends GatewayTestBase {
                 results.add(pool.submit(() -> createLink(BOB_SUB, "bob", BOB_GROUPS, slug, slug, tools).statusCode()));
             }
             int created = 0;
+            int refused = 0;
             for (var result : results) {
-                created += result.get() == 201 ? 1 : 0;
+                int status = result.get();
+                created += status == 201 ? 1 : 0;
+                refused += status == 409 ? 1 : 0;
             }
             assertThat(created).isEqualTo(5);
+            assertThat(refused).as("every loser gets 409 virtual_server_limit_reached, none a 5xx").isEqualTo(11);
         }
         assertThat(JSON.readTree(admin("GET", "/admin/v1/virtual-servers", BOB_SUB, "bob", BOB_GROUPS, null).body()).size())
                 .isEqualTo(50);

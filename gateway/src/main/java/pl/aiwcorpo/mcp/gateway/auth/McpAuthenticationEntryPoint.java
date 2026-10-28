@@ -1,6 +1,7 @@
 package pl.aiwcorpo.mcp.gateway.auth;
 
 import java.io.IOException;
+import java.util.regex.Pattern;
 
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.authentication.AuthenticationCredentialsNotFoundException;
@@ -24,8 +25,14 @@ public final class McpAuthenticationEntryPoint implements AuthenticationEntryPoi
     private final ResourceMetadata metadata;
     private final AuditLog audit;
     private final String componentId;
+    private final MissingTokenEventLimiter missingTokenLimiter;
 
-    public McpAuthenticationEntryPoint(ResourceMetadata metadata, AuditLog audit, String componentId) {
+    /** The endpoints a client token is presented to; everything else (probes, scanners, preflight) is not audited. */
+    private static final Pattern MCP_ENDPOINT = Pattern.compile("^/[sv]/[^/]+/mcp$");
+
+    public McpAuthenticationEntryPoint(ResourceMetadata metadata, AuditLog audit, String componentId,
+                                       MissingTokenEventLimiter missingTokenLimiter) {
+        this.missingTokenLimiter = missingTokenLimiter;
         this.metadata = metadata;
         this.audit = audit;
         this.componentId = componentId;
@@ -49,7 +56,13 @@ public final class McpAuthenticationEntryPoint implements AuthenticationEntryPoi
     }
 
     private void emit(HttpServletRequest request, String requestId, AuthenticationException failure) {
+        if (!MCP_ENDPOINT.matcher(request.getRequestURI()).matches() || "OPTIONS".equals(request.getMethod())) {
+            return;
+        }
         String reason = reason(failure);
+        if ("missing_token".equals(reason) && !missingTokenLimiter.tryAcquire()) {
+            return;
+        }
         boolean infrastructure = ClientTokenUnavailable.REASON.equals(reason);
         audit.emit(AuditEvent.of("authentication", requestId, componentId)
                 .clientRequestId(request.getHeader("X-Request-Id"))

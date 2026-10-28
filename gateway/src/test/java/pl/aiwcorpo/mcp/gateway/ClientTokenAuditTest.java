@@ -93,14 +93,46 @@ class ClientTokenAuditTest extends GatewayTestBase {
     }
 
     @Test
-    void jwksOutageIsUpstreamUnavailable() {
-        var decoder = new pl.aiwcorpo.mcp.gateway.auth.ClassifyingJwtDecoder(token -> {
-            throw new org.springframework.security.oauth2.jwt.JwtException("Couldn't retrieve remote JWK set");
-        });
-        String token = env.idp.sign(claims().build());
-        assertThat(org.assertj.core.api.Assertions.catchThrowable(() -> decoder.decode(token)))
-                .isInstanceOf(pl.aiwcorpo.mcp.gateway.auth.ClientTokenUnavailable.class)
-                .hasMessage("jwks_unavailable");
+    void jwksOutageIsA401WithAnUpstreamUnavailableEvent(CapturedOutput output) throws Exception {
+        ECKey stranger = new ECKeyGenerator(Curve.P_256).keyID("kid-that-forces-a-key-fetch").generate();
+        String token = env.idp.sign(claims().build(), stranger);
+        env.idp.jwksUp(false);
+        try {
+            HttpResponse<String> response = send(token, "/s/mcp-jira/mcp", initializeBody(), Map.of());
+            assertThat(response.statusCode()).isEqualTo(401);
+            assertThat(response.headers().firstValue("WWW-Authenticate").orElse("")).doesNotContain("invalid_token")
+                    .startsWith("Bearer resource_metadata=");
+            assertThat(response.body()).doesNotContain("jwks");
+            String rid = response.headers().firstValue("X-Request-Id").orElseThrow();
+            JsonNode event = onlyAuthenticationEvent(output, rid);
+            assertThat(event.path("reason").asString()).isEqualTo("jwks_unavailable");
+            assertThat(event.path("errorCode").asString()).isEqualTo("upstream_unavailable");
+            assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", event)).isEmpty();
+            assertThat(output.getAll()).doesNotContain("AuthenticationServiceException");
+        } finally {
+            env.idp.jwksUp(true);
+        }
+    }
+
+    @Test
+    void otherTokenTypesAreRejected(CapturedOutput output) throws Exception {
+        String logout = env.idp.sign(claims().build(), new com.nimbusds.jose.JOSEObjectType("logout+jwt"));
+        assertRejected(output, logout, "invalid_claims");
+    }
+
+    @Test
+    void onlyTheMcpEndpointsAreAudited(CapturedOutput output) throws Exception {
+        for (String path : List.of("/", "/favicon.ico", "/wp-admin", "/s/mcp-jira", "/s/mcp-jira/mcp/extra")) {
+            HttpResponse<String> response = send(null, path, "{}", Map.of());
+            assertThat(response.statusCode()).as(path).isEqualTo(401);
+            String rid = response.headers().firstValue("X-Request-Id").orElseThrow();
+            assertThat(auditEvents(output, rid)).as(path).isEmpty();
+        }
+        HttpResponse<String> preflight = http.send(java.net.http.HttpRequest.newBuilder(
+                java.net.URI.create("http://localhost:" + port + "/s/mcp-jira/mcp"))
+                .method("OPTIONS", java.net.http.HttpRequest.BodyPublishers.noBody()).build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(auditEvents(output, preflight.headers().firstValue("X-Request-Id").orElse("none"))).isEmpty();
     }
 
     private void assertRejected(CapturedOutput output, String token, String reason) throws Exception {

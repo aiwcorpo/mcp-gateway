@@ -8,6 +8,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpHeaders;
+import org.springframework.security.config.ObjectPostProcessor;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
@@ -18,12 +19,14 @@ import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtIssuerValidator;
-import org.springframework.security.oauth2.jwt.JwtTimestampValidator;
+import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.AuthenticationEntryPointFailureHandler;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.http.HttpServletResponse;
 import pl.aiwcorpo.mcp.gateway.admin.AdminClientCertificateFilter;
 import pl.aiwcorpo.mcp.gateway.admin.AdminOperations;
@@ -31,6 +34,7 @@ import pl.aiwcorpo.mcp.gateway.admin.ClientCertificateVerifier;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
 import pl.aiwcorpo.mcp.gateway.auth.ClassifyingJwtDecoder;
 import pl.aiwcorpo.mcp.gateway.auth.McpAuthenticationEntryPoint;
+import pl.aiwcorpo.mcp.gateway.auth.MissingTokenEventLimiter;
 import pl.aiwcorpo.mcp.gateway.auth.ResourceMetadata;
 import pl.aiwcorpo.mcp.gateway.jwt.JwksController;
 
@@ -79,8 +83,9 @@ public class SecurityConfiguration {
                 && !Duration.between(jwt.getIssuedAt(), jwt.getExpiresAt()).minus(oidc.maxTokenLifetime()).isPositive()
                 ? OAuth2TokenValidatorResult.success()
                 : OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "invalid_claims", null));
-        decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
-                List.of(new JwtTimestampValidator(), named("wrong_issuer", new JwtIssuerValidator(oidc.issuer())), audience, claims)));
+        // The defaults (typ, timestamps, certificate binding) stay; the issuer is replaced by a named copy.
+        decoder.setJwtValidator(JwtValidators.createDefaultWithValidators(
+                List.of(named("wrong_issuer", new JwtIssuerValidator(oidc.issuer())), audience, claims)));
         return decoder;
     }
 
@@ -126,8 +131,10 @@ public class SecurityConfiguration {
     @Order(2)
     SecurityFilterChain securityFilterChain(HttpSecurity http, @Qualifier("jwtDecoder") JwtDecoder decoder,
                                             ResourceMetadata metadata, GatewayProperties properties,
-                                            ClientCertificateVerifier certificates, AuditLog audit) throws Exception {
-        McpAuthenticationEntryPoint entryPoint = new McpAuthenticationEntryPoint(metadata, audit, properties.componentId());
+                                            ClientCertificateVerifier certificates, AuditLog audit,
+                                            MeterRegistry meters) throws Exception {
+        McpAuthenticationEntryPoint entryPoint = new McpAuthenticationEntryPoint(metadata, audit, properties.componentId(),
+                new MissingTokenEventLimiter(MissingTokenEventLimiter.DEFAULT_PER_SECOND, System::nanoTime, meters));
         String authorizationServer = properties.oidc().advertisedAuthorizationServer();
         http.csrf(csrf -> csrf.disable())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -144,6 +151,17 @@ public class SecurityConfiguration {
                         .requestMatchers("/error").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(rs -> rs.jwt(jwt -> jwt.decoder(decoder)).authenticationEntryPoint(entryPoint)
+                        // An unreachable JWKS surfaces as an AuthenticationServiceException, which the filter would
+                        // rethrow (500, no event); route it to the entry point like every other rejection.
+                        .withObjectPostProcessor(new ObjectPostProcessor<BearerTokenAuthenticationFilter>() {
+                            @Override
+                            public <O extends BearerTokenAuthenticationFilter> O postProcess(O filter) {
+                                AuthenticationEntryPointFailureHandler handler = new AuthenticationEntryPointFailureHandler(entryPoint);
+                                handler.setRethrowAuthenticationServiceException(false);
+                                filter.setAuthenticationFailureHandler(handler);
+                                return filter;
+                            }
+                        })
                         // RFC 9728 documents come from Spring Security's metadata filter
                         // (/.well-known/oauth-protected-resource/<path>); resource = the requested path.
                         .protectedResourceMetadata(m -> m.protectedResourceMetadataCustomizer(builder -> builder

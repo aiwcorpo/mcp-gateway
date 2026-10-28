@@ -52,8 +52,21 @@ public final class ClassifyingJwtDecoder implements JwtDecoder {
         } catch (BadJwtException e) {
             throw new ClientTokenRejection(decodeReason(e.getMessage()));
         } catch (JwtException e) {
-            throw new ClientTokenUnavailable();
+            // Only a failed key fetch is an infrastructure failure; anything else the decoder refuses is the token's.
+            if (keySourceFailure(e)) {
+                throw new ClientTokenUnavailable();
+            }
+            throw new ClientTokenRejection("malformed");
         }
+    }
+
+    private static boolean keySourceFailure(Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof com.nimbusds.jose.KeySourceException) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** The validators of the decoder name their failure in the error description; the timestamp validator by its text. */

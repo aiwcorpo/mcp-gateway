@@ -71,12 +71,17 @@ public final class InvalidationListener implements SmartLifecycle {
 
             @Override
             public void onRedisDisconnected(RedisChannelHandler<?, ?> handler) {
-                lost("disconnected");
+                // A late event of a connection already dropped must not clear the cache of the new subscription.
+                if (handler == connection) {
+                    lost("disconnected");
+                }
             }
 
             @Override
             public void onRedisExceptionCaught(RedisChannelHandler<?, ?> handler, Throwable cause) {
-                lost("error " + cause.getClass().getSimpleName());
+                if (handler == connection) {
+                    lost("error " + cause.getClass().getSimpleName());
+                }
             }
         });
         running = true;

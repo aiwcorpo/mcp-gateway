@@ -547,7 +547,7 @@ class GatewayIntegrationTest extends GatewayTestBase {
         docker.pauseContainerCmd(env.redis.getContainerId()).exec();
         try {
             await().atMost(Duration.ofSeconds(15)).until(() -> !invalidations.live());
-            assertThat(credentialCache.size()).isZero();
+            await().atMost(Duration.ofSeconds(5)).until(() -> credentialCache.size() == 0);
             callGetIssue(token);
             callGetIssue(token);
             assertThat(resolveCount()).as("cache bypassed while Redis is unreachable").isEqualTo(3);

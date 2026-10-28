@@ -12,13 +12,14 @@ broker, C2/C3, audyt, jeden serwer). M3 (potwierdzenia, zawężanie zasobów, `o
 | K2 | mTLS C5 (certyfikat klienta oceniany w filtrze, nie w handshake: regresja pobierania JWKS przez serwery); konfiguracja pięciu systemów; atrapa brokera, skrypty hosta na portach 18700-18703, demo na żywo z Keycloakiem, PostgreSQL i Redisem; README | `db8454b` |
 | K3 | port wewnętrzny rozpoznawany po znormalizowanej ścieżce (`//admin/v1`, `/%61dmin/v1`), szersze testy negatywne ścieżek; mutacje testów (3 z 3 zabite) | `1aed158` |
 | K4 | poprawki przeglądu Opus (LOW 1-10, MEDIUM-1 odroczone do M3); obraz `mcp-gateway:m2-8dc1d7a` | `8dc1d7a` |
-| K5 | kontrakty 2.2.5: CC-118 (`not_found_or_denied` dla narzędzia spoza linku), CC-119 (409 `virtual_server_limit_reached`), CC-120 (zdarzenie `authentication` z gateway'a dla odrzuconych tokenów C1) | patrz `git log` |
+| K5 | kontrakty 2.2.5: CC-118 (`not_found_or_denied` dla narzędzia spoza linku), CC-119 (409 `virtual_server_limit_reached`), CC-120 (zdarzenie `authentication` z gateway'a dla odrzuconych tokenów C1) | `7ffa55d` |
+| K6 | poprawki przeglądu 7ffa55d: awaria JWKS -> 401 i zdarzenie, domyślne walidatory (`typ`, `cnf`) z powrotem, audyt `authentication` tylko dla `/s/*/mcp` i `/v/*/mcp` z limitem `missing_token`, stabilizacja testu Redis | patrz `git log` |
 
 ## M2: zakres z zadania
 
 | Punkt | Stan |
 | --- | --- |
-| 1. Kontrakty 2.2.5 | `pom.xml` 2.2.5 (od K5; K1-K4 na 2.2.1), 51 wektorów JWT (odbiorca serwera testowego zna `server/discover`), schemat audytu C8 (`virtualServer`, `admin_change`), katalog i `VirtualServer*` walidowane schematami z OpenAPI C5 w testach. Zdarzenie `authentication` gateway emituje od K5 (CC-120): `ClassifyingJwtDecoder` + `McpAuthenticationEntryPoint`, powody `missing_token`, `malformed`, `alg_not_allowed`, `bad_signature`, `unknown_kid`, `wrong_issuer`, `wrong_audience`, `expired`, `not_yet_valid`, `invalid_claims`, `jwks_unavailable` (errorCode `upstream_unavailable`); tylko pola ze schematu, bez niczego z niezweryfikowanego tokenu; `X-Request-Id` w odpowiedzi 401. `client_certificate_rejected` i `replay_store_unavailable` nie dotyczą tokenu C1 gateway'a (mTLS C5 i magazyn jti istnieją u odbiorców C2), więc nie są emitowane. `no-store` na odpowiedziach potwierdzeń: potwierdzenia to M3. Pivot 3.0.0 nietknięty |
+| 1. Kontrakty 2.2.5 | `pom.xml` 2.2.5 (od K5; K1-K4 na 2.2.1), 51 wektorów JWT (odbiorca serwera testowego zna `server/discover`), schemat audytu C8 (`virtualServer`, `admin_change`), katalog i `VirtualServer*` walidowane schematami z OpenAPI C5 w testach. Zdarzenie `authentication` gateway emituje od K5 (CC-120): `ClassifyingJwtDecoder` + `McpAuthenticationEntryPoint`, powody `missing_token`, `malformed`, `alg_not_allowed`, `bad_signature`, `unknown_kid`, `wrong_issuer`, `wrong_audience`, `expired`, `not_yet_valid`, `invalid_claims`, `jwks_unavailable` (errorCode `upstream_unavailable`); tylko pola ze schematu, bez niczego z niezweryfikowanego tokenu; `X-Request-Id` w odpowiedzi 401. `replay_store_unavailable` nie dotyczy gateway'a (C1 nie ma sprawdzania `jti`). `client_certificate_rejected` nie jest emitowane: odrzucenia mTLS na C5 (`AdminClientCertificateFilter`, 401/403) i odrzucone tokeny BFF na `/admin/v1` nie zostawiają zdarzenia C8; to znane ograniczenie (propozycja CC 8). Audyt dotyczy tylko `/s/*/mcp` i `/v/*/mcp`; `missing_token` ma limit 20 zdarzeń na sekundę na proces, nadmiar tylko w metryce `gateway_audit_authentication_suppressed_total`. Awaria JWKS daje 401 (bez `invalid_token` w nagłówku, powód tylko w audycie), nie 503: propozycja CC 9. Walidatory `typ` i `cnf` z domyślnego zestawu Spring Security zostają (token `logout+jwt` -> 401 `invalid_claims`) `no-store` na odpowiedziach potwierdzeń: potwierdzenia to M3. Pivot 3.0.0 nietknięty |
 | 2. Wirtualne serwery | CRUD, 409 `slug_taken`, filtr `tools/list` i `tools/call` do narzędzi linku i do uprawnień bieżącego tokenu, `vs`/`vsc` w C2, `resource_defaults_unsupported` (kolejność z README 2.2.1); link tylko dla właściciela |
 | 3. Katalog C5 | `GET /admin/v1/catalog` z `title`, `disabled`, `requiresConfirmation`, `access`, `requiredEntitlements`; `enabled` serwera (CC-088) przez `disabled` wszystkich jego narzędzi. **Bez** `credential`, `connection`, `status`, `actions`: w kontrakcie to katalog portalu C12 (`PortalCatalogServer`), składany przez BFF z C5, C4 `GET /v1/systems` i `GET /v1/connections`; schemat C5 ma `additionalProperties: false`. `GET /admin/v1/registry/servers` (tam leży `RegistryServer.enabled`) nie jest zrobione |
 | 4. `credential_required` | `connectUrl` = `<publicBaseUrl>/connections?system=<system>`, adres z konfiguracji; `connectUrl` z odpowiedzi brokera jest sprawdzany i nie przekazywany klientowi |
@@ -30,9 +31,9 @@ broker, C2/C3, audyt, jeden serwer). M3 (potwierdzenia, zawężanie zasobów, `o
 ```
 ./mvnw -B install
 test-server: Tests run: 51, Failures: 0, Errors: 0   (InternalJwtVerifierVectorTest, wszystkie wektory C2 2.2.5, bez zmian liczby)
-gateway:     Tests run: 128, Failures: 0, Errors: 0   (stan po K5; po K4 było 120)
+gateway:     Tests run: 131, Failures: 0, Errors: 0   (stan po K6; po K4 było 120)
   GatewayIntegrationTest 32, AdminApiTest 16, VirtualServerMcpTest 12, PublicEdgeTest 8, InternalTokenIssuerTest 8,
-  ClientTokenAuditTest 7, AuditVectorsTest 1 (wszystkie wektory audit-events 2.2.5),
+  ClientTokenAuditTest 9, MissingTokenEventLimiterTest 1, AuditVectorsTest 1 (wszystkie wektory audit-events 2.2.5),
   VirtualServerServiceTest 7, CredentialCacheTest 6, GroupToolAuthorizerTest 5, ClientCertificateVerifierTest 5,
   CredentialServiceTest 4, StreamableHttpClientTest 4, InternalPortFilterTest 3, ServerRegistryTest 3,
   ResourceMetadataTest 3, PublicUrlsTest 2, PublicEdgeFilterTest 2
@@ -61,7 +62,7 @@ z `mcp-platform-dev`, gateway na 18700/18701, serwer testowy w miejscu `mcp-jira
 == no token on the link  HTTP/1.1 401, nosniff, CSP, WWW-Authenticate: Bearer resource_metadata="http://localhost:18700/.well-known/oauth-protected-resource/v/m2-demo/mcp"
 == tools/list on the link  ['jira__get_issue', 'jira__search_issues']
 == tools/call jira__get_issue on the link  {"key":"ABC-1","summary":"Login page returns 500"}   (PAT z atrapy brokera, przez serwer testowy do mocka Jiry)
-== a tool the user may call but the link does not name  {"error":"not_found_or_denied", ...}
+== a tool the user may call but the link does not name  {"error":"tool_disabled", ...}   (zapis z K4; od K5 (CC-118) wynik to not_found_or_denied, demo nie było przegnane na K5/K6)
 == delete the link: HTTP 204; potem /v/m2-demo/mcp -> {"error":"not_found"}
 bob (bez PAT) na /s/mcp-jira/mcp z Cookie: connectUrl http://localhost:18700/connections?system=jira, 0 wystąpień wartości cookie w logach trzech procesów
 ```
@@ -70,6 +71,8 @@ Nie sprawdzone: prawdziwy Claude Code na linku (brak klienta w tej sesji; kryter
 nginx przed gateway'em (ws-01), prawdziwy broker z M2 (ws-06) na jego portach, kontenery w compose.
 
 ## Decyzje i odstępstwa M2
+
+- **DESTRUCTIVE -> `tool_disabled` (odstępstwo od opisu C10 z 2.2.5).** Opis `ToolDisabled` po CC-118 mówi: tylko wyłączenie przez administratora albo definicja czekająca na zatwierdzenie. Narzędzie DESTRUCTIVE bez mechanizmu potwierdzeń (M3) nie pasuje do żadnego z tych przypadków; zostaje `tool_disabled` do M3, kiedy zastąpi je `confirmation_required`. Zachowanie jest też w katalogu (`disabled`). Bez zmiany kontraktu, do zdjęcia w M3.
 
 - **Certyfikaty klienta na porcie wewnętrznym.** Pierwsza wersja (`certificateVerification=optional` z truststore)
   zrywała handshake serwerom pobierającym JWKS z własnym certyfikatem serverAuth (host: `mcp-jira` -> `unknown
@@ -121,7 +124,7 @@ nginx przed gateway'em (ws-01), prawdziwy broker z M2 (ws-06) na jego portach, k
 
 ## Propozycje CC (do przeniesienia przez koordynatora do ws-00)
 
-1. **(przyjęte w 2.2.5 jako CC-118) C10/C5: kod dla "narzędzia nie ma w linku".** Dziś gateway używa `tool_disabled` ("administrator wyłączył") dla
+1. **(przyjęte w 2.2.5 jako CC-118) C10/C5: kod dla "narzędzia nie ma w linku".** Do K4 gateway używał `tool_disabled` ("administrator wyłączył") dla
    narzędzia poza linkiem, co jest mylące w audycie i w komunikacie. Opcje: `not_found_or_denied` (spójne z niezmiennikiem
    8) albo opis w C10, że `tool_disabled` obejmuje "niedostępne w tym endpoincie".
 2. **C4 `CredentialRequired.connectUrl`:** gateway buduje link z `publicBaseUrl` i ignoruje wartość brokera (dwa źródła
@@ -141,6 +144,8 @@ nginx przed gateway'em (ws-01), prawdziwy broker z M2 (ws-06) na jego portach, k
    `slug_taken`, `not_granted`, `invalid_request`, `virtual_server_limit`, `not_found_or_denied`; schemat opisuje `reason` jako
    "known values" bez tych wpisów. Do dopisania w opisie pola. Pole z listą narzędzi linku (do pytania "kto utworzył link z
    gitlab__*") nie istnieje; opcja: `resource`-podobne pole `tools` w `admin_change`, ograniczone wzorcem `QualifiedToolName`.
+8. **C8: audyt odrzuceń mTLS C5 i tokenów BFF.** `client_certificate_rejected` w opisie `reason` sugeruje emisję z gateway'a, a odrzucenia na `/admin/v1` i `/actuator/prometheus` nie są audytowane; ws-00 do decyzji, czy gateway ma je emitować i który komponent emituje `replay_store_unavailable` (wektor z `component: gateway`).
+9. **C1: status przy niedostępnym JWKS.** Gateway odpowiada 401 z `resource_metadata` (jak przy każdym odrzuceniu, bez ujawniania powodu); przy awarii zależności 503 `upstream_unavailable` byłby dokładniejszy dla klienta. Do decyzji ws-00.
 7. **C5/README: tożsamość scrapera metryk.** Kontrakt nie mówi, kto czyta `/actuator/prometheus` ani jakim certyfikatem. Gateway
    wymaga certyfikatu clientAuth z CA wewnętrznego i CN z `MCP_METRICS_CLIENT_CNS` (domyślnie pusta lista). Do ustalenia nazwa
    (np. `mcp-prometheus`) i wydanie certyfikatu w `gen-certs.sh` (ws-01), jeśli metryki mają być zbierane w M2.

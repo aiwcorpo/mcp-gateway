@@ -27,7 +27,7 @@ import com.nimbusds.jose.jwk.JWKSet;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-/** The test server's receiver must agree with every C2 vector of mcp-contracts 2.2.1, including the reason. */
+/** The test server's receiver must agree with every C2 vector of mcp-contracts 2.2.5, including the reason. */
 class InternalJwtVerifierVectorTest {
 
     private static final String ROOT = "mcp-contracts/test-vectors/";

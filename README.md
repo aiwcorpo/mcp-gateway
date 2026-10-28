@@ -176,7 +176,8 @@ docker build -t mcp-gateway-test-server:dev -f test-server/Dockerfile .
 | `StreamableHttpClientTest` | limit bajtów odpowiedzi (SSE bez znaku nowej linii, JSON), limit czasu na milczący strumień SSE, wybór odpowiedzi z SSE po `id` |
 | `GroupToolAuthorizerTest` | trzy poziomy ryzyka: `-read`, `-write`, DESTRUCTIVE zawsze odmowa |
 | `AdminApiTest` | C5 przez mTLS: certyfikat BFF, innego komponentu, obcego CA, serwera (serverAuth) i brak; token dla złego `aud`; JWKS nadal pobierany przez klientów z dowolnym certyfikatem; katalog z polityki (odpowiedź zgodna ze schematem `Catalog`); tworzenie, lista, usuwanie linku; 409 `slug_taken`; cudzy link nie do usunięcia; 403 dla narzędzia ponad uprawnienia (nic nie zapisane); 21 błędnych ciał -> 400; kolejność kontroli `resourceDefaults` |
-| `ClientTokenAuditTest` | zdarzenie `authentication` z gateway'a dla każdego powodu odrzucenia tokenu C1, tylko pola ze schematu, treść tokenu ani claimy nie trafiają do zdarzenia ani logu, awaria JWKS -> `jwks_unavailable` |
+| `ClientTokenAuditTest` | zdarzenie `authentication` z gateway'a dla każdego powodu odrzucenia tokenu C1, tylko pola ze schematu, treść tokenu ani claimy nie trafiają do zdarzenia ani logu, awaria JWKS -> 401 i zdarzenie `jwks_unavailable` (przez HTTP), `typ` inny niż `JWT` -> 401, brak zdarzeń poza `/s/*/mcp` i `/v/*/mcp` |
+| `MissingTokenEventLimiterTest` | limit zdarzeń `missing_token` na sekundę, nadmiar liczony w metryce |
 | `AuditVectorsTest` | wszystkie wektory `audit-events` 2.2.5 oceniane schematem C8 zgodnie z `expected.valid` |
 | `VirtualServerMcpTest` | `/v/<slug>/mcp`: lista tylko z narzędzi linku (kilka serwerów, padnięty serwer pominięty), `vs` i puste `vsc` w JWT do serwera i w audycie, narzędzie spoza linku -> `not_found_or_denied`, utracone uprawnienie -> `access_denied` bez resolve i bez wywołania serwera, cudzy i nieistniejący slug -> identyczne 404 (POST, DELETE, obie ery), slugi spoza wzorca, usunięcie linku działa od razu, `connectUrl` z adresu publicznego |
 | `PublicEdgeTest`, `PublicEdgeFilterTest` | nosniff, CSP, brak `Set-Cookie` i JSON na ponad 20 odpowiedziach (gniazdo surowe: błędy aplikacji i kontenera, `Accept: text/html`), `Cookie` klienta nie dociera do serwera ani brokera, metadane RFC 9728 na adresie publicznym mimo fałszywego `Host`/`X-Forwarded-*`, metadane tylko dla kształtów endpointów MCP, wyzwanie bez znaków z żądania |
@@ -242,3 +243,7 @@ pl.aiwcorpo.mcp.gateway
 Miejsca na dalsze kamienie: `ToolAuthorizer` (Cedar z `PolicyStore` z `mcp-policy-bundle`, `prv` z rewizji
 paczki), `ServerRegistry` (rejestr C5/C6 z `mcp-manifest` zamiast konfiguracji narzędzi), `vsc` w
 `InternalTokenIssuer` (zawężanie zasobów, uśpione).
+
+## Audyt odrzuconych tokenów: ryzyko zalewu
+
+Zdarzenie `authentication` powstaje tylko dla `/s/<serwer>/mcp` i `/v/<slug>/mcp` (nie dla innych ścieżek ani `OPTIONS`). Żądania bez tokenu nic nie kosztują wołającego, dlatego `missing_token` ma limit 20 zdarzeń na sekundę na proces; nadmiar zwiększa `gateway_audit_authentication_suppressed_total` i nie trafia do C8. Odrzucone tokeny (zły podpis, wygasły) nie mają limitu: wymagają zdarzenia dla każdego odrzucenia, więc brzeg (nginx `limit_req` per adres) powinien ograniczać ich liczbę.

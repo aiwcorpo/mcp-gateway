@@ -31,6 +31,7 @@ public final class TestIdp implements AutoCloseable {
     private final ECKey key;
     private final HttpServer server;
     private volatile int exchangeCalls;
+    private volatile boolean jwksUp = true;
 
     public TestIdp() throws Exception {
         this.key = ECKey.parse(resource("mcp-contracts/test-vectors/keys/test-idp-corp.NOT-FOR-PRODUCTION.private.jwk.json"));
@@ -39,6 +40,11 @@ public final class TestIdp implements AutoCloseable {
         server.createContext("/certs", exchange -> {
             byte[] body = jwks.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
+            if (!jwksUp) {
+                exchange.sendResponseHeaders(503, -1);
+                exchange.close();
+                return;
+            }
             exchange.sendResponseHeaders(200, body.length);
             try (OutputStream out = exchange.getResponseBody()) {
                 out.write(body);
@@ -58,6 +64,11 @@ public final class TestIdp implements AutoCloseable {
             }
         });
         server.start();
+    }
+
+    /** Makes the key endpoint answer 503; the gateway only notices when it has to fetch (unknown kid, expired cache). */
+    public void jwksUp(boolean up) {
+        this.jwksUp = up;
     }
 
     public String jwksUri() {
@@ -120,11 +131,20 @@ public final class TestIdp implements AutoCloseable {
         return sign(claims, key);
     }
 
+    /** Signs with the IdP key under another {@code typ} header. */
+    public String sign(JWTClaimsSet claims, JOSEObjectType type) {
+        return sign(claims, key, type);
+    }
+
     /** Signs with another key under the given header: a token the IdP never issued. */
     public String sign(JWTClaimsSet claims, ECKey signer) {
+        return sign(claims, signer, JOSEObjectType.JWT);
+    }
+
+    public String sign(JWTClaimsSet claims, ECKey signer, JOSEObjectType type) {
         try {
             SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.ES256).keyID(signer.getKeyID())
-                    .type(JOSEObjectType.JWT).build(), claims);
+                    .type(type).build(), claims);
             jwt.sign(new ECDSASigner(signer));
             return jwt.serialize();
         } catch (Exception e) {
