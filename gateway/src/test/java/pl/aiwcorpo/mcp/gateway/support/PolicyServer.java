@@ -15,6 +15,12 @@ public final class PolicyServer implements AutoCloseable {
     private final HttpServer server;
     private final AtomicReference<TestBundles.Bundle> main = new AtomicReference<>();
     private final AtomicReference<TestBundles.Bundle> overrides = new AtomicReference<>();
+    private final java.util.concurrent.atomic.AtomicInteger requests = new java.util.concurrent.atomic.AtomicInteger();
+
+    /** Requests received since start, of any kind. */
+    public int requests() {
+        return requests.get();
+    }
 
     public PolicyServer() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -45,6 +51,7 @@ public final class PolicyServer implements AutoCloseable {
 
     private void serve(HttpExchange exchange, String prefix, AtomicReference<TestBundles.Bundle> current) throws IOException {
         try (exchange) {
+            requests.incrementAndGet();
             TestBundles.Bundle bundle = current.get();
             String name = exchange.getRequestURI().getPath().substring(prefix.length());
             if (bundle == null || !"GET".equals(exchange.getRequestMethod())) {

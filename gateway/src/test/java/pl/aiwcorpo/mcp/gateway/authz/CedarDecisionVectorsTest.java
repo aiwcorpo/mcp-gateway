@@ -54,7 +54,7 @@ class CedarDecisionVectorsTest {
         Files.writeString(keys.resolve("main.pem"), TestBundles.publicKeyPem("test-policy-bundle"));
         policies = new PolicyService(new GatewayProperties.Policy(URI.create(server.mainUrl()), null, "test-policy-bundle",
                 keys.resolve("main.pem").toString(), null, null, true, null, null, null, Duration.ofMinutes(1),
-                Duration.ofMinutes(1), Duration.ofSeconds(10), Duration.ofSeconds(1)), new BundleFetcher(), new SimpleMeterRegistry())
+                Duration.ofMinutes(1), Duration.ofSeconds(10), Duration.ofSeconds(1)), new BundleFetcher(), new SimpleMeterRegistry(), true)
                 .start();
         authorizer = new CedarToolAuthorizer(policies, JSON);
     }

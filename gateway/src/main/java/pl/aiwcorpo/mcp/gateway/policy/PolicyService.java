@@ -44,7 +44,11 @@ public final class PolicyService implements DisposableBean {
     });
     private volatile boolean overridesGraceExpired;
 
-    public PolicyService(GatewayProperties.Policy configured, BundleFetcher fetcher, MeterRegistry meters) {
+    /**
+     * @param developmentStack true under the devstack profile: only there a missing state directory is accepted (a restart
+     *                         then takes an older signed bundle, CC-066)
+     */
+    public PolicyService(GatewayProperties.Policy configured, BundleFetcher fetcher, MeterRegistry meters, boolean developmentStack) {
         GatewayProperties.Policy config = normalized(configured);
         this.config = config;
         this.fetcher = fetcher;
@@ -54,7 +58,10 @@ public final class PolicyService implements DisposableBean {
                 config.overridesKeyFile() == null ? config.mainKeyFile() : config.overridesKeyFile(), config);
         PolicyStore.Persistence persistence = persistence(config);
         if (persistence == null) {
-            // Outside the devstack profile DevstackGuard has refused this already; here it is the development case.
+            if (!developmentStack) {
+                throw new IllegalStateException("gateway.policy.state-dir is required outside the devstack profile: without it a "
+                        + "restart accepts an older signed bundle (CC-066)");
+            }
             log.warn("gateway.policy.state-dir is not set: the protection against an older bundle holds only while the process runs");
         }
         this.store = persistence == null ? new PolicyStore(main, overrides) : new PolicyStore(main, overrides, persistence);

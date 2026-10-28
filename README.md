@@ -168,10 +168,10 @@ Przebieg na żywo: `scripts/m3-demo.sh` (po uruchomieniu skryptów z sekcji niż
 
 ## Profil `devstack`: jedyne miejsce na relaksacje dev
 
-Gateway nie wstaje (błąd przy starcie, przed pobraniem czegokolwiek), jeśli konfiguracja używa któregokolwiek z poniższych, a
+Gateway nie wstaje (odmowa w `ApplicationContextInitializer`, przed pierwszym beanem, więc przed pobraniem paczek, kluczy IdP i manifestów; drugi raz sprawdza ją bean `devstackGuard`, od którego zależą beany używające relaksacji), jeśli konfiguracja używa któregokolwiek z poniższych, a
 aktywny profil nie jest wyłącznie `devstack` z dwiema zgodami: właściwością `aiwcorpo.mcp.platform.devstack.acknowledged=true`
-**i** zmienną `MCP_DEVSTACK_ACKNOWLEDGED=true` (wzorzec startera serwerów; obie mają być w konfiguracji stosu, nie w obrazie).
-Same zgody bez profilu nic nie znaczą, profil bez obu zgód też nie.
+**i** zmienną środowiskową procesu `MCP_DEVSTACK_ACKNOWLEDGED=true` (wzorzec startera serwerów; obie mają być w konfiguracji stosu, nie w obrazie; zmienna liczy się tylko jako zmienna procesu, nie jako właściwość z argumentu, pliku czy `SPRING_APPLICATION_JSON`).
+Same zgody bez profilu nic nie znaczą, profil bez obu zgód też nie. Zgody leżą w konfiguracji wdrożenia, więc skopiowanie całego bloku `environment:` stosu dev razem z profilem i obiema zgodami przejdzie strażnika: chroni to przed pojedynczym ustawieniem, które wpadnie samo, nie przed skopiowaniem całości (widać ją po WARN i gauge).
 
 | Relaksacja | Ustawienie |
 | --- | --- |
@@ -188,8 +188,8 @@ bootstrap jest wyłączony, a adresy IdP i paczek muszą być `https`.
 
 Dla stosu `mcp-platform-dev` (compose, usługa `mcp-gateway`) ws-01 ustawia: `SPRING_PROFILES_ACTIVE=devstack`,
 `MCP_DEVSTACK_ACKNOWLEDGED=true`, `AIWCORPO_MCP_PLATFORM_DEVSTACK_ACKNOWLEDGED=true` oraz tylko te relaksacje z tabeli, których
-stos naprawdę używa (dziś: `MCP_POLICY_ALLOW_TEST_KEYS=true`, `MCP_ALLOW_PLAIN_HTTP=true`, `MCP_REGISTRY_MODE=static`, adresy
-http IdP i serwera paczek). Czego stos nie używa, zostaje domyślne (odrzucone).
+stos naprawdę używa (dziś: `MCP_POLICY_ALLOW_TEST_KEYS=true`, `MCP_ALLOW_PLAIN_HTTP=true`, `MCP_REGISTRY_MODE=static`,
+`MCP_REGISTRY_BOOTSTRAP=true`, adresy http IdP i serwera paczek). Czego stos nie używa, zostaje domyślne (odrzucone).
 
 ## Konfiguracja
 

@@ -121,7 +121,19 @@ endpointu i paczek, `allow-plain-http`, brak `state-dir`) wymagają jedynego akt
 problemów, zanim bean użyje relaksowanego ustawienia. WARN `event=devstack_profile` i gauge `mcp_gateway_devstack_active`. Testy
 `DevstackGuardTest` (8): każda relaksacja bez profilu, z profilem i jedną zgodą, z profilem i obiema zgodami, same zgody bez profilu,
 profil z innym profilem, produkcyjna konfiguracja bez profilu; `PolicyServiceTest`: klucz `test-*` odrzucony bez ustawienia. Testy
-integracyjne działają na `@ActiveProfiles("devstack")` z obiema zgodami. Zmienne dla ws-01 w README (sekcja "Profil devstack").
+integracyjne działają na `@ActiveProfiles("devstack")`; zmienną `MCP_DEVSTACK_ACKNOWLEDGED` ustawia surefire jako prawdziwą zmienną procesu.
+Zmienne dla ws-01 w README (sekcja "Profil devstack").
+
+Poprawki po przeglądzie `0623849` (0 CRITICAL/HIGH, 3 MEDIUM, 6 LOW): M-1 zmienna zgody czytana tylko z środowiska procesu (`System.getenv()`
+wstrzykiwane w testach jako mapa), README mówi wprost, że skopiowany cały blok compose przechodzi strażnika; M-2 strażnik jako
+`ApplicationContextInitializer` (`META-INF/spring.factories`) plus bean z jawnym `@DependsOn("devstackGuard")` na beanach używających
+relaksacji (`DevstackWiringTest` pada po usunięciu adnotacji), `PolicyService` znów sam wymaga `state-dir` poza devstack; M-3
+`DevstackContextTest` (SpringApplication: bez profilu, sam profil, include, group, default; zero żądań do serwera paczek i JWKS,
+odmowa z initializera); L-1 asercja powodu `test_key_not_allowed`; L-2 testy statycznego trybu, zbędny test usunięty; L-5 README;
+L-6 `ConsentPackagingTest`. L-3: poza strażnikiem zostają `oidc.issuer`/`authorization-server` po http, puste `internal-jwt.keys-file`
+(efemeryczne klucze C2) i puste `activity.cursor-key` (losowy klucz): to wygoda dev, w HA (M4) trzeba je ustawić. L-4: `devstack`
+w gatewayu znaczy więcej niż w starterze (także http, `static`, bootstrap, brak `state-dir`), bo stos dev ich używa; relaksację
+`state-dir` można usunąć, gdy żaden stos nie będzie jej potrzebował.
 
 ## Co potrzebuję od innych strumieni
 

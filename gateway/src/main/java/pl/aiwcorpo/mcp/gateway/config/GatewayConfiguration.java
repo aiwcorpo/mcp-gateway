@@ -10,6 +10,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.DependsOn;
 import org.springframework.core.Ordered;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -83,12 +84,14 @@ public class GatewayConfiguration {
     }
 
     @Bean
+    @DependsOn("devstackGuard")
     ServerRegistry serverRegistry(GatewayProperties properties) {
         return new ServerRegistry(properties.servers(), properties.registry().mode());
     }
 
     @Bean
-    PublicUrls publicUrls(GatewayProperties properties, DevstackGuard guard) {
+    @DependsOn("devstackGuard")
+    PublicUrls publicUrls(GatewayProperties properties) {
         return new PublicUrls(properties.publicUrl(), properties.allowPlainHttp());
     }
 
@@ -157,13 +160,18 @@ public class GatewayConfiguration {
 
     /** Created before anything that uses a relaxed setting: the start is refused here, not after a bundle was pulled over http. */
     @Bean
-    DevstackGuard devstackGuard(GatewayProperties properties, org.springframework.core.env.Environment environment,
-                                MeterRegistry meters) {
-        return DevstackGuard.check(properties, environment, meters);
+    DevstackGuard devstackGuard(GatewayProperties properties, org.springframework.core.env.Environment environment) {
+        return DevstackGuard.check(properties, environment, System.getenv());
     }
 
     @Bean
-    SigningKeys signingKeys(GatewayProperties properties, DevstackGuard guard) {
+    io.micrometer.core.instrument.binder.MeterBinder devstackMetric(org.springframework.core.env.Environment environment) {
+        return registry -> DevstackGuard.bindMetric(environment, registry);
+    }
+
+    @Bean
+    @DependsOn("devstackGuard")
+    SigningKeys signingKeys(GatewayProperties properties) {
         GatewayProperties.InternalJwt jwt = properties.internalJwt();
         return SigningKeys.load(jwt.keysFile(), jwt.activeKid(), jwt.allowTestKeys());
     }
@@ -175,8 +183,10 @@ public class GatewayConfiguration {
 
     /** Does not return before a signed main bundle is loaded: the gateway has no start without policies (CC-068). */
     @Bean
-    PolicyService policyService(GatewayProperties properties, BundleFetcher fetcher, MeterRegistry meters, DevstackGuard guard) {
-        return new PolicyService(properties.policy(), fetcher, meters).start();
+    @DependsOn("devstackGuard")
+    PolicyService policyService(GatewayProperties properties, BundleFetcher fetcher, MeterRegistry meters,
+                                org.springframework.core.env.Environment environment) {
+        return new PolicyService(properties.policy(), fetcher, meters, DevstackGuard.devstackActive(environment)).start();
     }
 
     @Bean
@@ -208,6 +218,7 @@ public class GatewayConfiguration {
     }
 
     @Bean
+    @DependsOn("devstackGuard")
     TokenExchangeClient tokenExchangeClient(GatewayProperties properties, JsonMapper gatewayJson) {
         GatewayProperties.Oidc oidc = properties.oidc();
         if (oidc.tokenUri() != null && !"https".equals(oidc.tokenUri().getScheme()) && !properties.allowPlainHttp()) {
@@ -388,7 +399,8 @@ public class GatewayConfiguration {
 
     /** Servers that wait for a manifest get the one they serve, retried until it works. */
     @Bean
-    RegistryBootstrap registryBootstrap(RegistryService registry, GatewayProperties properties, DevstackGuard guard) {
+    @DependsOn("devstackGuard")
+    RegistryBootstrap registryBootstrap(RegistryService registry, GatewayProperties properties) {
         return new RegistryBootstrap(registry, properties.registry().bootstrapFromServer(), properties.registry().bootstrapRetry());
     }
 

@@ -151,8 +151,8 @@ public final class GatewayTestEnvironment {
         registry.add("gateway.oidc.jwks-uri", idp::jwksUri);
         registry.add("gateway.oidc.token-uri", idp::tokenUri);
         // The tests relax production rules (test keys, http, static servers): the devstack profile with its two acknowledgements.
+        // The variable MCP_DEVSTACK_ACKNOWLEDGED is a real environment variable of the test JVM (surefire, gateway/pom.xml).
         registry.add("aiwcorpo.mcp.platform.devstack.acknowledged", () -> "true");
-        registry.add("MCP_DEVSTACK_ACKNOWLEDGED", () -> "true");
         registry.add("gateway.policy.main-url", policies::mainUrl);
         registry.add("gateway.policy.overrides-url", policies::overridesUrl);
         registry.add("gateway.policy.main-key-id", () -> "test-policy-bundle");

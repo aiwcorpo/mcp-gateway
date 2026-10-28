@@ -18,7 +18,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 class DevstackGuardTest {
 
     /** A production-shaped configuration: https everywhere, state directory, no test keys, manifests required. */
-    private static Map<String, String> production() {
+    static Map<String, String> production() {
         Map<String, String> m = new HashMap<>();
         m.put("gateway.public-url", "https://mcp.aiwcorpo.pl");
         m.put("gateway.oidc.issuer", "https://idp.aiwcorpo.pl/realms/corp");
@@ -70,20 +70,28 @@ class DevstackGuardTest {
             "gateway.policy.overrides-url is not https",
             Map.of("gateway.policy.overrides-url", "http://policies.internal:8080/policies/overrides/"));
 
-    private static MockEnvironment environment(boolean profile, boolean property, boolean variable) {
+    private static MockEnvironment environment(boolean profile, boolean property) {
         MockEnvironment env = new MockEnvironment();
         if (profile) {
             env.setActiveProfiles("devstack");
         }
         env.setProperty(DevstackGuard.ACK_PROPERTY, Boolean.toString(property));
-        env.setProperty(DevstackGuard.ACK_ENVIRONMENT, Boolean.toString(variable));
         return env;
+    }
+
+    /** The variables of the process, as the guard reads them. */
+    private static Map<String, String> processEnvironment(boolean acknowledged) {
+        return acknowledged ? Map.of(DevstackGuard.ACK_ENVIRONMENT, "true") : Map.of();
+    }
+
+    private static void check(Map<String, String> values, boolean profile, boolean property, boolean variable) {
+        DevstackGuard.check(bind(values), environment(profile, property), processEnvironment(variable));
     }
 
     @Test
     void aProductionConfigurationStartsWithoutAnyProfile() {
         assertThat(DevstackGuard.relaxations(bind(production()))).isEmpty();
-        DevstackGuard.check(bind(production()), environment(false, false, false), new SimpleMeterRegistry());
+        check(production(), false, false, false);
     }
 
     @Test
@@ -92,10 +100,10 @@ class DevstackGuardTest {
             Map<String, String> values = production();
             values.putAll(change);
             assertThat(DevstackGuard.relaxations(bind(values))).as(name).isNotEmpty();
-            assertThatThrownBy(() -> DevstackGuard.check(bind(values), environment(false, false, false), new SimpleMeterRegistry()))
+            assertThatThrownBy(() -> check(values, false, false, false))
                     .as(name).isInstanceOf(IllegalStateException.class).hasMessageContaining("devstack");
             // Even with both acknowledgements: they mean nothing without the profile.
-            assertThatThrownBy(() -> DevstackGuard.check(bind(values), environment(false, true, true), new SimpleMeterRegistry()))
+            assertThatThrownBy(() -> check(values, false, true, true))
                     .as(name + " with the acknowledgements only").isInstanceOf(IllegalStateException.class);
         });
     }
@@ -106,7 +114,7 @@ class DevstackGuardTest {
             Map<String, String> values = production();
             values.putAll(change);
             for (boolean[] acks : new boolean[][] {{false, false}, {true, false}, {false, true}}) {
-                assertThatThrownBy(() -> DevstackGuard.check(bind(values), environment(true, acks[0], acks[1]), new SimpleMeterRegistry()))
+                assertThatThrownBy(() -> check(values, true, acks[0], acks[1]))
                         .as(name + " acknowledged " + acks[0] + "/" + acks[1]).isInstanceOf(IllegalStateException.class)
                         .hasMessageContaining(DevstackGuard.ACK_ENVIRONMENT);
             }
@@ -114,14 +122,34 @@ class DevstackGuardTest {
     }
 
     @Test
-    void everyRelaxationIsAllowedWithTheProfileAcknowledgedTwiceAndIsCounted() {
+    void everyRelaxationIsAllowedWithTheProfileAcknowledgedTwice() {
         RELAXATIONS.forEach((name, change) -> {
             Map<String, String> values = production();
             values.putAll(change);
-            SimpleMeterRegistry meters = new SimpleMeterRegistry();
-            DevstackGuard.check(bind(values), environment(true, true, true), meters);
-            assertThat(meters.get("mcp_gateway_devstack_active").gauge().value()).as(name).isEqualTo(1.0);
+            check(values, true, true, true);
         });
+    }
+
+    @Test
+    void theVariableCountsOnlyWhenItIsAVariableOfTheProcess() {
+        Map<String, String> values = production();
+        values.put("gateway.allow-plain-http", "true");
+        // The same name as a property (a command line argument, a JSON in SPRING_APPLICATION_JSON, a file) is no variable.
+        MockEnvironment env = environment(true, true);
+        env.setProperty(DevstackGuard.ACK_ENVIRONMENT, "true");
+        assertThatThrownBy(() -> DevstackGuard.check(bind(values), env, Map.of())).isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(DevstackGuard.ACK_ENVIRONMENT);
+        DevstackGuard.check(bind(values), environment(true, true), processEnvironment(true));
+    }
+
+    @Test
+    void theMetricShowsWhetherTheProfileIsInForce() {
+        SimpleMeterRegistry on = new SimpleMeterRegistry();
+        DevstackGuard.bindMetric(environment(true, true), on);
+        assertThat(on.get("mcp_gateway_devstack_active").gauge().value()).isEqualTo(1.0);
+        SimpleMeterRegistry off = new SimpleMeterRegistry();
+        DevstackGuard.bindMetric(environment(false, false), off);
+        assertThat(off.get("mcp_gateway_devstack_active").gauge().value()).isEqualTo(0.0);
     }
 
     @Test
@@ -129,9 +157,8 @@ class DevstackGuardTest {
         Map<String, String> values = production();
         values.remove("gateway.policy.state-dir");
         assertThat(DevstackGuard.relaxations(bind(values))).containsExactly("gateway.policy.state-dir is empty");
-        assertThatThrownBy(() -> DevstackGuard.check(bind(values), environment(false, false, false), new SimpleMeterRegistry()))
-                .hasMessageContaining("state-dir");
-        DevstackGuard.check(bind(values), environment(true, true, true), new SimpleMeterRegistry());
+        assertThatThrownBy(() -> check(values, false, false, false)).hasMessageContaining("state-dir");
+        check(values, true, true, true);
     }
 
     @Test
@@ -139,6 +166,8 @@ class DevstackGuardTest {
         Map<String, String> values = production();
         values.put("gateway.servers.mcp-jira.manifest", "static");
         assertThat(DevstackGuard.relaxations(bind(values))).hasSize(1);
+        assertThatThrownBy(() -> check(values, false, true, true)).hasMessageContaining("static");
+        check(values, true, true, true);
     }
 
     @Test
@@ -148,13 +177,5 @@ class DevstackGuardTest {
         assertThat(DevstackGuard.problems(List.of("devstack"), true, true, List.of("x"))).isEmpty();
         assertThat(DevstackGuard.problems(List.of(), true, true, List.of("x"))).hasSize(1);
         assertThat(DevstackGuard.problems(List.of("prod"), true, true, List.of())).isEmpty();
-    }
-
-    @Test
-    void theProductionConfigurationDoesNotAcceptTestKeyIdsEither() {
-        // A bundle key named test-* is refused by the bundle library unless allow-test-keys is on, which needs the profile.
-        Map<String, String> values = production();
-        values.put("gateway.policy.main-key-id", "test-policies-main-dev");
-        assertThat(DevstackGuard.relaxations(bind(values))).as("the id alone is no relaxation: the library refuses it").isEmpty();
     }
 }

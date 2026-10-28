@@ -32,12 +32,19 @@ public final class TestIdp implements AutoCloseable {
     private final HttpServer server;
     private volatile int exchangeCalls;
     private volatile boolean jwksUp = true;
+    private final java.util.concurrent.atomic.AtomicInteger jwksRequests = new java.util.concurrent.atomic.AtomicInteger();
+
+    /** Requests to the key endpoint since start. */
+    public int jwksRequests() {
+        return jwksRequests.get();
+    }
 
     public TestIdp() throws Exception {
         this.key = ECKey.parse(resource("mcp-contracts/test-vectors/keys/test-idp-corp.NOT-FOR-PRODUCTION.private.jwk.json"));
         this.server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         String jwks = new JWKSet(key.toPublicJWK()).toString();
         server.createContext("/certs", exchange -> {
+            jwksRequests.incrementAndGet();
             byte[] body = jwks.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             if (!jwksUp) {

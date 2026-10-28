@@ -119,6 +119,16 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- The second acknowledgement of the devstack profile is a variable of the process (DevstackGuard). -->
+                    <environmentVariables>
+                        <MCP_DEVSTACK_ACKNOWLEDGED>true</MCP_DEVSTACK_ACKNOWLEDGED>
+                    </environmentVariables>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 </project>

@@ -14,8 +14,10 @@ import io.micrometer.core.instrument.MeterRegistry;
 
 /**
  * Refuses to start with a relaxation of the production rules unless the {@code devstack} profile is the only active profile and
- * is acknowledged twice, by a property and by an environment variable, so that a copied configuration does not carry a
- * development setting into production. The relaxations are: signing keys named {@code test-*} (internal JWT and policy bundles),
+ * is acknowledged twice, by a property and by an environment variable of the process (the variable is read from the process
+ * environment only, never from a property source). The acknowledgements live in the configuration of the deployment, not in the
+ * image: a deployment block that carries both of them with the profile is carried as a whole, so this protects against a
+ * setting that slips in alone, not against copying the whole block (the gauge and the WARN make it visible). The relaxations are: signing keys named {@code test-*} (internal JWT and policy bundles),
  * a bootstrap of the registry from the manifest a server serves itself, tools from the configuration instead of an approved
  * manifest, plain http for the public URL, the IdP and the policy bundles, and no state directory for the rollback protection.
  * The pattern is the one of the server starter (profile {@code devstack}, {@code aiwcorpo.mcp.platform.devstack.acknowledged}).
@@ -93,24 +95,41 @@ public final class DevstackGuard {
         return problems;
     }
 
-    /** Checks the configuration at start; throws with every problem at once, or warns and counts when the profile is in force. */
-    public static DevstackGuard check(GatewayProperties properties, Environment environment, MeterRegistry meters) {
+    /**
+     * Checks the configuration; throws with every problem at once, or warns when the profile is in force.
+     *
+     * @param processEnvironment the environment variables of the process (the acknowledgement variable is read from here only)
+     */
+    public static void enforce(GatewayProperties properties, Environment environment, Map<String, String> processEnvironment) {
         List<String> used = relaxations(properties);
         List<String> problems = problems(List.of(environment.getActiveProfiles()),
                 "true".equalsIgnoreCase(environment.getProperty(ACK_PROPERTY, "")),
-                "true".equalsIgnoreCase(environment.getProperty(ACK_ENVIRONMENT, "")), used);
+                "true".equalsIgnoreCase(processEnvironment.getOrDefault(ACK_ENVIRONMENT, "")), used);
         if (!problems.isEmpty()) {
             throw new IllegalStateException("refusing to start: " + String.join("; ", problems));
         }
-        boolean devstack = List.of(environment.getActiveProfiles()).equals(List.of(PROFILE));
-        Gauge.builder("mcp_gateway_devstack_active", () -> devstack ? 1 : 0).description("1 when the gateway runs with the devstack profile")
-                .register(meters);
-        if (devstack) {
+        if (devstackActive(environment)) {
             // The environment has no field in the manifest or the audit, so every start says it, and the gauge shows it.
             log.warn("event=devstack_profile detail=\"development relaxations are in force: {}; this gateway must not run in production\"",
                     used);
         }
+    }
+
+    /** The second line of defence, as a bean: the same check on the validated properties, before the beans that need it. */
+    public static DevstackGuard check(GatewayProperties properties, Environment environment, Map<String, String> processEnvironment) {
+        enforce(properties, environment, processEnvironment);
         return new DevstackGuard();
+    }
+
+    public static boolean devstackActive(Environment environment) {
+        return List.of(environment.getActiveProfiles()).equals(List.of(PROFILE));
+    }
+
+    /** {@code mcp_gateway_devstack_active}: 1 when the devstack profile is in force. */
+    public static void bindMetric(Environment environment, MeterRegistry meters) {
+        boolean devstack = devstackActive(environment);
+        Gauge.builder("mcp_gateway_devstack_active", () -> devstack ? 1 : 0)
+                .description("1 when the gateway runs with the devstack profile").register(meters);
     }
 
     private static boolean https(URI uri) {

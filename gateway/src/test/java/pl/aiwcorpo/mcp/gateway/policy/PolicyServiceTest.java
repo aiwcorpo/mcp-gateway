@@ -44,7 +44,7 @@ class PolicyServiceTest {
                 withOverrides ? URI.create(server.overridesUrl()) : null, "test-policy-bundle", dir.resolve("main.pem").toString(),
                 withOverrides ? "test-policy-overrides" : null, withOverrides ? dir.resolve("overrides.pem").toString() : null, true,
                 dir.resolve("state").toString(), minimumMain, null, Duration.ofMinutes(1), Duration.ofMinutes(1), startup, grace),
-                new BundleFetcher(), meters);
+                new BundleFetcher(), meters, true);
     }
 
     private static final String FORBID = "@id(\"emergency\") forbid (principal, action == Action::\"call\", resource is Tool)"
@@ -55,9 +55,19 @@ class PolicyServiceTest {
         server.publishMain(TestBundles.main(TestBundles.revision(5), Map.of()));
         PolicyService strict = new PolicyService(new GatewayProperties.Policy(URI.create(server.mainUrl()), null, "test-policy-bundle",
                 dir.resolve("main.pem").toString(), null, null, false, dir.resolve("strict-state").toString(), null, null,
-                Duration.ofMinutes(1), Duration.ofMinutes(1), Duration.ofSeconds(2), Duration.ofSeconds(1)), new BundleFetcher(), meters);
-        assertThatThrownBy(strict::start).isInstanceOf(IllegalStateException.class);
-        assertThat(meters.find("gateway_policy_bundle_rejected_total").counters()).isNotEmpty();
+                Duration.ofMinutes(1), Duration.ofMinutes(1), Duration.ofSeconds(2), Duration.ofSeconds(1)), new BundleFetcher(), meters,
+                false);
+        assertThatThrownBy(strict::start).isInstanceOf(IllegalStateException.class).hasMessageContaining("CC-068");
+        assertThat(meters.find("gateway_policy_bundle_rejected_total").tag("reason", "test_key_not_allowed").counter())
+                .as("the library refused the key by its name, not for some other reason").isNotNull();
+    }
+
+    @Test
+    void withoutTheDevstackProfileAStateDirectoryIsRequired() {
+        assertThatThrownBy(() -> new PolicyService(new GatewayProperties.Policy(URI.create(server.mainUrl()), null, "policies-main",
+                dir.resolve("main.pem").toString(), null, null, false, null, null, null, Duration.ofMinutes(1), Duration.ofMinutes(1),
+                Duration.ofSeconds(2), Duration.ofSeconds(1)), new BundleFetcher(), meters, false))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("state-dir");
     }
 
     @Test

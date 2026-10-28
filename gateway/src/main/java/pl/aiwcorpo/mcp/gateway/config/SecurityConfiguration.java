@@ -8,6 +8,7 @@ import java.util.List;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.DependsOn;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.config.ObjectPostProcessor;
@@ -57,7 +58,8 @@ import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
 public class SecurityConfiguration {
 
     @Bean
-    IdpKeySet idpKeySet(GatewayProperties properties, Clock clock, DevstackGuard guard) {
+    @DependsOn("devstackGuard")
+    IdpKeySet idpKeySet(GatewayProperties properties, Clock clock) {
         GatewayProperties.Oidc oidc = properties.oidc();
         return IdpKeySet.overHttp(oidc.jwksUri(), clock, oidc.jwksRetryInterval(), oidc.jwksFreshFor(), oidc.jwksUsableFor());
     }
