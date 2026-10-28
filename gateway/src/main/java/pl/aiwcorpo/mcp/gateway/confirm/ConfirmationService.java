@@ -112,6 +112,7 @@ public final class ConfirmationService {
         AuthenticatorPort.State registration = broker.state(info.user(), info.toolName(), info.requestId());
         switch (registration) {
             case UNAVAILABLE -> {
+                unavailable(info, null);
                 return new FirstCallResult.Unavailable();
             }
             case NONE -> {
@@ -149,6 +150,7 @@ public final class ConfirmationService {
                     case FirstCallPlan.Create create -> {
                         if (create.burnCodes() && !broker.invalidateCodes(info.user(), info.toolName(), info.requestId())) {
                             log.warn("confirmation rid={}: burning the codes failed, nothing created", info.requestId());
+                            unavailable(info, null);
                             return new FirstCallResult.Unavailable();
                         }
                         PendingCall created = new PendingCall(ids.get(), info.serverId(), info.toolName(), info.operation().risk(),
@@ -171,9 +173,11 @@ public final class ConfirmationService {
                 }
             }
             log.error("confirmation rid={}: the state of the user kept changing", info.requestId());
+            unavailable(info, null);
             return new FirstCallResult.Unavailable();
         } catch (StoreUnavailableException e) {
             log.error("confirmation rid={}: store unavailable: {}", info.requestId(), e.getMessage());
+            unavailable(info, null);
             return new FirstCallResult.Unavailable();
         }
     }
@@ -203,6 +207,7 @@ public final class ConfirmationService {
             subject = reserved.call();
         } catch (StoreUnavailableException e) {
             log.error("confirmation rid={}: store unavailable: {}", info.requestId(), e.getMessage());
+            unavailable(info, null);
             return new RetryResult.Unavailable();
         }
         AuthenticatorPort.Verdict answer = broker.verify(info.user(), info.toolName(), code, info.requestId());
@@ -230,6 +235,7 @@ public final class ConfirmationService {
             log.error("confirmation rid={}: store unavailable while settling: {}", info.requestId(), e.getMessage());
         }
         // The code may have been right, but it cannot be written down: not confirmed.
+        unavailable(info, subject);
         return new RetryResult.Unavailable();
     }
 
@@ -292,9 +298,15 @@ public final class ConfirmationService {
                 return new RetryResult.Superseded();
             }
             default -> {
+                unavailable(info, subject);
                 return new RetryResult.Unavailable();
             }
         }
+    }
+
+    /** Nothing was confirmed because the broker or the store did not answer: still an event, so the attempt is visible. */
+    private void unavailable(CallInfo info, PendingCall subject) {
+        event(info, subject, "deny", "upstream_unavailable", "error", "upstream_unavailable");
     }
 
     // ---------------------------------------------------------------- the owner (C5)

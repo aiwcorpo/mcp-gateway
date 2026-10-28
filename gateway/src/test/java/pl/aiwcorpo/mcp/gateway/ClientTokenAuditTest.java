@@ -125,6 +125,17 @@ class ClientTokenAuditTest extends GatewayTestBase {
     }
 
     @Test
+    void aTokenOfTheAdminOnlyClientIsNoMcpClientTokenWhateverItsAudience(CapturedOutput output) throws Exception {
+        String portalToken = env.idp.token(ALICE_SUB, "alice", ALICE_GROUPS, "mcp-gateway", "mcp-portal-bff");
+        assertRejected(output, portalToken, "invalid_claims");
+        HttpResponse<String> onLink = send(portalToken, "/v/any-link/mcp", initializeBody(), Map.of());
+        assertThat(onLink.statusCode()).isEqualTo(401);
+        assertThat(env.jira.requests()).isEmpty();
+        // The same user through a real MCP client is fine.
+        assertThat(send(aliceToken(), "/s/mcp-jira/mcp", initializeBody(), Map.of()).statusCode()).isEqualTo(200);
+    }
+
+    @Test
     void otherTokenTypesAreRejected(CapturedOutput output) throws Exception {
         String logout = env.idp.sign(claims().build(), new com.nimbusds.jose.JOSEObjectType("logout+jwt"));
         assertRejected(output, logout, "invalid_claims");

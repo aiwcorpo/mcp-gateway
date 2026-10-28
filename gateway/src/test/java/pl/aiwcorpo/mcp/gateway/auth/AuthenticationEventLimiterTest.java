@@ -41,8 +41,19 @@ class AuthenticationEventLimiterTest {
     }
 
     @Test
+    void whatCanBeSentWithoutAnyKeyHasABudgetPerReason() {
+        for (String reason : new String[] {"alg_not_allowed", "unknown_kid", "bad_signature"}) {
+            for (int i = 0; i < 3; i++) {
+                assertThat(limiter.permit(reason, null)).as(reason).isTrue();
+            }
+            assertThat(limiter.permit(reason, null)).as(reason + " over the budget").isFalse();
+            assertThat(suppressed(reason)).isEqualTo(1);
+        }
+    }
+
+    @Test
     void reasonsOfAnAttemptAreNeverCapped() {
-        for (String reason : new String[] {"bad_signature", "unknown_kid", "wrong_audience", "expired", "alg_not_allowed",
+        for (String reason : new String[] {"wrong_audience", "wrong_issuer", "expired", "not_yet_valid", "invalid_claims",
                 "jwks_unavailable"}) {
             for (int i = 0; i < 50; i++) {
                 assertThat(limiter.permit(reason, null)).as(reason).isTrue();

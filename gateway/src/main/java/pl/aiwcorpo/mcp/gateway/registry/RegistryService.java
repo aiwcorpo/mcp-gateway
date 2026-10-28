@@ -42,6 +42,7 @@ public final class RegistryService {
     private final ManifestFetcher fetcher;
     private final DefinitionGuard guard;
     private final Map<String, ApprovedServer> approved = new ConcurrentHashMap<>();
+    private final Map<String, JsonNode> manifestsTaken = new ConcurrentHashMap<>();
 
     public RegistryService(ServerRegistry servers, RegistryStore store, ManifestValidator validator, ManifestFetcher fetcher,
                            DefinitionGuard guard) {
@@ -65,7 +66,7 @@ public final class RegistryService {
             store.raiseFloors(stored.serverId(), lenientRisks(stored.manifest()));
             List<String> reasons = validator.violations(stored.manifest(), server.get());
             if (reasons.isEmpty()) {
-                take(validator.approved(stored.manifest()));
+                take(validator.approved(stored.manifest()), stored.manifest());
             } else {
                 log.error("stored manifest of {} is no longer acceptable, the server has no tools: {}", stored.serverId(), reasons);
             }
@@ -95,19 +96,44 @@ public final class RegistryService {
                 insertOnly);
         return switch (written) {
             case RegistryStore.Written.Done done -> {
-                take(candidate);
+                take(candidate, manifest);
                 yield new Result.Accepted(candidate);
             }
             case RegistryStore.Written.Lowered lowered -> new Result.Rejected(List.of("the risk of " + String.join(", ", lowered.tools())
                     + " is lower than what was approved before: that needs an administrator"));
-            case RegistryStore.Written.AlreadyThere there -> new Result.Rejected(List.of("this server has an approved manifest"));
+            case RegistryStore.Written.AlreadyThere there -> {
+                // Another instance (or a registration a moment ago) approved first: this instance takes that approval.
+                adopt(there.existing());
+                yield new Result.Rejected(List.of("this server has an approved manifest"));
+            }
         };
     }
 
-    private void take(ApprovedServer server) {
+    private void take(ApprovedServer server, JsonNode manifest) {
         approved.put(server.serverId(), server);
-        servers.apply(server);
+        manifestsTaken.put(server.serverId(), manifest);
+        servers.apply(server, store.floors(server.serverId()));
         guard.forget(server.serverId());
+    }
+
+    private void adopt(RegistryStore.Stored stored) {
+        servers.find(stored.serverId()).filter(McpServer::approvalRequired).ifPresent(server -> {
+            if (validator.violations(stored.manifest(), server).isEmpty()) {
+                take(validator.approved(stored.manifest()), stored.manifest());
+            }
+        });
+    }
+
+    /**
+     * Takes the stored approvals that another instance wrote or changed since this one looked (HA: instances share the table, not
+     * memory). A stored manifest that is unchanged is left alone.
+     */
+    public void reloadChanged() {
+        for (RegistryStore.Stored stored : store.all()) {
+            if (!stored.manifest().equals(manifestsTaken.get(stored.serverId()))) {
+                adopt(stored);
+            }
+        }
     }
 
     public Optional<ApprovedServer> approved(String serverId) {

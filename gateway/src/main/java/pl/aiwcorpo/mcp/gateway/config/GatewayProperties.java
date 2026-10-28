@@ -15,7 +15,6 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Pattern;
 
 /** All gateway settings; environment variable names are in application.yml and README. */
 @Validated
@@ -44,7 +43,6 @@ public record GatewayProperties(
         @DefaultValue @Valid Activity activity,
         @DefaultValue @Valid Registry registry,
         @Valid @NotNull Policy policy,
-        @DefaultValue("00000000000000-0000000") @Pattern(regexp = "^[0-9]{14}-[0-9a-f]{7}$") String policyRevision,
         /* Dev only: allows http for the IdP token endpoint (token exchange); never for the broker or servers. */
         @DefaultValue("false") boolean allowPlainHttp,
         @DefaultValue List<String> allowedOrigins,
@@ -69,7 +67,12 @@ public record GatewayProperties(
              */
             @DefaultValue("10s") Duration jwksRetryInterval,
             @DefaultValue("5m") Duration jwksFreshFor,
-            @DefaultValue("1h") Duration jwksUsableFor) {
+            @DefaultValue("1h") Duration jwksUsableFor,
+            /*
+             * Clients (azp) whose tokens belong to the admin API only. On /s/ and /v/ such a token is refused whatever its
+             * audience, so that allowing the portal's calls in the policy never allows tool calls with the portal's token.
+             */
+            @DefaultValue("mcp-portal-bff") List<String> c5OnlyClients) {
 
         public String advertisedAuthorizationServer() {
             return authorizationServer == null || authorizationServer.isBlank() ? issuer : authorizationServer;
@@ -177,8 +180,12 @@ public record GatewayProperties(
     public record Registry(
             /* required: a server serves only tools of an approved manifest; static: the tools of this configuration. */
             @DefaultValue("required") String mode,
-            /* A required server with no approved manifest gets the one it serves at /mcp-manifest, once, and keeps it. */
-            @DefaultValue("true") boolean bootstrapFromServer,
+            /*
+             * A required server with no stored approval gets, once, the manifest it serves itself at /mcp-manifest (trust on
+             * first use: the server then declares the risk of its own new tools). Development only; production registers
+             * through CI.
+             */
+            @DefaultValue("false") boolean bootstrapFromServer,
             @DefaultValue("10s") Duration bootstrapRetry,
             /* How long the last check of the live definitions of a server counts before a call checks them again. */
             @DefaultValue("30s") Duration definitionCheckTtl) {

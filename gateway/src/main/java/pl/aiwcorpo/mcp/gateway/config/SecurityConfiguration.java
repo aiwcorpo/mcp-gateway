@@ -101,6 +101,10 @@ public class SecurityConfiguration {
                 && (requiredAzp == null || requiredAzp.equals(jwt.getClaimAsString("azp")))
                 ? OAuth2TokenValidatorResult.success()
                 : OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "wrong_audience", null));
+        // A token issued to a client that serves the admin API only is no MCP client token, whatever its audience says.
+        OAuth2TokenValidator<Jwt> notForC5Only = jwt -> requiredAzp == null && oidc.c5OnlyClients().contains(jwt.getClaimAsString("azp"))
+                ? OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "invalid_claims", null))
+                : OAuth2TokenValidatorResult.success();
         // The claims are copied into C2 and C8, whose schemas bound them; "system:" is the service variant's sub.
         OAuth2TokenValidator<Jwt> claims = jwt -> bounded(jwt.getSubject()) && !jwt.getSubject().startsWith("system:")
                 && bounded(jwt.getClaimAsString("azp")) && bounded(jwt.getClaimAsString("preferred_username"))
@@ -112,7 +116,7 @@ public class SecurityConfiguration {
         // reason depends on the wording of a library message (an expired token fails the default one too, with the
         // same outcome).
         decoder.setJwtValidator(JwtValidators.createDefaultWithValidators(
-                List.of(named("wrong_issuer", new JwtIssuerValidator(oidc.issuer())), audience, claims,
+                List.of(named("wrong_issuer", new JwtIssuerValidator(oidc.issuer())), audience, notForC5Only, claims,
                         timestamps(clock))));
         return decoder;
     }
@@ -135,6 +139,30 @@ public class SecurityConfiguration {
         return jwt -> validator.validate(jwt).hasErrors()
                 ? OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", reason, null))
                 : OAuth2TokenValidatorResult.success();
+    }
+
+    /**
+     * C5 registerServer: the registry pipeline authenticates with its client certificate alone (CN {@code mcp-registry-ci},
+     * {@code security: mtls} in the contract); there is no user in CI, so no bearer token is asked for. Any other name is 403.
+     */
+    @Bean
+    @Order(0)
+    SecurityFilterChain registryPipelineFilterChain(HttpSecurity http, GatewayProperties properties,
+                                                    ClientCertificateVerifier certificates, AuthenticationAudit authenticationAudit)
+            throws Exception {
+        org.springframework.security.web.util.matcher.RequestMatcher registerServer =
+                request -> "PUT".equals(request.getMethod()) && request.getServletPath().startsWith("/admin/v1/registry/servers/");
+        http.securityMatcher(registerServer)
+                .csrf(csrf -> csrf.disable())
+                .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .requestCache(cache -> cache.disable())
+                .formLogin(form -> form.disable())
+                .httpBasic(basic -> basic.disable())
+                .logout(logout -> logout.disable())
+                .addFilterBefore(new AdminClientCertificateFilter(AdminOperations.registryPipeline(properties.admin().registryClientCns()),
+                        true, certificates, authenticationAudit), org.springframework.security.web.access.intercept.AuthorizationFilter.class)
+                .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
+        return http.build();
     }
 
     /** C5 on the internal port: client certificate name, then the user token with aud mcp-gateway-admin. */

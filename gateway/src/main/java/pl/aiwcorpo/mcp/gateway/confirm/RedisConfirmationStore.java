@@ -27,10 +27,12 @@ public final class RedisConfirmationStore implements ConfirmationStore {
             if ARGV[2] == '' then
               redis.call('DEL', KEYS[1])
             else
-              redis.call('SET', KEYS[1], ARGV[2], 'PXAT', ARGV[3])
+              redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3])
             end
             return 1
             """, Long.class);
+
+    private static final long KEEP_MARGIN_MILLIS = 30_000;
 
     private final StringRedisTemplate redis;
     private final JsonMapper json;
@@ -60,8 +62,10 @@ public final class RedisConfirmationStore implements ConfirmationStore {
             throws StoreUnavailableException {
         try {
             String written = next.calls().isEmpty() ? "" : json.writeValueAsString(next);
+            // A lifetime relative to Redis's own clock, with a margin: a Redis clock that runs ahead must not cut the trace short.
+            long lifetime = Math.max(1000, keepUntilEpochMillis - System.currentTimeMillis()) + KEEP_MARGIN_MILLIS;
             Long done = redis.execute(COMPARE_AND_SET, List.of(userKey(sub)), expected.raw() == null ? "" : expected.raw(),
-                    written, Long.toString(keepUntilEpochMillis));
+                    written, Long.toString(lifetime));
             return done != null && done == 1L;
         } catch (DataAccessException | JacksonException e) {
             throw new StoreUnavailableException(e);

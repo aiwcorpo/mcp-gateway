@@ -196,16 +196,22 @@ public class McpGatewayService {
 
     /** The code field is added to the schema the client sees; it is not part of the tool's own schema or its hash (C11). */
     private void addConfirmationCode(ObjectNode tool) {
-        JsonNode schema = tool.get("inputSchema");
-        if (schema instanceof ObjectNode inputSchema && inputSchema.get("properties") instanceof ObjectNode properties) {
-            ObjectNode code = properties.putObject("confirmation_code");
-            code.put("type", "string");
-            code.put("pattern", "^[0-9]{6}$");
-            code.put("minLength", 6);
-            code.put("maxLength", 6);
-            code.put("description", "Current 6-digit code of the MCP Platform account in the authenticator app. Ask the user for "
-                    + "it only after the call answered confirmation_required, then repeat the call with the same arguments.");
+        withConfirmationCode(tool);
+    }
+
+    /** Adds the {@code confirmation_code} property, creating {@code properties} for a tool that takes no arguments. */
+    static void withConfirmationCode(ObjectNode tool) {
+        if (!(tool.get("inputSchema") instanceof ObjectNode inputSchema)) {
+            return;
         }
+        ObjectNode properties = inputSchema.get("properties") instanceof ObjectNode existing ? existing : inputSchema.putObject("properties");
+        ObjectNode code = properties.putObject("confirmation_code");
+        code.put("type", "string");
+        code.put("pattern", "^[0-9]{6}$");
+        code.put("minLength", 6);
+        code.put("maxLength", 6);
+        code.put("description", "Current 6-digit code of the MCP Platform account in the authenticator app. Ask the user for "
+                + "it only after the call answered confirmation_required, then repeat the call with the same arguments.");
     }
 
     /** The servers behind the endpoint: the one addressed, or those that own the tools of the link. */

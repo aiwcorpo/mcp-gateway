@@ -195,6 +195,24 @@ class ConfirmationFlowTest extends GatewayTestBase {
     }
 
     @Test
+    void anUnavailableBrokerLeavesAnEventOfTheAttempt(CapturedOutput output) throws Exception {
+        Person p = enrolled();
+        env.broker.authenticatorDown(true);
+        try {
+            HttpResponse<String> response = delete(p, "ABC-40", null);
+            String rid = response.headers().firstValue("X-Request-Id").orElseThrow();
+            List<JsonNode> events = auditEvents(output, rid).stream().filter(e -> "confirmation".equals(e.path("event").asString())).toList();
+            assertThat(events).hasSize(1);
+            assertThat(events.getFirst().path("reason").asString()).isEqualTo("upstream_unavailable");
+            assertThat(events.getFirst().path("outcome").asString()).isEqualTo("error");
+            assertThat(events.getFirst().path("errorCode").asString()).isEqualTo("upstream_unavailable");
+            assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", events.getFirst())).isEmpty();
+        } finally {
+            env.broker.authenticatorDown(false);
+        }
+    }
+
+    @Test
     void aUserWithoutTheDestructiveGroupIsRefusedBeforeAnyPendingCall() throws Exception {
         Person p = new Person();
         env.broker.enroll(p.sub(), SECRET);

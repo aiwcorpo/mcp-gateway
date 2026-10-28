@@ -29,6 +29,8 @@ public final class ServerRegistry {
     public static final String MODE_REQUIRED = "required";
     public static final String MODE_STATIC = "static";
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(ServerRegistry.class);
+
     private final Map<String, GatewayProperties.Server> config;
     private volatile Map<String, McpServer> servers;
 
@@ -83,17 +85,25 @@ public final class ServerRegistry {
 
     /**
      * Takes the approved manifest of a server as its tools: metadata (risk, action, references, texts) and the hash each
-     * live definition must keep. The switches of the configuration stay: a disabled server or tool is disabled whatever the
+     * live definition must keep. A tool whose approved risk is below the configured minimum or an earlier approval
+     * ({@code approvedFloors}) is not served. The switches of the configuration stay: a disabled server or tool is disabled whatever the
      * manifest says.
      */
-    public synchronized void apply(ApprovedServer approved) {
+    public synchronized void apply(ApprovedServer approved, Map<String, Integer> approvedFloors) {
         McpServer current = servers.get(approved.serverId());
         GatewayProperties.Server configured = config.get(approved.serverId());
         if (current == null || configured == null || !current.approvalRequired()) {
             throw new IllegalStateException("server " + approved.serverId() + " takes no manifest");
         }
+        Map<String, Integer> minimum = new LinkedHashMap<>(configuredMinimumRisks(approved.serverId()));
+        approvedFloors.forEach((name, risk) -> minimum.merge(name, risk, Math::max));
         Map<String, ToolDefinition> tools = new LinkedHashMap<>();
         approved.tools().forEach((name, tool) -> {
+            if (Risk.valueOf(tool.risk()).ordinal() < minimum.getOrDefault(name, 0)) {
+                // The manifest says less than the configuration or an earlier approval: the tool is left out until it says enough.
+                log.error("{}: tool {} is approved with a risk below the minimum; it is not served", approved.serverId(), name);
+                return;
+            }
             GatewayProperties.Tool switches = configured.tools().get(name);
             tools.put(name, new ToolDefinition(name, Risk.valueOf(tool.risk()), tool.action(), tool.title(), tool.description(),
                     switches != null && switches.disabled(), tool.resourceRefs(), tool.definitionHash()));

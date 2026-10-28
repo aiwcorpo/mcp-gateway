@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 
 import pl.aiwcorpo.mcp.gateway.config.GatewayProperties;
 import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
+import pl.aiwcorpo.mcp.gateway.support.Vectors;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -74,6 +75,37 @@ class RegistryServiceTest {
         // The manifest is refused before the store (not a manifest); the store is not asked to write.
         verify(store, never()).write(any(), any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean());
         assertThat(service.approved("mcp-jira")).isEmpty();
+    }
+
+    @Test
+    void aStoredManifestBelowTheConfiguredMinimumRiskDoesNotServeTheTool() {
+        // The configuration (a later change by the operator) says get_issue is DESTRUCTIVE; the stored approval says READ_ONLY.
+        ServerRegistry raised = new ServerRegistry(Map.of("mcp-jira", new GatewayProperties.Server("jira",
+                URI.create("https://mcp-jira.internal:8443/mcp"), "1.0.0", true, "required",
+                new GatewayProperties.Credential(true, List.of("user-secret"), List.of(), false),
+                Map.of("get_issue", new GatewayProperties.Tool("DESTRUCTIVE", "Gets.", null, null, false, List.of())))), "static");
+        RegistryService restarted = new RegistryService(raised, store, new ManifestValidator(JSON), fetcher,
+                new DefinitionGuard(Clock.systemUTC(), Duration.ofSeconds(30)));
+        JsonNode manifest = Vectors.of("manifests").stream().filter(v -> v.name().equals("valid-jira.json")).findFirst().orElseThrow()
+                .document().path("manifest");
+        when(store.all()).thenReturn(List.of(new RegistryStore.Stored("mcp-jira", manifest, "ci")));
+        when(store.floors("mcp-jira")).thenReturn(Map.of());
+
+        restarted.load();
+
+        assertThat(raised.find("mcp-jira").orElseThrow().tools()).doesNotContainKey("get_issue").containsKey("search_issues");
+    }
+
+    @Test
+    void aStoredManifestBelowTheHighestApprovedRiskDoesNotServeTheTool() {
+        JsonNode manifest = Vectors.of("manifests").stream().filter(v -> v.name().equals("valid-jira.json")).findFirst().orElseThrow()
+                .document().path("manifest");
+        when(store.all()).thenReturn(List.of(new RegistryStore.Stored("mcp-jira", manifest, "ci")));
+        when(store.floors("mcp-jira")).thenReturn(Map.of("update_issue", 2));
+
+        service.load();
+
+        assertThat(servers.find("mcp-jira").orElseThrow().tools()).doesNotContainKey("update_issue").containsKey("get_issue");
     }
 
     @Test

@@ -181,7 +181,7 @@ public class GatewayConfiguration {
     InternalTokenIssuer internalTokenIssuer(SigningKeys keys, GatewayProperties properties, ToolAuthorizer authorizer,
                                             Clock clock) {
         return new InternalTokenIssuer(keys, properties.internalJwt().issuer(), properties.internalJwt().lifetime(),
-                () -> authorizer.policyRevision() != null ? authorizer.policyRevision() : properties.policyRevision(), clock);
+                authorizer::policyRevision, clock);
     }
 
     @Bean

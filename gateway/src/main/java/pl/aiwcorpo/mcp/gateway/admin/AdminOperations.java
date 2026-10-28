@@ -17,7 +17,6 @@ public final class AdminOperations {
                 Rule.of("POST", "/admin/v1/virtual-servers", portalBff),
                 Rule.of("DELETE", "/admin/v1/virtual-servers/{slug}", portalBff),
                 Rule.of("GET", "/admin/v1/registry/servers", portalBff),
-                Rule.of("PUT", "/admin/v1/registry/servers/{serverId}", registryCi),
                 Rule.of("GET", "/admin/v1/registry/servers/{serverId}/tools/{tool}/pending", portalBff),
                 Rule.of("POST", "/admin/v1/registry/servers/{serverId}/tools/{tool}/approve", portalBff),
                 Rule.of("GET", "/admin/v1/activity", portalBff),
@@ -26,6 +25,11 @@ public final class AdminOperations {
                 Rule.of("POST", "/admin/v1/confirmations/{confirmationId}/cancel", portalBff),
                 Rule.of("GET", "/admin/v1/activity/calls", portalBff),
                 Rule.of("GET", "/admin/v1/policy/status", portalBff));
+    }
+
+    /** The one operation of the registry pipeline, which has no user token. */
+    public static List<Rule> registryPipeline(List<String> registryCi) {
+        return List.of(Rule.of("PUT", "/admin/v1/registry/servers/{serverId}", registryCi));
     }
 
     public static List<Rule> metrics(List<String> scrapers) {

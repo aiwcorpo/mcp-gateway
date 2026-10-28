@@ -63,7 +63,7 @@ public final class OperationDescription {
             description.append(first ? " " : ", ").append(name).append('=').append(value).append(cut ? "..." : "");
             first = false;
         }
-        String text = description.length() > MAX_DESCRIPTION
+        String text = description.codePointCount(0, description.length()) > MAX_DESCRIPTION
                 ? description.substring(0, description.offsetByCodePoints(0, MAX_DESCRIPTION - 3)) + "..." : description.toString();
         return new PendingCall.Display(qualifiedTool, system, resourceOf(arguments, refs), List.copyOf(shown), text);
     }

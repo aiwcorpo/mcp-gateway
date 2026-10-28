@@ -54,10 +54,9 @@ class RegistryTest extends GatewayTestBase {
         return names;
     }
 
+    /** The registry pipeline: its client certificate (CN mcp-registry-ci) and no token, as C5 registerServer says. */
     private HttpResponse<String> put(String serverId, JsonNode manifest) throws Exception {
-        return admin(env.otherComponentTls, "PUT", "/admin/v1/registry/servers/" + serverId,
-                env.idp.token(UUID.randomUUID().toString(), "ci", List.of(), "mcp-gateway-admin", "mcp-portal-bff"),
-                JSON.writeValueAsString(manifest));
+        return admin(env.otherComponentTls, "PUT", "/admin/v1/registry/servers/" + serverId, null, JSON.writeValueAsString(manifest));
     }
 
     private ObjectNode edited(java.util.function.Consumer<ObjectNode> change) {
@@ -197,9 +196,15 @@ class RegistryTest extends GatewayTestBase {
     }
 
     @Test
-    void onlyTheRegistryPipelineMayRegister() throws Exception {
+    void onlyTheRegistryPipelineMayRegisterAndItNeedsNoUserToken() throws Exception {
+        String path = "/admin/v1/registry/servers/mcp-gitlab";
+        String body = JSON.writeValueAsString(original());
         String token = env.idp.token(UUID.randomUUID().toString(), "x", List.of(), "mcp-gateway-admin", "mcp-portal-bff");
-        assertThat(admin(env.bffTls, "PUT", "/admin/v1/registry/servers/mcp-gitlab", token, JSON.writeValueAsString(original()))
-                .statusCode()).isEqualTo(403);
+        assertThat(admin(env.bffTls, "PUT", path, token, body).statusCode()).as("the BFF certificate, even with a token").isEqualTo(403);
+        assertThat(admin(env.noClientCertificateTls, "PUT", path, token, body).statusCode()).as("no certificate").isEqualTo(401);
+        assertThat(admin(env.foreignCaTls, "PUT", path, token, body).statusCode()).as("a certificate of a foreign CA").isEqualTo(401);
+        assertThat(admin(env.otherComponentTls, "PUT", path, null, body).statusCode()).as("the pipeline, no token").isEqualTo(200);
+        assertThat(admin(env.otherComponentTls, "GET", "/admin/v1/registry/servers", null, null).statusCode())
+                .as("the pipeline reads nothing else: the list is the portal's").isEqualTo(403);
     }
 }

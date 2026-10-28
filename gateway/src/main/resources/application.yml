@@ -52,7 +52,6 @@ gateway:
   version: 0.1.0
   # Public origin (publicBaseUrl, CC-089): required, never derived from the Host of a request.
   public-url: ${MCP_PUBLIC_URL}
-  policy-revision: ${MCP_POLICY_REVISION:00000000000000-0000000}
   allowed-origins: ${MCP_ALLOWED_ORIGINS:}
   allow-plain-http: ${MCP_ALLOW_PLAIN_HTTP:false}
   oidc:
@@ -94,7 +93,7 @@ gateway:
     startup-timeout: ${MCP_POLICY_STARTUP_TIMEOUT:2m}
   registry:
     mode: ${MCP_REGISTRY_MODE:required}
-    bootstrap-from-server: ${MCP_REGISTRY_BOOTSTRAP:true}
+    bootstrap-from-server: ${MCP_REGISTRY_BOOTSTRAP:false}
   activity:
     cursor-key: ${MCP_ACTIVITY_CURSOR_KEY:}
   virtual-servers:

@@ -9,6 +9,7 @@ COPY --chown=root:root gateway/target/mcp-gateway.jar /app/app.jar
 
 USER gateway
 # 8080: MCP clients (C1, /s/<serverId>/mcp, /v/<slug>/mcp, RFC 9728); 8443: internal TLS (JWKS of C2, actuator, C5 admin API).
+# Cedar unpacks its native library into java.io.tmpdir: a read-only root file system needs a writable /tmp.
 # /app/state holds the rollback protection of the policy bundles (MCP_POLICY_STATE_DIR): mount a volume per instance.
 EXPOSE 8080 8443
-ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-XX:+ExitOnOutOfMemoryError", "-jar", "/app/app.jar"]
+ENTRYPOINT ["java", "--enable-native-access=ALL-UNNAMED", "-XX:MaxRAMPercentage=75", "-XX:+ExitOnOutOfMemoryError", "-jar", "/app/app.jar"]

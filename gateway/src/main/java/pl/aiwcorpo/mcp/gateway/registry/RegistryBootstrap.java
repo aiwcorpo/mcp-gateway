@@ -9,7 +9,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 
-/** Asks servers without an approved manifest for the one they serve, every {@code retry} until every server has one. */
+/**
+ * Every {@code retry}: takes approvals that another instance stored and, when bootstrap is enabled (development), asks servers
+ * without any stored approval for the manifest they serve.
+ */
 public final class RegistryBootstrap implements DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(RegistryBootstrap.class);
@@ -21,15 +24,16 @@ public final class RegistryBootstrap implements DisposableBean {
     });
 
     public RegistryBootstrap(RegistryService registry, boolean enabled, Duration retry) {
-        if (enabled) {
-            scheduler.scheduleWithFixedDelay(() -> {
-                try {
+        scheduler.scheduleWithFixedDelay(() -> {
+            try {
+                registry.reloadChanged();
+                if (enabled) {
                     registry.bootstrapMissing();
-                } catch (RuntimeException e) {
-                    log.warn("manifest bootstrap failed: {}", e.getClass().getName());
                 }
-            }, 0, retry.toMillis(), TimeUnit.MILLISECONDS);
-        }
+            } catch (RuntimeException e) {
+                log.warn("registry refresh failed: {}", e.getClass().getName());
+            }
+        }, retry.toMillis(), retry.toMillis(), TimeUnit.MILLISECONDS);
     }
 
     @Override

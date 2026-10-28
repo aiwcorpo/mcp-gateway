@@ -51,6 +51,14 @@ class PolicyServiceTest {
             + " when { resource.name == \"get_issue\" };";
 
     @Test
+    void outsideDevelopmentTheStateDirectoryIsRequired() {
+        assertThatThrownBy(() -> new PolicyService(new GatewayProperties.Policy(URI.create(server.mainUrl()), null, "policies-main",
+                dir.resolve("main.pem").toString(), null, null, false, null, null, null, Duration.ofMinutes(1), Duration.ofMinutes(1),
+                Duration.ofSeconds(2), Duration.ofSeconds(1)), new BundleFetcher(), meters))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("state-dir");
+    }
+
+    @Test
     void thereIsNoStartWithoutAMainBundle() {
         PolicyService service = service(false, null, Duration.ofSeconds(2), Duration.ofSeconds(1));
         assertThatThrownBy(service::start).isInstanceOf(IllegalStateException.class).hasMessageContaining("CC-068");

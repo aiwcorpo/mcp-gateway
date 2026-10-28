@@ -131,16 +131,37 @@ actuatora.
   grupy z tokenu, zasoby z `resourceRefs` (kontekst `refs`) i link (`virtualServer`, `vsScopes`); `prv` w JWT to rewizja
   paczki głównej.
 - **Rejestr.** Tryb `required` (domyślny, `MCP_REGISTRY_MODE`): serwer ma tylko narzędzia z zatwierdzonego manifestu C6.
-  Zatwierdza `PUT /admin/v1/registry/servers/{serverId}` (CI), a gdy serwer nie ma żadnego wiersza, jednorazowo
-  manifest, który sam serwuje pod `/mcp-manifest`. Definicja z `tools/list` musi dawać zatwierdzony `definitionHash`,
+  Zatwierdza `PUT /admin/v1/registry/servers/{serverId}` samym certyfikatem klienta CI (CN `mcp-registry-ci`, bez tokenu
+  użytkownika, jak w C5; inny CN to 403). Tylko w dev (`MCP_REGISTRY_BOOTSTRAP=true`) serwer bez żadnego wiersza dostaje
+  jednorazowo manifest, który sam serwuje pod `/mcp-manifest`: to zaufanie przy pierwszym kontakcie, serwer sam deklaruje
+  ryzyko swoich nowych narzędzi, więc w produkcji bootstrap jest wyłączony. Definicja z `tools/list` musi dawać zatwierdzony `definitionHash`,
   inaczej narzędzie znika z listy i wywołanie to `tool_disabled`. Obniżenie ryzyka (także po usunięciu i dodaniu narzędzia)
-  jest odrzucane. Przypinanie i diff (CC-097) to M4.
+  jest odrzucane, a narzędzie zatwierdzone poniżej minimum z konfiguracji lub najwyższego wcześniej zatwierdzonego ryzyka
+  nie jest serwowane (także po restarcie). Instancje przeładowują zatwierdzenia z tabeli co kilka sekund. Przypinanie i diff (CC-097) to M4.
 - **Aktywność.** `GET /admin/v1/activity/calls`: jeden wiersz na wywołanie (zdarzenia z PostgreSQL, agregacja według
   wektorów `activity-calls/`), kursor `X-Next-Cursor` z HMAC związanym z `sub`; `GET /admin/v1/activity` to ostatnie zdarzenia.
 - **Uwierzytelnianie.** Niedostępny JWKS IdP (także nieznany `kid`) to 503 `upstream_unavailable` z `Retry-After`; odrzucone
   certyfikaty klienta i tokeny BFF na porcie C5 to zdarzenia `authentication`, próbkowane po jednym na adres na minutę;
   `missing_token` i `malformed` mają osobne budżety 20 zdarzeń na sekundę, nadmiar zlicza
   `mcp_audit_authentication_suppressed_total{component,reason}`.
+
+**Wymagania wdrożeniowe stanu potwierdzeń.** Znacznik epoki (`gw:conf:epoch`) wykrywa tylko całkowitą utratę danych Redis. Nie
+wykrywa: eksmisji kluczy z TTL (polityki `volatile-*`), failoveru z replikacją asynchroniczną (gateway nie robi `WAIT`) ani
+przywrócenia Redis z kopii. Przy każdej z tych sytuacji ślad obejrzanej operacji może zniknąć bez zmiany epoki, a kod wpisany
+dla A potwierdziłby wtedy B. Dlatego: `maxmemory-policy noeviction`, `appendonly yes` (utrata do 1 s zapisów przy `everysec`),
+żadnego przywracania z kopii (zamiast tego usunięcie kluczy `gw:conf:*`, co uruchamia okno spalania kodów) i żadnego
+failoveru bez synchronicznej replikacji, dopóki HA (M4) nie doda `WAIT`. ACL gateway'a nie ma `CONFIG`, więc ustawień nie
+sprawdza. Stan użytkownika ma limit 20 śladów zastąpionych operacji.
+
+**Obraz.** Biblioteka natywna Cedar jest rozpakowywana do `java.io.tmpdir`: kontener z `read_only: true` potrzebuje zapisywalnego
+`/tmp`. Obraz nie ma `curl` ani `wget` (healthcheck przez `bash` i `/dev/tcp`). Sprawdzony na arm64 (glibc); x86_64 nie.
+
+**Proces na hoście** (`scripts/run-dev-host.sh`) używa własnego schematu `host_gateway` w bazie stosu (`MCP_DB_SCHEMA`), żeby nie
+pisać do tabel gateway'a z compose.
+
+**Tokeny klientów tylko dla C5.** Na `/s/` i `/v/` token z `azp` z listy `gateway.oidc.c5-only-clients` (domyślnie
+`mcp-portal-bff`) jest odrzucany 401 `invalid_claims` niezależnie od `aud`: dopuszczenie portalu w polityce dla katalogu i
+linków nie otwiera wywołań narzędzi jego tokenem.
 
 Przebieg na żywo: `scripts/m3-demo.sh` (po uruchomieniu skryptów z sekcji niżej; atrapa brokera z
 `MCP_TEST_BROKER_TOTP=<sub>=<ziarno>`, kody z `mcpdev.py otp alice`).
@@ -172,9 +193,9 @@ Zmienne środowiska (nazwy z `mcp-platform-dev`, usługa `mcp-gateway` profilu `
 | `MCP_POLICY_MAIN_URL`, `MCP_POLICY_OVERRIDES_URL` | wymagany katalog paczki głównej (`.../policies/main/`) i opcjonalny `overrides`; w compose `http://policies.internal:8080/policies/...` |
 | `MCP_POLICY_MAIN_KEY_ID`, `MCP_POLICY_MAIN_KEY_FILE`, `MCP_POLICY_OVERRIDES_KEY_ID`, `MCP_POLICY_OVERRIDES_KEY_FILE` | identyfikatory i pliki PEM kluczy publicznych Ed25519 obu kanałów |
 | `MCP_POLICY_ALLOW_TEST_KEYS` | tylko dev: klucze `test-*` (CC-044) |
-| `MCP_POLICY_STATE_DIR`, `MCP_POLICY_MINIMUM_MAIN_REVISION`, `MCP_POLICY_MINIMUM_OVERRIDES_REVISION` | ochrona przed cofnięciem po restarcie (CC-066): katalog stanu jednej instancji (w obrazie `/app/state`) i rewizje minimalne |
+| `MCP_POLICY_STATE_DIR`, `MCP_POLICY_MINIMUM_MAIN_REVISION`, `MCP_POLICY_MINIMUM_OVERRIDES_REVISION` | ochrona przed cofnięciem po restarcie (CC-066): katalog stanu jednej instancji (w obrazie `/app/state`), wymagany poza dev (bez `MCP_POLICY_ALLOW_TEST_KEYS`), i rewizje minimalne |
 | `MCP_POLICY_MAIN_INTERVAL`, `MCP_POLICY_OVERRIDES_INTERVAL`, `MCP_POLICY_STARTUP_TIMEOUT` | 30 s, 5 s, 2 min do rezygnacji ze startu bez paczki |
-| `MCP_REGISTRY_MODE`, `MCP_REGISTRY_BOOTSTRAP` | `required` (domyślnie) albo `static`; pobranie pierwszego manifestu od serwera bez zatwierdzenia (domyślnie tak). Przełącznik `manifest` per serwer w `application.yml` |
+| `MCP_REGISTRY_MODE`, `MCP_REGISTRY_BOOTSTRAP` | `required` (domyślnie) albo `static`; pobranie pierwszego manifestu od serwera bez zatwierdzenia (domyślnie NIE; tylko dev, patrz wyżej). Przełącznik `manifest` per serwer w `application.yml` |
 | `MCP_ACTIVITY_CURSOR_KEY` | klucz HMAC kursora `/activity/calls` (min. 16 bajtów); puste = losowy na proces |
 | `MCP_ALLOWED_ORIGINS` | dozwolone `Origin` (lista); żądanie (POST, GET, DELETE) z innym `Origin` -> 403, bez `Origin` przechodzi |
 | `MCP_ALLOW_PLAIN_HTTP` | tylko dev: `http` dla endpointu tokenów IdP (token exchange); bez flagi token exchange jest wyłączony, broker i serwery zawsze `https` |

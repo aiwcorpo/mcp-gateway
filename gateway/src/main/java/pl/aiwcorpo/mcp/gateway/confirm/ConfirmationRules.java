@@ -121,7 +121,21 @@ public final class ConfirmationRules {
         // A new pending call for an operation replaces the trace of a replaced one under the same key.
         next = next.without(c -> c.supersededBy() != null && !c.supersededBy().equals(created.confirmationId())
                 && c.sameOperation(created.serverId(), created.tool(), created.argsSha256()));
-        return next.with(created);
+        return capTraces(next.with(created));
+    }
+
+    /** The traces of replaced operations a user keeps: an agent that loops over new operations cannot grow the state without bound. */
+    static final int MAX_REPLACED_TRACES = 20;
+
+    private static UserConfirmations capTraces(UserConfirmations state) {
+        List<PendingCall> replaced = state.calls().stream().filter(c -> c.supersededBy() != null && c.previewViewedAt() == null)
+                .sorted(java.util.Comparator.comparingLong(PendingCall::createdAt).reversed()).toList();
+        if (replaced.size() <= MAX_REPLACED_TRACES) {
+            return state;
+        }
+        java.util.Set<String> dropped = replaced.subList(MAX_REPLACED_TRACES, replaced.size()).stream()
+                .map(PendingCall::confirmationId).collect(java.util.stream.Collectors.toSet());
+        return state.without(c -> dropped.contains(c.confirmationId()));
     }
 
     public sealed interface Reservation {

@@ -54,6 +54,10 @@ public final class PolicyService implements DisposableBean {
                 config.overridesKeyFile() == null ? config.mainKeyFile() : config.overridesKeyFile(), config);
         PolicyStore.Persistence persistence = persistence(config);
         if (persistence == null) {
+            if (!config.allowTestKeys()) {
+                throw new IllegalStateException("gateway.policy.state-dir is required outside development: without it a restart "
+                        + "accepts an older signed bundle (CC-066)");
+            }
             log.warn("gateway.policy.state-dir is not set: the protection against an older bundle holds only while the process runs");
         }
         this.store = persistence == null ? new PolicyStore(main, overrides) : new PolicyStore(main, overrides, persistence);

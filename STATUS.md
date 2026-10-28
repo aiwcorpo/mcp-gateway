@@ -92,6 +92,27 @@ działa, natywna biblioteka Cedar dla glibc niesprawdzona w kontenerze; macOS dz
 - **HA (M4):** rejestr, klucz kursora (`MCP_ACTIVITY_CURSOR_KEY`) i klucze C2 muszą być wspólne dla instancji; zatwierdzenia z innej instancji
   gateway widzi po restarcie.
 
+## Poprawki po przeglądzie Opus M3 (0 CRITICAL/HIGH, 2 MEDIUM, 11 LOW)
+
+| Id | Poprawka |
+| --- | --- |
+| M-1 | `ServerRegistry.apply` nie serwuje narzędzia zatwierdzonego poniżej minimum z konfiguracji ani `registry_risk_floor`; dotyczy `load()` po restarcie, rejestracji i przejęcia; testy `RegistryServiceTest` (konfiguracja DESTRUCTIVE, zapis READ_ONLY; podłoga) |
+| M-2 | `PUT /admin/v1/registry/servers/{id}` ma osobny łańcuch security: sam mTLS z CN `mcp-registry-ci`, bez tokenu; inny CN 403, brak certyfikatu 401; reszta `/admin/v1` bez zmian. Bootstrap z manifestu serwera domyślnie wyłączony (`MCP_REGISTRY_BOOTSTRAP=false`), włączany w `run-dev-host.sh`; opisane jako zaufanie przy pierwszym kontakcie (L-1) |
+| L-2 | README: wymagania wdrożeniowe stanu potwierdzeń (`noeviction`, `appendonly`, bez przywracania z kopii, bez failoveru bez synchronicznej replikacji) i czego epoka nie wykrywa |
+| L-3 | TTL klucza względny (`PX`) z marginesem 30 s zamiast `PXAT` |
+| L-4 | najwyżej 20 śladów zastąpionych operacji na użytkownika (`ConfirmationStateSizeTest`) |
+| L-5 | `OperationDescription` liczy punkty kodowe (`OperationDescriptionTest`, emoji) |
+| L-6 | zdarzenie `confirmation` z `reason`/`errorCode` `upstream_unavailable` dla każdej bramki, która nie dała rady (test); agregator traktuje je jak oczekiwanie |
+| L-7 | `RegistryService.reloadChanged` co kilka sekund; `AlreadyThere` przejmuje zapisany wiersz |
+| L-8 | osobne budżety 20/s także dla `alg_not_allowed`, `unknown_kid`, `bad_signature` |
+| L-9 | `--enable-native-access=ALL-UNNAMED` w ENTRYPOINT, zdanie o `/tmp` i braku `curl` w README |
+| L-10 | usunięte `policy-revision`/`MCP_POLICY_REVISION` i fallback `prv`; `state-dir` wymagany bez `allow-test-keys` (test) |
+| L-11 | `confirmation_code` dodawany także do schematu bez `properties` (test) |
+| ws-01/ws-09 | token z `azp` z `gateway.oidc.c5-only-clients` (domyślnie `mcp-portal-bff`) odrzucany na `/s/` i `/v/` (test); proces hosta pisze do własnego schematu `host_gateway` w bazie stosu (Flyway zakłada go; sprawdzone) |
+
+Testy po poprawkach: gateway 427, test-server 103, 0 błędów. Nowe zdarzenie `reason` `upstream_unavailable` dopisać do słownika C8
+(propozycja 12).
+
 ## Co potrzebuję od innych strumieni
 
 - **ws-01:** wolumen na `/app/state` (stan ochrony przed cofnięciem paczek) i `MCP_POLICY_*` w usłudze `mcp-gateway` (klucze publiczne dev z

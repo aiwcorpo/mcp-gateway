@@ -12,11 +12,11 @@ import io.micrometer.core.instrument.MeterRegistry;
  * Per-process caps on {@code authentication} events that cost the sender nothing, so that nobody who reaches a port
  * can fill the audit stream (CC-120, CC-125).
  *
- * <p>{@code missing_token} (no credentials) and {@code malformed} (a token that does not even parse) have a budget per
- * second of their own: a flood of one must not use up the other. {@code client_certificate_rejected} on the admin port
+ * <p>{@code missing_token}, {@code malformed}, {@code alg_not_allowed}, {@code unknown_kid} and {@code bad_signature} (what
+ * can be sent without any key) each have a budget per second of their own: a flood of one must not use up another. {@code client_certificate_rejected} on the admin port
  * is sampled: one event per source address per minute. What is over a budget is only counted in
  * {@value #METRIC}{component, reason} and neither audited nor logged. Nothing else is capped: a token that got past
- * parsing and the key lookup is an attempt, not noise.
+ * the signature check is an attempt, not noise.
  */
 public final class AuthenticationEventLimiter {
 
@@ -25,7 +25,13 @@ public final class AuthenticationEventLimiter {
     public static final String COMPONENT = "gateway";
     static final int MAX_SOURCES = 4096;
 
-    private static final Set<String> CAPPED_PER_SECOND = Set.of("missing_token", "malformed");
+    /**
+     * Reasons that cost the sender nothing: no token, a string that is no token, a header with an algorithm outside the list, a
+     * key id the IdP does not publish, a signature that was made up. Only a token that carries a valid signature is an attempt
+     * that is always written.
+     */
+    private static final Set<String> CAPPED_PER_SECOND = Set.of("missing_token", "malformed", "alg_not_allowed", "unknown_kid",
+            "bad_signature");
     private static final String CERTIFICATE_REJECTED = "client_certificate_rejected";
     private static final long SECOND_NANOS = 1_000_000_000L;
 

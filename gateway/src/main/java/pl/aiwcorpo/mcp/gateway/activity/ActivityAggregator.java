@@ -25,7 +25,8 @@ public final class ActivityAggregator {
     public static final long TTL_MILLIS = 120_000;
     private static final Set<String> TERMINAL = Set.of("user_confirmed", "user_confirmed_no_preview", "attempts_exhausted",
             "superseded", "pending_exists", "confirmation_expired", "cancelled_by_owner");
-    private static final Set<String> WAITING_REASONS = Set.of("code_burned", "authenticator_disabled", "authenticator_not_registered");
+    private static final Set<String> WAITING_REASONS = Set.of("code_burned", "authenticator_disabled", "authenticator_not_registered",
+            "upstream_unavailable");
     private static final Map<String, String> DENIED_RESULTS = Map.of("not_granted", "denied_not_granted",
             "link_scope", "denied_link_scope", "policy_forbid", "denied_policy", "tool_disabled", "tool_disabled",
             "credential_required", "credential_required", "rate_limited", "rate_limited", "step_up_required", "step_up_required");

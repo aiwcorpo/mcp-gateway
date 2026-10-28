@@ -34,7 +34,11 @@ export MCP_BROKER_URL="${MCP_BROKER_URL:-https://localhost:18703}"
 export MCP_BROKER_TLS_NAME="${MCP_BROKER_TLS_NAME:-mcp-credential-broker.internal}"
 export MCP_SERVER_JIRA_MCP_URL="${MCP_SERVER_JIRA_MCP_URL:-https://localhost:18702/mcp}"
 export MCP_REDIS_HOST=localhost MCP_REDIS_PORT=16379 MCP_REDIS_USER=gateway MCP_REDIS_PASSWORD="$REDIS_GATEWAY_PASSWORD"
-export MCP_DB_URL=jdbc:postgresql://localhost:15432/gateway MCP_DB_USER=gateway MCP_DB_PASSWORD="$GATEWAY_DB_PASSWORD"
+# A process on the host has its own schema in the stack's database: it must not write into the tables of the gateway
+# container (registry rows, links, activity of the compose stack). Flyway creates the schema.
+db_schema="${MCP_DB_SCHEMA:-host_gateway}"
+export MCP_DB_URL="jdbc:postgresql://localhost:15432/gateway?currentSchema=$db_schema" MCP_DB_USER=gateway MCP_DB_PASSWORD="$GATEWAY_DB_PASSWORD"
+export SPRING_FLYWAY_SCHEMAS="$db_schema" SPRING_FLYWAY_CREATE_SCHEMAS=true
 export MCP_TLS_KEYSTORE="$dev/certs/mcp-gateway/keystore.p12"
 export MCP_TLS_TRUSTSTORE="$dev/certs/ca/truststore.p12"
 export MCP_TLS_STORE_PASSWORD="$TLS_STORE_PASSWORD"
@@ -48,6 +52,7 @@ export MCP_POLICY_MAIN_KEY_FILE="$policies/keys/dev/test-policies-main-dev.publi
 export MCP_POLICY_OVERRIDES_KEY_ID=test-policies-overrides-dev
 export MCP_POLICY_OVERRIDES_KEY_FILE="$policies/keys/dev/test-policies-overrides-dev.public.pem"
 export MCP_POLICY_ALLOW_TEST_KEYS=true
+export MCP_REGISTRY_BOOTSTRAP="${MCP_REGISTRY_BOOTSTRAP:-true}"
 export MCP_POLICY_STATE_DIR="${MCP_POLICY_STATE_DIR:-$here/gateway/target/policy-state}"
 mkdir -p "$MCP_POLICY_STATE_DIR"
 
