@@ -153,7 +153,7 @@ nginx przed gateway'em (ws-01), prawdziwy broker z M2 (ws-06) na jego portach, k
   `gateway-admin-mock`, który ma ten sam alias) z certyfikatem `mcp-gateway`, a BFF dostać certyfikat
   `mcp-portal-bff` i zaufanie do CA. Proxy: `/s/`, `/v/` i `/.well-known/oauth-protected-resource*` na port 8080 gateway'a,
   na tych trasach usuwa `Cookie` i dokłada `nosniff` oraz CSP `default-src 'none'; sandbox` (`add_header ... always`);
-  gateway robi to samo sam, ale proxy jest w kontrakcie. Obraz: `mcp-gateway:dev` z `1aed158` lub nowszy (nie zbudowany w tej sesji).
+  gateway robi to samo sam, ale proxy jest w kontrakcie. Obraz zbudowany lokalnie: `mcp-gateway:m2-3cdc720` (drzewo `3cdc720`, kolejne commity tylko dokumentacja); nie uruchamiany w compose.
 - **ws-06 (broker):** bez zmian; `connectUrl` z 409 jest ignorowany przez gateway (patrz CC 2). `GET /v1/systems` jest
   wołane wariantem serwisowym przy starcie dla wszystkich pięciu systemów (ostrzeżenie w logu, gdy broker zna mniej).
 - **ws-04 / ws-02 (serwery, starter):** wywołania przez link niosą `vs` = slug i `vsc` = `{}` w JWT (wszystkie żądania

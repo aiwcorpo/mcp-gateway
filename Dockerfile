@@ -6,6 +6,6 @@ WORKDIR /app
 COPY --chown=root:root gateway/target/mcp-gateway.jar /app/app.jar
 
 USER gateway
-# 8080: MCP clients (C1, /s/<serverId>/mcp); 8443: internal TLS (JWKS of C2, actuator).
+# 8080: MCP clients (C1, /s/<serverId>/mcp, /v/<slug>/mcp, RFC 9728); 8443: internal TLS (JWKS of C2, actuator, C5 admin API).
 EXPOSE 8080 8443
 ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-XX:+ExitOnOutOfMemoryError", "-jar", "/app/app.jar"]
