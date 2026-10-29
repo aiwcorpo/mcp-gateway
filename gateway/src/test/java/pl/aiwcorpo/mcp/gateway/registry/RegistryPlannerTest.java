@@ -55,7 +55,8 @@ class RegistryPlannerTest {
         assertThat(plan.changes()).containsExactly(new Change("definition_registered", "get_issue", hash(manifest, "get_issue")),
                 new Change("definition_submitted", "update_issue", hash(manifest, "update_issue")),
                 new Change("definition_submitted", "delete_issue", hash(manifest, "delete_issue")));
-        assertThat(plan.risks()).containsExactly(Map.entry("get_issue", 0));
+        assertThat(plan.risks()).as("approved and submitted risks both count for the floors")
+                .containsOnly(Map.entry("get_issue", 0), Map.entry("update_issue", 1), Map.entry("delete_issue", 2));
     }
 
     @Test
@@ -159,5 +160,16 @@ class RegistryPlannerTest {
             assertThat(tool.pending()).isNull();
         });
         assertThat(plan.risks()).containsEntry("update_issue", 1).containsEntry("delete_issue", 2);
+    }
+
+    @Test
+    void aSubmittedRiskIsRememberedForTheFloorsToo() {
+        RegistryPlanner.Plan plan = plan(Manifests.jira("1.4.0", Tool.destructive("delete_issue")), Map.of());
+
+        assertThat(plan.risks()).containsEntry("delete_issue", 2);
+        // The next registration, with the same pending entry, lowers it to UPDATE: refused against the floor that submission raised.
+        Map<String, RegisteredTool> held = new LinkedHashMap<>(plan.tools());
+        assertThat(RegistryPlanner.plan(Manifests.jira("1.5.0", Tool.update("delete_issue")), CREDENTIAL, held,
+                plan.risks(), false).lowered()).containsExactly("delete_issue");
     }
 }

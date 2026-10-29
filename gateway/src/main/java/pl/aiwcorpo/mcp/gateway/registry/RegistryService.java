@@ -308,8 +308,12 @@ public final class RegistryService {
                     full.set("resourceRefs", entry.get("resourceRefs"));
                     full.set("definition", live.get(name));
                     full.put("definitionHash", changedHashes.get(name));
-                    String version = serverVersion != null && SEMVER.matcher(serverVersion).matches() ? serverVersion
-                            : tool.approved().version();
+                    boolean valid = serverVersion != null && SEMVER.matcher(serverVersion).matches();
+                    if (serverVersion != null && !valid) {
+                        log.warn("{}: the server reported a version that is no SemVer; the pending entry of {} says so", server.serverId(), name);
+                    }
+                    // The schema wants a SemVer; a value that is none must not look like the approved version in the diff.
+                    String version = valid ? serverVersion : serverVersion == null ? tool.approved().version() : "0.0.0-invalid";
                     tx.saveTool(tool.withPending(new RegisteredTool.Pending(full, changedHashes.get(name), version, "changed", "server",
                             tool.approved().credentialJson())));
                     touched[0] = true;

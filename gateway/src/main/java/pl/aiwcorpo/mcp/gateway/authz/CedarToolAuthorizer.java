@@ -62,11 +62,6 @@ public final class CedarToolAuthorizer implements ToolAuthorizer {
         return evaluate(caller, descriptor, values, requiredEntitlements(server, tool), server.credential().type()).decision();
     }
 
-    /** The Cedar {@code call} for a caller as the token and the link describe it, without a credential type. */
-    public Evaluation evaluate(Caller caller, ToolDescriptor tool, Map<String, ?> arguments, List<String> entitlementsForAMissingPermit) {
-        return evaluate(caller, tool, arguments, entitlementsForAMissingPermit, null);
-    }
-
     /**
      * The Cedar {@code call} for a caller as the token and the link describe it. Deny on anything that goes wrong.
      *

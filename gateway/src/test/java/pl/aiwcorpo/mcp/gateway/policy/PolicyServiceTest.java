@@ -126,6 +126,25 @@ class PolicyServiceTest {
     }
 
     @Test
+    void aBadSignatureIsFetchedAgainSoThatAFixedSignatureUnderTheSamePointerIsTaken() {
+        server.publishMain(TestBundles.main(TestBundles.revision(5), Map.of()));
+        PolicyService service = service(false, null, Duration.ofSeconds(5), Duration.ofSeconds(1)).start();
+        try {
+            server.publishMain(TestBundles.mainSignedByTheWrongKey(TestBundles.revision(6)));
+            service.sync(Channel.MAIN);
+            int afterFirst = server.requests();
+            service.sync(Channel.MAIN);
+            assertThat(server.requests() - afterFirst).as("latest.json, archive and signature again").isEqualTo(3);
+            assertThat(service.revision()).isEqualTo(TestBundles.revision(5));
+            server.publishMain(TestBundles.main(TestBundles.revision(6), Map.of()));
+            service.sync(Channel.MAIN);
+            assertThat(service.revision()).isEqualTo(TestBundles.revision(6));
+        } finally {
+            service.destroy();
+        }
+    }
+
+    @Test
     void aBundleThatIsNotNewerIsFetchedOnceAndIsNotAnError() {
         server.publishMain(TestBundles.main(TestBundles.revision(5), Map.of()));
         PolicyService service = service(false, null, Duration.ofSeconds(5), Duration.ofSeconds(1)).start();

@@ -174,6 +174,26 @@ class RegistryServiceTest extends GatewayTestBase {
     }
 
     @Test
+    void aPendingDestructiveToolCannotBeReplacedByAnUpdateOne() {
+        register(Manifests.jira("1.4.0", Tool.destructive("delete_issue")));
+
+        Result lowered = service.register(requestId, SERVER, Manifests.jira("1.5.0", Tool.update("delete_issue")), "ci");
+
+        assertThat(((Result.Rejected) lowered).reason()).isEqualTo("risk_lowered");
+        assertThat(tool("delete_issue").pending().version()).as("the pending entry is as it was").isEqualTo("1.4.0");
+        assertThat(store.floors(SERVER)).containsEntry("delete_issue", 2);
+    }
+
+    @Test
+    void aVersionTheServerReportsThatIsNoSemVerDoesNotLookLikeTheApprovedOne() {
+        register(Manifests.jira("1.4.0", Tool.readOnly("get_issue")));
+
+        service.observe(server(), Map.of("get_issue", Manifests.definition(Tool.readOnly("get_issue").described("two"))), "not a version");
+
+        assertThat(tool("get_issue").pending().version()).isEqualTo("0.0.0-invalid");
+    }
+
+    @Test
     void theRiskOfTheConfigurationIsAFloorFromTheFirstRegistration() {
         servers = registry("user-secret", Map.of("get_issue", new GatewayProperties.Tool("UPDATE", "Gets.", null, null, false, List.of())));
         service = service(servers, false);
@@ -230,7 +250,7 @@ class RegistryServiceTest extends GatewayTestBase {
 
         RegisteredTool.Pending second = tool("get_issue").pending();
         assertThat(second.hash()).isNotEqualTo(first);
-        assertThat(second.version()).as("a value that is no SemVer falls back to the approved version").isEqualTo("1.4.0");
+        assertThat(second.version()).as("a value that is no SemVer is marked as such").isEqualTo("0.0.0-invalid");
         assertThat(service.approve(requestId, SERVER, "get_issue", first, admin())).isInstanceOf(Approval.HashMismatch.class);
         assertThat(service.approve(requestId, SERVER, "get_issue", second.hash(), admin())).isInstanceOf(Approval.Approved.class);
         assertThat(service.observe(server(), Map.of("get_issue", Manifests.definition(Tool.readOnly("get_issue").described("two"))), null))

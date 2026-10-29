@@ -304,28 +304,29 @@ class RegistryTest extends GatewayTestBase {
 
     @Test
     void anEntryOfThePipelineIsNeverReplacedByWhatTheServerPresents() throws Exception {
-        // The reviewed commit raises the risk of search_issues: that waits for an administrator, the read-only definition stays in force.
-        ObjectNode reviewed = edited(m -> {
-            tool(m, "search_issues").put("risk", "UPDATE").put("action", "update");
-            rehash(m, "search_issues");
-        });
+        // The reviewed commit changes the text of delete_issue (DESTRUCTIVE, approved before): the change waits for an administrator.
+        ObjectNode reviewed = edited(m -> describe(m, "delete_issue", "Deletes one issue, reviewed text."));
         assertThat(register(reviewed).statusCode()).isEqualTo(200);
-        String reviewedHash = hashOf(reviewed, "search_issues");
-        assertThat(registryEntry("search_issues").path("source").asString()).isEqualTo("ci");
-        assertThat(listedTools()).as("the approved definition is still the server's").contains("gitlab__search_issues");
+        String reviewedHash = hashOf(reviewed, "delete_issue");
+        assertThat(registryEntry("delete_issue").path("source").asString()).isEqualTo("ci");
 
-        env.gitlab.describeDifferently("search_issues", "Something the reviewed commit never said.");
-        await().atMost(Duration.ofSeconds(8)).untilAsserted(() -> assertThat(callGitlab("gitlab__search_issues", "{\"project\":\"ABC\"}")
-                .path("error").asString()).isEqualTo("tool_disabled"));
+        env.gitlab.describeDifferently("delete_issue", "Something the reviewed commit never said.");
+        // The server is read again after the TTL; the entry of the pipeline stays whatever the server says.
+        await().atMost(Duration.ofSeconds(8)).untilAsserted(() -> {
+            listedTools();
+            assertThat(env.gitlab.requests()).anyMatch(r -> "tools/list".equals(r.rpcMethod()));
+        });
+        Thread.sleep(1200);
+        listedTools();
 
-        JsonNode diff = JSON.readTree(asAdmin("GET", "/admin/v1/registry/servers/mcp-gitlab/tools/search_issues/pending", null).body());
+        JsonNode diff = JSON.readTree(asAdmin("GET", "/admin/v1/registry/servers/mcp-gitlab/tools/delete_issue/pending", null).body());
         assertThat(diff.path("source").asString()).isEqualTo("ci");
         assertThat(diff.path("pendingHash").asString()).isEqualTo(reviewedHash);
-        assertThat(diff.path("pendingEntry").path("risk").asString()).isEqualTo("UPDATE");
+        assertThat(diff.path("pendingEntry").path("definition").path("description").asString()).isEqualTo("Deletes one issue, reviewed text.");
     }
 
     @Test
-    void aServerThatCannotBeReadIsNoProofOfAChangeButAnUncheckedCallDoesNotReachIt() throws Exception {
+    void aServerThatCannotBeReadIsNoProofOfAChangeButAnUncheckedCallDoesNotReachIt(CapturedOutput output) throws Exception {
         assertThat(listedTools()).contains("gitlab__get_issue");
         env.gitlab.failToolList(true);
         env.gitlab.clearRequests();
@@ -337,6 +338,8 @@ class RegistryTest extends GatewayTestBase {
             env.gitlab.clearRequests();
             assertThat(callGitlab("gitlab__get_issue", "{\"issueKey\":\"ABC-1\"}").path("error").asString()).isEqualTo("upstream_unavailable");
             assertThat(env.gitlab.requests()).as("no tool call reached the server").noneMatch(r -> "tools/call".equals(r.rpcMethod()));
+            assertThat(events(output, "policy_decision", "upstream_unavailable")).as("the decision is audited too").anyMatch(e ->
+                    "deny".equals(e.path("decision").asString()) && "get_issue".equals(e.path("tool").asString()));
             assertThat(listedTools()).as("the last reading still decides the list").contains("gitlab__get_issue", "gitlab__search_issues");
             assertThat(registryEntry("get_issue").path("status").asString()).as("nothing was recorded against the tool").isEqualTo("approved");
         } finally {

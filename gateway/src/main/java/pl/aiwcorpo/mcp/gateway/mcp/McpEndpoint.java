@@ -133,7 +133,8 @@ public class McpEndpoint {
         if (!"tools/call".equals(method)) {
             Optional<RateLimiter.Limited> limited = service.limitRequest(user, target.get(), requestId, clientRequestId);
             if (limited.isPresent()) {
-                return RateLimitResponse.of(requestId, limited.get().retryAfterSeconds());
+                return limited.get().unavailable() ? RateLimitResponse.unavailable(requestId, limited.get().retryAfterSeconds())
+                        : RateLimitResponse.of(requestId, limited.get().retryAfterSeconds());
             }
         }
         if ("initialize".equals(method)) {

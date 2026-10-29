@@ -22,4 +22,15 @@ public final class RateLimitResponse {
                 .header("X-Request-Id", requestId)
                 .body("{\"error\":\"rate_limited\",\"message\":\"Too many requests. Try again later.\",\"retryAfterSeconds\":" + seconds + "}");
     }
+
+    /** Redis did not answer, so nothing can be counted: the request is refused, not let through. */
+    public static ResponseEntity<String> unavailable(String requestId, int retryAfterSeconds) {
+        int seconds = Math.max(1, retryAfterSeconds);
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header("Content-Type", "application/json; charset=utf-8")
+                .header("Cache-Control", "no-store")
+                .header("Retry-After", Integer.toString(seconds))
+                .header("X-Request-Id", requestId)
+                .body("{\"error\":\"upstream_unavailable\",\"message\":\"The service is unavailable. Try again later.\"}");
+    }
 }

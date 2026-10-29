@@ -214,6 +214,20 @@ public record GatewayProperties(
             @DefaultValue Map<String, Integer> tools,
             /* One audit event per user and reason in this time; the rest is only counted. */
             @DefaultValue("10s") Duration auditInterval) {
+
+        public RateLimit {
+            if (window == null || window.compareTo(Duration.ofSeconds(1)) < 0 || window.compareTo(Duration.ofHours(1)) > 0) {
+                throw new IllegalArgumentException("gateway.rate-limit.window must be between 1 s and 1 h");
+            }
+            if (destructivePerTool > perTool) {
+                throw new IllegalArgumentException("gateway.rate-limit.destructive-per-tool must not exceed per-tool: a DESTRUCTIVE tool has the lower limit");
+            }
+            for (Map.Entry<String, Integer> own : tools.entrySet()) {
+                if (own.getValue() == null || own.getValue() < 1) {
+                    throw new IllegalArgumentException("gateway.rate-limit.tools." + own.getKey() + " must be at least 1");
+                }
+            }
+        }
     }
 
     /** Caps on authentication events that cost the sender nothing (CC-120, CC-125). */

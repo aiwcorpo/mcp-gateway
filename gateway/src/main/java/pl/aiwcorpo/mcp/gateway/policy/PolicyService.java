@@ -37,6 +37,7 @@ public final class PolicyService implements DisposableBean {
     private final BundleFetcher fetcher;
     private final MeterRegistry meters;
     private final Map<Channel, String> etags = new EnumMap<>(Channel.class);
+    private final Map<Channel, String> lastLogged = new EnumMap<>(Channel.class);
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2, r -> {
         Thread thread = new Thread(r, "policy-sync");
         thread.setDaemon(true);
@@ -166,10 +167,10 @@ public final class PolicyService implements DisposableBean {
             log.info("policy bundle {} loaded: revision {}", channel.name().toLowerCase(), bundle.pointer().revision());
         } catch (BundleRejectedException e) {
             boolean notNewer = e.reason() == BundleRejectedException.Reason.NOT_NEWER;
-            // The same content is not looked at again: a rejected bundle keeps its ETag when the verdict cannot change with time
-            // (not newer than the one in force, signature that does not match), so the log says it once and the server is left alone.
-            boolean settled = notNewer || e.reason() == BundleRejectedException.Reason.BAD_SIGNATURE;
-            if (settled && bundle != null && bundle.etag() != null) {
+            // A bundle that is not newer than the one in force keeps its ETag: the verdict cannot change, so the server is left alone.
+            // A bad signature is not remembered: a publisher that sets the pointer before the signature, and then fixes the signature
+            // under the same pointer, must be fetched again. It is logged once per revision instead.
+            if (notNewer && bundle != null && bundle.etag() != null) {
                 etags.put(channel, bundle.etag());
             } else {
                 etags.remove(channel);
@@ -181,7 +182,12 @@ public final class PolicyService implements DisposableBean {
             }
             meters.counter("gateway_policy_bundle_rejected_total", "channel", channel.name().toLowerCase(), "reason", e.reason().wireCode())
                     .increment();
-            log.error("policy bundle {} rejected ({}); the previous one stays", channel.name().toLowerCase(), e.reason().wireCode());
+            String what = bundle == null ? e.reason().wireCode() : bundle.pointer().revision() + ":" + e.reason().wireCode();
+            if (what.equals(lastLogged.put(channel, what))) {
+                log.debug("policy bundle {} rejected again ({}); the previous one stays", channel.name().toLowerCase(), e.reason().wireCode());
+            } else {
+                log.error("policy bundle {} rejected ({}); the previous one stays", channel.name().toLowerCase(), e.reason().wireCode());
+            }
         } catch (IOException e) {
             meters.counter("gateway_policy_bundle_fetch_failures_total", "channel", channel.name().toLowerCase()).increment();
             log.warn("policy bundle {} not fetched: {}", channel.name().toLowerCase(), e.getClass().getSimpleName());

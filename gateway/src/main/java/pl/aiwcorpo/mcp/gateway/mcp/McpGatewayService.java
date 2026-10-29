@@ -102,7 +102,7 @@ public class McpGatewayService {
             if (rateLimitAudit.due(user.sub(), l.reason())) {
                 audit.emit(AuditEvent.of("policy_decision", requestId, componentId).clientRequestId(clientRequestId).user(user)
                         .virtualServer(target.virtualSlug()).decision("deny", l.reason()).policyRevision(authorizer.policyRevision())
-                        .outcome("denied", "rate_limited"));
+                        .outcome(l.unavailable() ? "error" : "denied", l.unavailable() ? "upstream_unavailable" : "rate_limited"));
             }
         });
         return limited;
@@ -207,32 +207,43 @@ public class McpGatewayService {
         if (fresh.isPresent()) {
             return fresh.get();
         }
-        List<JsonNode> tools;
-        try {
-            tools = readTools(ctx, server);
-        } catch (RpcFailure failure) {
-            Optional<DefinitionGuard.Reading> last = definitionGuard.last(server.serverId());
-            if (!needFresh && last.isPresent()) {
-                return last.get();
+        // A reading judged against approvals that changed meanwhile is dropped and made again; a server whose approvals keep
+        // changing under the read is refused (fail-closed) rather than served from a stale verdict.
+        for (int attempt = 0; attempt < 3; attempt++) {
+            long generation = definitionGuard.generation(server.serverId());
+            List<JsonNode> tools;
+            try {
+                tools = readTools(ctx, server);
+            } catch (RpcFailure failure) {
+                Optional<DefinitionGuard.Reading> last = definitionGuard.last(server.serverId());
+                if (!needFresh && last.isPresent()) {
+                    return last.get();
+                }
+                throw failure;
             }
-            throw failure;
+            Map<String, JsonNode> live = new LinkedHashMap<>();
+            for (JsonNode tool : tools) {
+                String name = tool.path("name").asString(null);
+                if (name != null) {
+                    live.putIfAbsent(name, tool);
+                }
+            }
+            McpServer current = registry.find(server.serverId()).orElse(server);
+            Map<String, Verdict> verdicts = registryService.observe(current, live, upstream.serverVersion(server.serverId()));
+            Optional<DefinitionGuard.Reading> kept = definitionGuard.record(server.serverId(), generation, live,
+                    upstream.serverVersion(server.serverId()), verdicts);
+            if (kept.isPresent()) {
+                verdicts.forEach((name, verdict) -> {
+                    if (verdict != Verdict.INTACT) {
+                        meters.counter("mcp.gateway.definition.mismatch", "server", server.serverId(), "reason", verdict.reason()).increment();
+                        log.warn("{}: the tool {} is blocked ({}): {}", server.serverId(), name, verdict.reason(),
+                                verdict == Verdict.CHANGED ? "the definition differs from the approved one" : "the server does not list it");
+                    }
+                });
+                return kept.get();
+            }
         }
-        Map<String, JsonNode> live = new LinkedHashMap<>();
-        for (JsonNode tool : tools) {
-            String name = tool.path("name").asString(null);
-            if (name != null) {
-                live.putIfAbsent(name, tool);
-            }
-        }
-        Map<String, Verdict> verdicts = registryService.observe(server, live, upstream.serverVersion(server.serverId()));
-        verdicts.forEach((name, verdict) -> {
-            if (verdict != Verdict.INTACT) {
-                meters.counter("mcp.gateway.definition.mismatch", "server", server.serverId(), "reason", verdict.reason()).increment();
-                log.warn("{}: the tool {} is blocked ({}): {}", server.serverId(), name, verdict.reason(),
-                        verdict == Verdict.CHANGED ? "the definition differs from the approved one" : "the server does not list it");
-            }
-        });
-        return definitionGuard.record(server.serverId(), live, upstream.serverVersion(server.serverId()), verdicts);
+        throw new RpcFailure(-32603, "upstream_unavailable: the definitions of the server keep changing.", 502);
     }
 
     /** Why an approved tool of an approved-manifest server may not be used now, from a reading not older than the TTL. */
@@ -351,7 +362,9 @@ public class McpGatewayService {
                         errors.error("tool_disabled", "This tool is not available."));
             }
         } catch (RpcFailure failure) {
-            return finish(ctx, server, tool, null, started, argsLength, "allow", null, null,
+            // The definitions could not be checked: the call is refused before the server, and the decision says so (invariant 10).
+            decisionEvent(ctx, server, tool, "deny", "upstream_unavailable", "upstream_unavailable");
+            return finish(ctx, server, tool, null, started, argsLength, "deny", "upstream_unavailable", null,
                     errors.error("upstream_unavailable", "The MCP server is unavailable. Try again later."));
         }
         decisionEvent(ctx, server, tool, "allow", null, null);
@@ -438,15 +451,17 @@ public class McpGatewayService {
                                        long started, int argsLength) {
         McpServer server = resolved.map(ServerRegistry.Resolved::server).orElse(ctx.target().server());
         ToolDefinition tool = resolved.map(ServerRegistry.Resolved::tool).orElse(null);
-        ObjectNode result = errors.error("rate_limited", "Too many calls. Try again later.",
-                Map.of("retryAfterSeconds", limited.retryAfterSeconds()));
+        String code = limited.unavailable() ? "upstream_unavailable" : "rate_limited";
+        ObjectNode result = limited.unavailable()
+                ? errors.error("upstream_unavailable", "The service is unavailable. Try again later.")
+                : errors.error("rate_limited", "Too many calls. Try again later.", Map.of("retryAfterSeconds", limited.retryAfterSeconds()));
         long latencyNanos = System.nanoTime() - started;
         if (rateLimitAudit.due(ctx.user().sub(), limited.reason())) {
             audit.emit(base(ctx, server, "tool_call", tool).risk(tool == null ? null : tool.risk().name())
                     .decision("deny", limited.reason()).policyRevision(authorizer.policyRevision())
-                    .outcome("denied", "rate_limited").latencyMs(latencyNanos / 1_000_000).argsLength(argsLength));
+                    .outcome(limited.unavailable() ? "error" : "denied", code).latencyMs(latencyNanos / 1_000_000).argsLength(argsLength));
         }
-        count(server, tool, "denied", "rate_limited", latencyNanos);
+        count(server, tool, limited.unavailable() ? "error" : "denied", code, latencyNanos);
         return result;
     }
 

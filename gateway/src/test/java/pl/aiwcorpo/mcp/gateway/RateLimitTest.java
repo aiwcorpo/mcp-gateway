@@ -163,7 +163,7 @@ class RateLimitTest extends GatewayTestBase {
 
     @Test
     void aRefusedRequestDoesNotUseUpTheOtherBudgets() throws Exception {
-        limits(3, BIG, 1, BIG, Map.of());
+        limits(3, BIG, 1, 1, Map.of());
         String token = token(sub(), "claude-code");
 
         assertThat(getIssue(token).path("error").asString("")).isNotEqualTo("rate_limited");
@@ -177,7 +177,7 @@ class RateLimitTest extends GatewayTestBase {
 
     @Test
     void theExcessIsAuditedOncePerIntervalAndTheRestIsCounted(CapturedOutput output) throws Exception {
-        limits(BIG, BIG, 1, BIG, Map.of());
+        limits(BIG, BIG, 1, 1, Map.of());
         String sub = sub();
         String token = token(sub, "claude-code");
         getIssue(token);
@@ -187,6 +187,46 @@ class RateLimitTest extends GatewayTestBase {
 
         assertThat(events(output, sub, "rate_limited_tool")).hasSize(1);
         assertThat(meters().counter("mcp_audit_rate_limited_suppressed_total", "reason", "rate_limited_tool").count()).isGreaterThanOrEqualTo(5);
+    }
+
+    @Test
+    void whenRedisDoesNotAnswerTheRequestIsRefusedNotLetThrough(CapturedOutput output) throws Exception {
+        limits(BIG, BIG, BIG, BIG, Map.of());
+        String sub = sub();
+        String token = token(sub, "claude-code");
+        assertThat(ping(token).statusCode()).isEqualTo(200);
+        var docker = env.redis.getDockerClient();
+        docker.pauseContainerCmd(env.redis.getContainerId()).exec();
+        try {
+            HttpResponse<String> refused = ping(token);
+            assertThat(refused.statusCode()).isEqualTo(503);
+            assertThat(JSON.readTree(refused.body()).path("error").asString()).isEqualTo("upstream_unavailable");
+            assertThat(refused.headers().firstValue("Retry-After")).isPresent();
+            assertThat(refused.headers().firstValue("WWW-Authenticate")).isEmpty();
+            env.jira.clearRequests();
+            JsonNode call = getIssue(token);
+            assertThat(call.path("error").asString()).isEqualTo("upstream_unavailable");
+            assertThat(env.jira.requests()).as("the server is not reached").noneMatch(r -> "tools/call".equals(r.rpcMethod()));
+            assertThat(Contracts.schemaErrors("schemas/tool-error.schema.json", call)).isEmpty();
+        } finally {
+            docker.unpauseContainerCmd(env.redis.getContainerId()).exec();
+        }
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(20)).until(invalidations::live);
+        assertThat(ping(token).statusCode()).as("and it works again").isEqualTo(200);
+        assertThat(meters().counter("mcp.gateway.rate.unavailable").count()).isPositive();
+        assertThat(output.getOut()).contains("the request is refused");
+    }
+
+    @Test
+    void theConfigurationOfTheLimitsIsChecked() {
+        java.time.Duration minute = java.time.Duration.ofMinutes(1);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> new pl.aiwcorpo.mcp.gateway.config.GatewayProperties.RateLimit(true, minute,
+                10, 10, 5, 6, Map.of(), minute)).hasMessageContaining("destructive-per-tool");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> new pl.aiwcorpo.mcp.gateway.config.GatewayProperties.RateLimit(true,
+                java.time.Duration.ZERO, 10, 10, 5, 5, Map.of(), minute)).hasMessageContaining("window");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> new pl.aiwcorpo.mcp.gateway.config.GatewayProperties.RateLimit(true, minute,
+                10, 10, 5, 5, Map.of("jira__get_issue", 0), minute)).hasMessageContaining("jira__get_issue");
+        new pl.aiwcorpo.mcp.gateway.config.GatewayProperties.RateLimit(true, minute, 10, 10, 5, 5, Map.of("jira__get_issue", 3), minute);
     }
 
     @org.springframework.beans.factory.annotation.Autowired

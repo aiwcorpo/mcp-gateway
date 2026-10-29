@@ -171,7 +171,9 @@ Przebieg na żywo: `scripts/m3-demo.sh` (po uruchomieniu skryptów z sekcji niż
   `READ_ONLY` są zatwierdzane (`definition_registered`), `UPDATE` i `DESTRUCTIVE` czekają (`pending_approval`, `source: ci`,
   `definition_submitted`), usunięte znikają (`tool_removed`). `approve` (`mcp-platform-admin`, hash równy `pendingHash`) daje 204,
   409 `hash_mismatch` albo 422 `risk_lowered`; obniżenie ryzyka jest zawsze odrzucane (`risk_lowered`), także po usunięciu i dodaniu
-  narzędzia. Rejestr, lista i diff są tylko dla administratorów (403 dla reszty).
+  narzędzia. Podłoga ryzyka to najwyższe ryzyko, jakie kiedykolwiek zgłoszono dla narzędzia, także we wpisie oczekującym:
+  oczekujące DESTRUCTIVE nie da się zastąpić commitem z UPDATE (422 `risk_lowered`). Rejestr, lista i diff są tylko dla
+  administratorów (403 dla reszty).
   Stan leży w tabelach `registry_servers` (ostatni przyjęty manifest), `registry_tools` (zatwierdzony i oczekujący wpis narzędzia;
   Flyway V5 przenosi manifesty z M3 jako zatwierdzone) i `registry_risk_floor`.
 - **Co widzi klient.** `tools/list` składa się z zatwierdzonych definicji, nie z odpowiedzi serwera; odpowiedź serwera tylko rozstrzyga,
@@ -184,7 +186,9 @@ Przebieg na żywo: `scripts/m3-demo.sh` (po uruchomieniu skryptów z sekcji niż
   (`enabled: false`, narzędzia `tool_disabled`) bez kasowania; po rejestracji przechodzącego manifestu serwer wraca. Bootstrap manifestu
   z serwera istnieje tylko w trybie dev i zatwierdza wszystko (zaufanie przy pierwszym kontakcie).
 - **Typ poświadczenia.** `gateway.servers.<id>.credential.type` (jeden z `accepted-types`; wystarcza, gdy typ jest jeden albo
-  `token-exchange: true`; przy kilku wymagany) trafia do `context.credentialType` każdej decyzji Cedar, przed oceną. Rejestracja
+  `token-exchange: true`; przy kilku wymagany) trafia do `context.credentialType` każdej decyzji Cedar, przed oceną. To typ z
+  konfiguracji systemu, nie typ poświadczenia użytego w wywołaniu: dla Jiry i GitLaba (użytkownik ma PAT albo OAuth) reguła Cedar
+  nie może więc rozróżniać `user-oauth` od `user-secret`; sensowne są reguły o `service-account` i `token-exchange`. Rejestracja
   sprawdza, że manifest przyjmuje ten typ. `403 exchange_denied` z brokera to C10 `access_denied` bez grup, `422 system_not_configured`
   to `internal_error` z przyczyną w logu; oba zostawiają zdarzenie `credential_resolve`. Token wymieniony (`token-exchange`) bez
   `expiresAt` jest odrzucany.
@@ -196,14 +200,23 @@ Przebieg na żywo: `scripts/m3-demo.sh` (po uruchomieniu skryptów z sekcji niż
   dla DESTRUCTIVE i limity poszczególnych narzędzi. Żądanie odrzucone nie zużywa pozostałych liczników. `tools/call` ponad limit to C10
   `rate_limited` z `retryAfterSeconds` >= 1, inne żądania to 429 z `Retry-After`, bez `WWW-Authenticate` i bez `X-RateLimit-*`.
   Audyt `rate_limited_user|client|tool`, najwyżej jedno zdarzenie na użytkownika i powód w odstępie (domyślnie 10 s), reszta w
-  `mcp_audit_rate_limited_suppressed_total{reason}`. Redis, który nie odpowiada, przepuszcza żądanie (licznik
-  `mcp.gateway.rate.unavailable`): limity chronią pojemność systemów, a sprawdzenia chroniące dane (polityka, potwierdzenia) działają
-  niezależnie i zamykają się same.
+  `mcp_audit_rate_limited_suppressed_total{reason}`. Redis, który nie odpowiada, odrzuca żądanie (fail-closed,
+  decyzja z 2026-10-29): `tools/call` dostaje C10 `upstream_unavailable`, inne żądania 503 `upstream_unavailable` z `Retry-After`;
+  WARN i licznik `mcp.gateway.rate.unavailable`. Start odmawia konfiguracji, w której limit DESTRUCTIVE jest wyższy niż zwykły limit
+  narzędzia, okna spoza 1 s .. 1 h i limitu narzędzia mniejszego niż 1.
 - **Tryb dev.** Klucze `dev-` (JWT C2 i paczki polityk) wymagają profilu `devstack` razem z `allow-test-keys`; `environment: dev`
   w manifeście jest odrzucany poza profilem `devstack` (422 `environment_mismatch`). Profil `devstack` i dwie zgody: sekcja niżej.
 - **Paczki polityk.** Gateway ładuje paczki na schemacie 4.0.0 (`schemaVersion` w `manifest.json`; paczka 3.1.x to `schema_mismatch`).
   Ta sama rewizja co załadowana (`latest.json` wrócił) nie jest błędem: ETag jest zapamiętywany, paczka nie jest pobierana w kółko
   i nic nie trafia do logu na ERROR.
+
+### Przejście z M3 na M4 (dla ws-01)
+
+Sesje MCP klientów założone przez gateway M3 nie mają wpisu w indeksie sesji użytkownika, który czyta `purge`. Przy przełączeniu
+na M4 unieważniamy je wszystkie: przed startem obrazu M4 usuń klucze `gw:session:*` w Redisie kontem `admin`
+(`redis-cli --scan --pattern 'gw:session:*' | xargs -r redis-cli DEL`); klienci robią wtedy `initialize` od nowa (404 sesji to ich
+sygnał). Pozostały stan Redisa (`gw:conf:*`, `gw:rl:*`) zostaje. Migracja Flyway V5 przenosi manifesty z M3 do `registry_tools`
+jako zatwierdzone.
 
 ## Profil `devstack`: jedyne miejsce na relaksacje dev
 

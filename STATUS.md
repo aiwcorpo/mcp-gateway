@@ -1,6 +1,6 @@
 # Status ws-05 (mcp-gateway)
 
-Kamień: **M4** (fala z 2026-10-29) na kontraktach `mcp-contracts` **4.0.0**. Pod spodem M3 (od "Kamienie pośrednie M3" niżej),
+Kamień: **M4** (fala z 2026-10-29) na kontraktach `mcp-contracts` **4.0.1**. Pod spodem M3 (od "Kamienie pośrednie M3" niżej),
 M2 i M1; wiersze zastąpione w M4 są oznaczone.
 
 ## Kamienie pośrednie M4
@@ -40,12 +40,13 @@ Wektory 4.0.0 dotyczące gateway'a: `gateway-authentication/` (15, w tym `rate-l
 
 - **Wymagana grupa `mcp-platform-admin`** na liście rejestru, `pending` i `approve` (opis "Forbidden" w kontrakcie); wcześniej lista nie sprawdzała grupy.
 - **Odczyt `tools/list` serwera jest wspólny dla użytkowników** (jeden na serwer w oknie TTL), czytany sesją i tokenem użytkownika, który akurat go odświeża. Zakładam, że serwer nie filtruje listy per użytkownik (starter 3.x nie filtruje); gdyby filtrował, narzędzia byłyby `tool_not_served`.
-- **Podłoga ryzyka rośnie przy zatwierdzeniu**, nie przy zgłoszeniu: nowe narzędzie czekające jako DESTRUCTIVE można jeszcze zastąpić commitem z UPDATE. Ryzyko przyjęte przez człowieka (zmiana nazwy z obniżeniem) nietknięte.
+- **Podłoga ryzyka** (po przeglądzie): najwyższe ryzyko kiedykolwiek zgłoszone dla narzędzia, także we wpisie oczekującym; oczekujące DESTRUCTIVE zastąpione przez UPDATE to 422 `risk_lowered`. Ryzyko przyjęte przez człowieka (zmiana nazwy z obniżeniem) nietknięte.
 - **`credential_type_mismatch` porównuje jeden typ** (`credential.type` systemu) z `acceptedTypes` manifestu. Konfiguracja gateway'a dla Jiry, GitLaba (obie dopuszczają dwa typy) ma jawne `type`: Jira `user-secret`, GitLab `user-oauth`. Dla GitLaba wartość `user-oauth` musi być w manifeście serwera (jest: `user-secret,user-oauth`). `context.credentialType` dla systemów, w których użytkownik wybiera typ, nie mówi więc, który typ naprawdę poszedł do serwera (kontrakt każe podać typ z konfiguracji).
-- **Redis nie odpowiada -> limity przepuszczają** (licznik, WARN); decyzja do potwierdzenia przez człowieka.
+- **Redis nie odpowiada -> limity odmawiają** (decyzja z 2026-10-29): C10 `upstream_unavailable` albo 503, WARN, licznik.
 - **`exchange_denied` w aktywności** to wynik `denied_not_granted` (propozycja CC niżej).
 - **Zmienne usunięte:** `MCP_ADMIN_REGISTRY_CLIENT_CNS` (CN potoku wynika z `serverId`). Nowe: `MCP_ADMIN_OFFBOARDING_CLIENT_CNS`, `MCP_REGISTRY_DEFINITION_CHECK_TTL`, `MCP_RATE_LIMIT_*`, `MCP_ACTIVITY_RETENTION`.
 - **Migracja z M3:** Flyway V5 tworzy `registry_tools` i wypełnia ją z zapisanych manifestów (wszystko zatwierdzone w wersji manifestu).
+- **Przegląd Opus M4 (0 HIGH, 2 MEDIUM, 9 LOW), poprawki w kolejnym commicie:** M1 fail-closed; podłoga ryzyka od zgłoszenia; L1 numer generacji w `DefinitionGuard` (odczyt w locie podczas `approve`/`PUT` jest odrzucany i powtarzany, po 3 próbach `upstream_unavailable`); L2 `policy_decision` `deny`/`upstream_unavailable` przy nieudanym odczycie; L3 sesja i jej wpis w indeksie zapisywane jednym skryptem, sesje sprzed M4 unieważniane przy wdrożeniu (README, "Przejście z M3 na M4"); L5 wersja spoza SemVer to `0.0.0-invalid` (nie wersja zatwierdzona) i WARN; L6 walidacja konfiguracji limitów przy starcie; L7 ETag nie jest zapamiętywany po `bad_signature` (poprawiona paczka pod tym samym wskaźnikiem zostanie pobrana), ERROR raz na rewizję i powód, potem DEBUG; L9 usunięte 4-argumentowe `evaluate`. **L4** (wiele instancji): `purge` czyści cache poświadczeń i sesje do serwerów tylko instancji, która go dostała; pozostałe czekają na `credential.invalidated` z brokera albo TTL <= 60 s, a offboarding woła broker i gateway w dowolnej kolejności, więc okno wynosi do 60 s. **L8** (`credential_type_mismatch` porównuje jeden typ): decyzja człowieka, typ z konfiguracji. **M2**: wyniki aktywności `rate_limited_*`, `definition_changed`, `tool_not_served`, `exchange_denied` mapuję na `denied` (`rate_limited`, `tool_disabled`, `denied_not_granted`); po kontrakcie 4.1.0 przejść na jego wektory. Kontrakty 4.0.1.
 - **Niezrobione:** przeładowanie konfiguracji limitów bez restartu (klasa czyta ustawienia z dostawcy, ale nic go nie odświeża), `WAIT` przy stanie potwierdzeń w HA, test obciążeniowy, `curl` w obrazie.
 
 ## Czego potrzebuję od innych strumieni (M4)

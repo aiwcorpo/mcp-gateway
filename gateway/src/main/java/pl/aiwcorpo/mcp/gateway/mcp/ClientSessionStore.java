@@ -20,6 +20,13 @@ import tools.jackson.databind.json.JsonMapper;
 public class ClientSessionStore {
 
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final org.springframework.data.redis.core.script.DefaultRedisScript<Long> CREATE =
+            new org.springframework.data.redis.core.script.DefaultRedisScript<>("""
+            redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[3])
+            redis.call('SADD', KEYS[2], ARGV[2])
+            redis.call('PEXPIRE', KEYS[2], ARGV[4])
+            return 1
+            """, Long.class);
 
     private final StringRedisTemplate redis;
     private final JsonMapper json;
@@ -39,10 +46,10 @@ public class ClientSessionStore {
         String id = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
         String value = json.writeValueAsString(Map.of("sub", sub, "client", client == null ? "" : client,
                 "protocolVersion", protocolVersion));
-        redis.opsForValue().set(prefix + id, value, idleTimeout);
-        // The index lets an offboarding find the sessions of a user; the gateway's Redis account has no SCAN.
-        redis.opsForSet().add(indexKey(sub), id);
-        redis.expire(indexKey(sub), idleTimeout.plusMinutes(1));
+        // The index lets an offboarding find the sessions of a user (the gateway's Redis account has no SCAN); one script writes
+        // both, so a purge cannot fall between the session and its index entry.
+        redis.execute(CREATE, java.util.List.of(prefix + id, indexKey(sub)), value, id, Long.toString(idleTimeout.toMillis()),
+                Long.toString(idleTimeout.plusMinutes(1).toMillis()));
         return new ClientSession(id, sub, client, protocolVersion);
     }
 

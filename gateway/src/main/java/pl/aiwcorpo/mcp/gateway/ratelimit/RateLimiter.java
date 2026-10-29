@@ -18,9 +18,8 @@ import pl.aiwcorpo.mcp.gateway.server.Risk;
  * Request limits per user, per (user, AI client) and per (user, tool) (CC-135, CC-156), counted in Redis so that every instance of
  * the gateway shares them. A counter is a fixed window that starts with the first request and lives {@code window}; the request
  * that finds one at its limit is refused and counts nowhere, so a refused tool call does not use up the budget of the user. A
- * tool of risk DESTRUCTIVE has its own, lower limit; a limit can be set for any single tool. Redis that does not answer lets the
- * request through and is counted (the limits protect the capacity of the systems; the checks that protect their data do not
- * depend on them and fail closed on their own).
+ * tool of risk DESTRUCTIVE has its own, lower limit; a limit can be set for any single tool. Redis that does not answer refuses the
+ * request as upstream_unavailable (fail-closed, decision of 2026-10-29), with a WARN and a counter.
  */
 public final class RateLimiter {
 
@@ -41,12 +40,24 @@ public final class RateLimiter {
         }
     }
 
-    /** A refusal: which limit, and when to come back (whole seconds, at least 1). */
+    /**
+     * A refusal: which limit, and when to come back (whole seconds, at least 1). A null {@code dimension} means the counters could not
+     * be reached: the request is refused as upstream_unavailable (fail-closed), not as a limit.
+     */
     public record Limited(Dimension dimension, int retryAfterSeconds) {
+        public static final String UNAVAILABLE_REASON = "upstream_unavailable";
+
+        public boolean unavailable() {
+            return dimension == null;
+        }
+
         public String reason() {
-            return dimension.reason();
+            return dimension == null ? UNAVAILABLE_REASON : dimension.reason();
         }
     }
+
+    /** Seconds a client is told to wait when Redis does not answer. */
+    private static final int UNAVAILABLE_RETRY_SECONDS = 5;
 
     private static final DefaultRedisScript<List> CHECK_AND_COUNT = new DefaultRedisScript<>("""
             for i = 1, #KEYS do
@@ -111,8 +122,8 @@ public final class RateLimiter {
             return Optional.of(new Limited(dimension, (int) Math.max(1, Math.ceil(ttlMillis / 1000.0))));
         } catch (RuntimeException e) {
             meters.counter("mcp.gateway.rate.unavailable").increment();
-            log.warn("rate limits not checked, Redis did not answer: {}", e.getClass().getName());
-            return Optional.empty();
+            log.warn("rate limits not checked, Redis did not answer; the request is refused: {}", e.getClass().getName());
+            return Optional.of(new Limited(null, UNAVAILABLE_RETRY_SECONDS));
         }
     }
 

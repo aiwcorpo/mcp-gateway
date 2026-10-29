@@ -550,6 +550,9 @@ class GatewayIntegrationTest extends GatewayTestBase {
         String token = env.idp.token("4ed15000-0000-4000-8000-000000000014", "ivy", List.of("mcp-jira-read"));
         callGetIssue(token);
         assertThat(credentialCache.size()).isEqualTo(1);
+        // The limits fail closed without Redis (RateLimitTest); this test is about the cache, so the limits are off here.
+        pl.aiwcorpo.mcp.gateway.support.RateLimitTestConfiguration.use(new pl.aiwcorpo.mcp.gateway.config.GatewayProperties.RateLimit(false,
+                Duration.ofMinutes(1), 1, 1, 1, 1, java.util.Map.of(), Duration.ofSeconds(10)));
         var docker = env.redis.getDockerClient();
         docker.pauseContainerCmd(env.redis.getContainerId()).exec();
         try {
@@ -560,6 +563,7 @@ class GatewayIntegrationTest extends GatewayTestBase {
             assertThat(resolveCount()).as("cache bypassed while Redis is unreachable").isEqualTo(3);
         } finally {
             docker.unpauseContainerCmd(env.redis.getContainerId()).exec();
+            pl.aiwcorpo.mcp.gateway.support.RateLimitTestConfiguration.restore();
         }
         await().atMost(Duration.ofSeconds(20)).until(invalidations::live);
         env.broker.clear();

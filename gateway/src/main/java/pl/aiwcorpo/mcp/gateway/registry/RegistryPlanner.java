@@ -25,7 +25,7 @@ public final class RegistryPlanner {
      * @param tools the registry after the registration
      * @param changes what to audit, in manifest order, removals last
      * @param lowered tools whose risk is below what was approved or configured; when not empty nothing may be written
-     * @param risks risk ordinal of every tool approved by this registration, for the floors
+     * @param risks risk ordinal of every tool this registration approved or submitted, for the floors: the highest risk ever reported for a tool
      */
     public record Plan(Map<String, RegisteredTool> tools, List<Change> changes, List<String> lowered, Map<String, Integer> risks) {
     }
@@ -68,11 +68,13 @@ public final class RegistryPlanner {
             RegisteredTool.Pending kept = current == null ? null : current.pending();
             if (kept != null && kept.hash().equals(hash) && "ci".equals(kept.source())) {
                 next.put(name, new RegisteredTool(name, approved, kept));
+                risks.put(name, risk);
                 continue;
             }
             next.put(name, new RegisteredTool(name, approved, new RegisteredTool.Pending(entry, hash, version,
                     approved == null ? "new" : "changed", "ci", credentialJson)));
             changes.add(new Change("definition_submitted", name, hash));
+            risks.put(name, risk);
         }
         existing.forEach((name, current) -> {
             if (!next.containsKey(name) && !lowered.contains(name)) {

@@ -31,6 +31,7 @@ public final class DefinitionGuard {
     }
 
     private final Map<String, Reading> readings = new ConcurrentHashMap<>();
+    private final Map<String, java.util.concurrent.atomic.AtomicLong> generations = new ConcurrentHashMap<>();
     private final Clock clock;
     private final Duration ttl;
 
@@ -42,10 +43,27 @@ public final class DefinitionGuard {
         this.ttl = ttl;
     }
 
-    public Reading record(String serverId, Map<String, JsonNode> definitions, String serverVersion, Map<String, Verdict> verdicts) {
+    /** The state of the approvals the next reading will be judged against; a reading started under an older one is stale. */
+    public long generation(String serverId) {
+        return generations.computeIfAbsent(serverId, k -> new java.util.concurrent.atomic.AtomicLong()).get();
+    }
+
+    /**
+     * Keeps a reading unless the approvals changed since {@code generation} was taken (a read in flight while an approval or a
+     * registration happened was judged against the old state); empty then, and the caller reads again.
+     */
+    public Optional<Reading> record(String serverId, long generation, Map<String, JsonNode> definitions, String serverVersion,
+                                    Map<String, Verdict> verdicts) {
         Reading reading = new Reading(clock.instant(), Map.copyOf(definitions), serverVersion, Map.copyOf(verdicts));
-        readings.put(serverId, reading);
-        return reading;
+        boolean[] kept = {false};
+        generations.computeIfAbsent(serverId, k -> new java.util.concurrent.atomic.AtomicLong());
+        synchronized (generations.get(serverId)) {
+            if (generations.get(serverId).get() == generation) {
+                readings.put(serverId, reading);
+                kept[0] = true;
+            }
+        }
+        return kept[0] ? Optional.of(reading) : Optional.empty();
     }
 
     /** The reading of a server if it is younger than the TTL; empty when there is none (the caller reads). */
@@ -69,6 +87,10 @@ public final class DefinitionGuard {
     }
 
     public void forget(String serverId) {
-        readings.remove(serverId);
+        generations.computeIfAbsent(serverId, k -> new java.util.concurrent.atomic.AtomicLong());
+        synchronized (generations.get(serverId)) {
+            generations.get(serverId).incrementAndGet();
+            readings.remove(serverId);
+        }
     }
 }
