@@ -1,7 +1,67 @@
 # Status ws-05 (mcp-gateway)
 
-Kamień: **M3** (fala z 2026-10-28) na kontraktach `mcp-contracts` **3.1.0** (K1 na 3.0.1, K2-K3 na 3.0.2). Poniżej stan M3;
-od sekcji "Kamień: M2" stan z M2, który M3 rozwija (wiersze zastąpione w M3 są oznaczone). M4 nie jest zaczęte.
+Kamień: **M4** (fala z 2026-10-29) na kontraktach `mcp-contracts` **4.0.0**. Pod spodem M3 (od "Kamienie pośrednie M3" niżej),
+M2 i M1; wiersze zastąpione w M4 są oznaczone.
+
+## Kamienie pośrednie M4
+
+| Kamień | Zakres | Commit | Obraz |
+| --- | --- | --- | --- |
+| K1 | kontrakty 4.0.0; rejestr z przypinaniem definicji (CC-097, CC-133, CC-161, CC-162): certyfikat potoku `mcp-registry-ci-<serverId>`, `RegistryPlanner` (READ_ONLY zatwierdza commit, UPDATE/DESTRUCTIVE czeka), `approve` z 409/422, `tools/list` z zatwierdzonych definicji, TTL <= 60 s, `definition_changed`/`tool_not_served`, wpisy `source: server`, `upstream_unavailable` bez wołania serwera, start z nieprzechodzącym manifestem = serwer `enabled: false`; `environment_mismatch`, `credential_type_mismatch`; `context.credentialType`; klucze `dev-` tylko w trybie dev; stały tekst `not_found_or_denied`; paczki polityk na schemacie 4.0.0; poprawka z koordynatora (paczka "nie nowsza" nie jest błędem ERROR, ETag zapamiętany) | `a72782e` | - |
+| K2 | `POST /admin/v1/users/{sub}/purge` (CN `mcp-offboarding`), retencja aktywności z konfiguracji, limity w Redisie (użytkownik, klient, narzędzie, DESTRUCTIVE osobno), C10 `rate_limited` i 429, audyt z agregacją | `8b953aa` | - |
+| K3 | `403 exchange_denied` -> `access_denied`, `422 system_not_configured` -> `internal_error` z odrębną przyczyną, token-exchange bez `expiresAt` odrzucany, testy poświadczeń i `context.credentialType`, README i STATUS, obraz | patrz niżej | patrz niżej |
+
+## M4: zakres z zadania
+
+| Punkt | Stan |
+| --- | --- |
+| 1. Rejestr i przypinanie | `PUT` tylko z CN równym `mcp-registry-ci-<serverId>` ze ścieżki (`AdminClientCertificateFilter.Rule` rozwiązuje `{serverId}` w nazwie; inny CN 403 + `authentication`/`client_certificate_rejected`). `RegistryPlanner` (czysta funkcja, 9 testów) decyduje: READ_ONLY nowe/zmienione -> zatwierdzone (`definition_registered`), UPDATE/DESTRUCTIVE -> `pending_approval` (`ci`, `new`/`changed`, `pendingVersion` = wersja manifestu; `definition_submitted`), usunięte -> `tool_removed`, niższe ryzyko niż najwyższe zatwierdzone, wymagane w konfiguracji lub zatwierdzone wcześniej (podłoga) -> 422 `risk_lowered` bez zapisu, także po usunięciu i dodaniu. `approve`: 404, 409 `hash_mismatch`, 422 `risk_lowered`, audyt `definition_approved` z `sub` administratora i `definitionHash`. `definitionHash` liczony z ryzyka, akcji i `resourceRefs` zatwierdzonego wpisu oraz z `credential` manifestu, z którym wpis zatwierdzono (kolumna per narzędzie). `tools/list` klienta z zatwierdzonych definicji; odczyt serwera cache'owany per serwer do TTL (`definition-check-ttl`, start odmawia > 60 s); werdykt per narzędzie INTACT/CHANGED/NOT_SERVED; CHANGED zapisuje wpis `source: server` (wersja z `serverInfo.version`, a gdy to nie SemVer, wersja zatwierdzona), którego nie zastępuje wpis `ci`; wpis `server` znika, gdy serwer wraca do zatwierdzonej definicji i przy `PUT`. Odczyt nieudany: lista bierze ostatni odczyt (brak odczytu = błąd jak w M3), wywołanie `upstream_unavailable` bez wołania serwera. Start: `load()` sprawdza trzymany manifest tymi samymi regułami, porażka = `enabled: false` bez kasowania; `reloadChanged` co kilka sekund adoptuje stan innej instancji. Bootstrap tylko gdy `MCP_REGISTRY_BOOTSTRAP` (strażnik: tylko `devstack`), zatwierdza całość, insert-only |
+| 2. Offboarding | `UserPurge`: linki (`DELETE ... RETURNING slug`), stan potwierdzeń i znacznik epoki spalenia w Redisie, sesje MCP przez indeks `gw:session:of:<sha256(sub)>` (konto Redis nie ma `SCAN`), cache poświadczeń i sesje do serwerów tej instancji. 204 zawsze (400 tylko dla `sub` dłuższego niż 255), 503 przy awarii bazy lub Redisu; jedno zdarzenie `admin_change`/`user_purged` zawsze, `virtual_server_change` na link. Retencja tabeli aktywności: `gateway.activity.retention` (domyślnie 30 d). Inne instancje czyszczą swój cache poświadczeń zdarzeniem `credential.invalidated` brokera albo po TTL <= 60 s |
+| 3. Limity | `RateLimiter`: jeden skrypt EVAL sprawdza i zlicza atomowo (okno stałe od pierwszego żądania, klucze `gw:rl:{u,c,t}:<sha256>`); odrzucone nie zużywa pozostałych liczników; DESTRUCTIVE i pojedyncze narzędzia osobno; `tools/call` -> C10 `rate_limited`, reszta -> 429 (`RateLimitResponse`, wektory `gateway-authentication/rate-limited*` przechodzą). `RateLimitAuditThrottle`: jedno zdarzenie na (sub, powód) w odstępie. `ActivityCall.result` `rate_limited`, w grupie `denied` |
+| 4. Poświadczenia | `credential.type` z konfiguracji -> `context.credentialType` w `CedarToolAuthorizer` zawsze, przed oceną; niejednoznaczna konfiguracja zatrzymuje start. `exchange_denied`, `system_not_configured`, `expiresAt` tokenu wymienionego. `credential_type_mismatch`: typ gateway'a musi być w `acceptedTypes` manifestu (nie wszystkie typy z konfiguracji: manifest Jiry przyjmuje tylko `user-secret`, a konfiguracja pozwala też na OAuth) |
+| 5. Tryb dev | `SigningKeys` i `BundleVerifier.withDevstackProfile`: `dev-` tylko z profilem i `allow-test-keys`; test-server i jego `InternalJwtVerifier` znają `devstackProfile`; `environment: dev` odrzucany poza `devstack`; nowe powody C8 w kodzie (`definition_changed`, `tool_not_served`, `rate_limited_*`, `exchange_denied`, `system_not_configured`, `user_purged`) |
+
+## Testy (stan po K3)
+
+```
+./mvnw -B install
+test-server: 106 testów
+gateway:     507 testów, 0 błędów (z 445 w M3 na 3.1.0)
+  nowe/zmienione w M4: RegistryPlannerTest 9, RegistryServiceTest 15 (PostgreSQL), RegistryStoreTest 5, RegistryTest 13 (HTTP, mTLS),
+  ManifestAcceptanceTest 6, OffboardingTest 4, RateLimitTest 7, CredentialOutcomesTest 3, CredentialTypeContextTest 2,
+  GatewayAuthenticationVectorsTest 15 (z 429), PolicyServiceTest +2 (`dev-`, paczka nie nowsza), ServerRegistryTest +1
+```
+
+Wektory 4.0.0 dotyczące gateway'a: `gateway-authentication/` (15, w tym `rate-limited*`), `manifests/` (55), `policy-decisions/` gateway (28, z
+`credentialType` ze skonfigurowanego typu), `jwt/` (60, w tym `dev-`), `audit-events/` (schema), `activity-calls/` (52, w tym `rate_limited`),
+`tool-errors/` (stały tekst `not_found_or_denied`), `bundles/` (przez bibliotekę).
+
+## Decyzje i odstępstwa M4
+
+- **Wymagana grupa `mcp-platform-admin`** na liście rejestru, `pending` i `approve` (opis "Forbidden" w kontrakcie); wcześniej lista nie sprawdzała grupy.
+- **Odczyt `tools/list` serwera jest wspólny dla użytkowników** (jeden na serwer w oknie TTL), czytany sesją i tokenem użytkownika, który akurat go odświeża. Zakładam, że serwer nie filtruje listy per użytkownik (starter 3.x nie filtruje); gdyby filtrował, narzędzia byłyby `tool_not_served`.
+- **Podłoga ryzyka rośnie przy zatwierdzeniu**, nie przy zgłoszeniu: nowe narzędzie czekające jako DESTRUCTIVE można jeszcze zastąpić commitem z UPDATE. Ryzyko przyjęte przez człowieka (zmiana nazwy z obniżeniem) nietknięte.
+- **`credential_type_mismatch` porównuje jeden typ** (`credential.type` systemu) z `acceptedTypes` manifestu. Konfiguracja gateway'a dla Jiry, GitLaba (obie dopuszczają dwa typy) ma jawne `type`: Jira `user-secret`, GitLab `user-oauth`. Dla GitLaba wartość `user-oauth` musi być w manifeście serwera (jest: `user-secret,user-oauth`). `context.credentialType` dla systemów, w których użytkownik wybiera typ, nie mówi więc, który typ naprawdę poszedł do serwera (kontrakt każe podać typ z konfiguracji).
+- **Redis nie odpowiada -> limity przepuszczają** (licznik, WARN); decyzja do potwierdzenia przez człowieka.
+- **`exchange_denied` w aktywności** to wynik `denied_not_granted` (propozycja CC niżej).
+- **Zmienne usunięte:** `MCP_ADMIN_REGISTRY_CLIENT_CNS` (CN potoku wynika z `serverId`). Nowe: `MCP_ADMIN_OFFBOARDING_CLIENT_CNS`, `MCP_REGISTRY_DEFINITION_CHECK_TTL`, `MCP_RATE_LIMIT_*`, `MCP_ACTIVITY_RETENTION`.
+- **Migracja z M3:** Flyway V5 tworzy `registry_tools` i wypełnia ją z zapisanych manifestów (wszystko zatwierdzone w wersji manifestu).
+- **Niezrobione:** przeładowanie konfiguracji limitów bez restartu (klasa czyta ustawienia z dostawcy, ale nic go nie odświeża), `WAIT` przy stanie potwierdzeń w HA, test obciążeniowy, `curl` w obrazie.
+
+## Czego potrzebuję od innych strumieni (M4)
+
+- **ws-01:** certyfikaty klienta mTLS z CA wewnętrznego (EKU clientAuth, CN i SAN = CN): `mcp-registry-ci-mcp-jira`, `-mcp-confluence`, `-mcp-gitlab`, `-mcp-servicedesk`, `-mcp-opensearch` (po jednym na potok serwera; dawny `mcp-registry-ci` daje 403) i `mcp-offboarding`; wywołanie `purge` gateway'a w procesie offboardingu (powtórzone po wylogowaniu); usunięcie `MCP_ADMIN_REGISTRY_CLIENT_CNS`; w trybie dev klucze C2 z `kid` `dev-` w `MCP_INTERNAL_JWT_KEYS_FILE` (wymaga profilu `devstack`, obu zgód i `MCP_INTERNAL_JWT_ALLOW_TEST_KEYS=true`), klucze paczek `dev-` z `MCP_POLICY_ALLOW_TEST_KEYS=true`; bootstrap tylko w dev (`MCP_REGISTRY_BOOTSTRAP`), produkcja rejestruje przez potok. Serwery `devstack` powinny wysyłać `environment: dev`. Wolumen `/app/state` i Redis jak w M3 (Redis: gateway używa dodatkowo `SADD`, `SMEMBERS`, `EVAL`, `PEXPIRE`, `INCR`, które ACL z `redis/gateway.rules` już ma).
+- **ws-04 (OpenSearch):** manifest z `acceptedTypes` zawierającym `token-exchange` zarejestrowany przed startem tego gateway'a, inaczej serwer jest po starcie `enabled: false`; Jira i Confluence mają `user-secret`, Service Desk `service-account`.
+- **ws-09:** paczki na schemacie 4.0.0 z `credential-type.cedar`; gateway nie wymaga niczego więcej.
+- **ws-07/ws-08:** lista rejestru, `pending` i `approve` wymagają grupy `mcp-platform-admin` w tokenie `aud=mcp-gateway-admin`.
+
+## Propozycje CC (M4, do ws-00)
+
+16. **`ActivityCall.result` dla `exchange_denied`:** referencja nie mówi; w gateway'u to `denied_not_granted` (grupa `denied`). Dopisać do `activity-calls.mjs` i wektorów albo wskazać inną wartość.
+17. **Redis niedostępny a limity:** README ("Limity zapytań") nie mówi, czy żądanie przechodzi, czy jest odrzucane; gateway przepuszcza. Zapisać decyzję.
+18. **Odczyt `tools/list` serwera jest globalny (TTL) czy per użytkownik:** README ("Rejestr...") mówi "odczyt odświeżany co TTL"; dopisać, że tools/list serwera nie zależy od użytkownika.
+19. **Typ poświadczenia w kontekście Cedar dla systemów z dwoma typami (Jira, GitLab):** README mówi "z konfiguracji systemu"; dopisać, że to jeden typ na system, a nie typ użyty w wywołaniu.
+
 
 ## Kamienie pośrednie M3
 

@@ -63,6 +63,24 @@ class PolicyServiceTest {
     }
 
     @Test
+    void aKeyNamedDevNeedsTheDevstackProfileAndTheTestKeySettingTogether() {
+        server.publishMain(TestBundles.main(TestBundles.revision(5), Map.of()));
+        GatewayProperties.Policy withDevKey = new GatewayProperties.Policy(URI.create(server.mainUrl()), null, "dev-policy-bundle",
+                dir.resolve("main.pem").toString(), null, null, true, dir.resolve("dev-state").toString(), null, null,
+                Duration.ofMinutes(1), Duration.ofMinutes(1), Duration.ofSeconds(2), Duration.ofSeconds(1));
+        PolicyService production = new PolicyService(withDevKey, new BundleFetcher(), meters, false);
+        assertThatThrownBy(production::start).isInstanceOf(IllegalStateException.class);
+        assertThat(meters.find("gateway_policy_bundle_rejected_total").tag("reason", "test_key_not_allowed").counter()).isNotNull();
+
+        PolicyService dev = new PolicyService(withDevKey, new BundleFetcher(), meters, true).start();
+        try {
+            assertThat(dev.revision()).isEqualTo(TestBundles.revision(5));
+        } finally {
+            dev.destroy();
+        }
+    }
+
+    @Test
     void withoutTheDevstackProfileAStateDirectoryIsRequired() {
         assertThatThrownBy(() -> new PolicyService(new GatewayProperties.Policy(URI.create(server.mainUrl()), null, "policies-main",
                 dir.resolve("main.pem").toString(), null, null, false, null, null, null, Duration.ofMinutes(1), Duration.ofMinutes(1),

@@ -5,9 +5,10 @@ tokenem z IdP (C1), pobiera z brokera poświadczenie użytkownika do systemu (C4
 i przekazuje wywołanie do serwera MCP po mTLS z nagłówkami C3. Każde wywołanie narzędzia zostawia zdarzenia
 audytu C8 z jednym `requestId`.
 
-Stan: kamień M3 (potwierdzenia TOTP akcji DESTRUCTIVE, Cedar z podpisanych paczek, `/activity/calls`, definicje z
-manifestu, 503 przy niedostępnym JWKS) na M2 (wirtualne serwery, API C5 dla BFF, jedna domena) i M1 (OAuth RS, broker,
-C2/C3, audyt). Co działa, czego nie ma i odstępstwa: [STATUS.md](STATUS.md). Kontrakty: `mcp-contracts` 3.1.0.
+Stan: kamień M4 (przypinanie definicji w rejestrze, offboarding, limity zapytań, typ poświadczenia w Cedar, tryb dev tylko ze
+stosem dev) na M3 (potwierdzenia TOTP akcji DESTRUCTIVE, Cedar z podpisanych paczek, `/activity/calls`), M2 (wirtualne serwery,
+API C5 dla BFF, jedna domena) i M1 (OAuth RS, broker, C2/C3, audyt). Co działa, czego nie ma i odstępstwa: [STATUS.md](STATUS.md).
+Kontrakty: `mcp-contracts` 4.0.0.
 
 ## Moduły
 
@@ -130,14 +131,10 @@ actuatora.
   nie startuje; po restarcie z aktywnymi `overrides` czeka na nie `MCP_POLICY_*` do końca okresu karencji. Do Cedar idą
   grupy z tokenu, zasoby z `resourceRefs` (kontekst `refs`) i link (`virtualServer`, `vsScopes`); `prv` w JWT to rewizja
   paczki głównej.
-- **Rejestr.** Tryb `required` (domyślny, `MCP_REGISTRY_MODE`): serwer ma tylko narzędzia z zatwierdzonego manifestu C6.
-  Zatwierdza `PUT /admin/v1/registry/servers/{serverId}` samym certyfikatem klienta CI (CN `mcp-registry-ci`, bez tokenu
-  użytkownika, jak w C5; inny CN to 403). Tylko w dev (`MCP_REGISTRY_BOOTSTRAP=true`) serwer bez żadnego wiersza dostaje
-  jednorazowo manifest, który sam serwuje pod `/mcp-manifest`: to zaufanie przy pierwszym kontakcie, serwer sam deklaruje
-  ryzyko swoich nowych narzędzi, więc w produkcji bootstrap jest wyłączony. Definicja z `tools/list` musi dawać zatwierdzony `definitionHash`,
-  inaczej narzędzie znika z listy i wywołanie to `tool_disabled`. Obniżenie ryzyka (także po usunięciu i dodaniu narzędzia)
-  jest odrzucane, a narzędzie zatwierdzone poniżej minimum z konfiguracji lub najwyższego wcześniej zatwierdzonego ryzyka
-  nie jest serwowane (także po restarcie). Instancje przeładowują zatwierdzenia z tabeli co kilka sekund. Przypinanie i diff (CC-097) to M4.
+- **Rejestr.** Tryb `required` (domyślny, `MCP_REGISTRY_MODE`): serwer ma tylko narzędzia z zatwierdzonego manifestu C6; zasady
+  zatwierdzania, przypinania definicji i certyfikatu potoku: sekcja "Co dochodzi w M4". Obniżone ryzyko, także po usunięciu i
+  dodaniu narzędzia, jest odrzucane, a narzędzie zatwierdzone poniżej minimum z konfiguracji lub najwyższego wcześniej
+  zatwierdzonego ryzyka nie jest serwowane (także po restarcie). Instancje przeładowują stan z tabel co kilka sekund.
 - **Aktywność.** `GET /admin/v1/activity/calls`: jeden wiersz na wywołanie (zdarzenia z PostgreSQL, agregacja według
   wektorów `activity-calls/`), kursor `X-Next-Cursor` z HMAC związanym z `sub`; `GET /admin/v1/activity` to ostatnie zdarzenia.
 - **Uwierzytelnianie.** Niedostępny JWKS IdP (także nieznany `kid`) to 503 `upstream_unavailable` z `Retry-After`; odrzucone
@@ -165,6 +162,48 @@ linków nie otwiera wywołań narzędzi jego tokenem.
 
 Przebieg na żywo: `scripts/m3-demo.sh` (po uruchomieniu skryptów z sekcji niżej; atrapa brokera z
 `MCP_TEST_BROKER_TOTP=<sub>=<ziarno>`, kody z `mcpdev.py otp alice`).
+
+## Co dochodzi w M4
+
+- **Rejestr i przypinanie definicji (CC-097, CC-133, CC-161, CC-162).** `PUT /admin/v1/registry/servers/{serverId}` przyjmuje tylko
+  certyfikat `mcp-registry-ci-<serverId>` równy `serverId` ze ścieżki (cały CN, wielkość liter; inny CN, także dawny `mcp-registry-ci`,
+  to 403 i zdarzenie `client_certificate_rejected`). Ciało to manifest z przeglądanego commitu: nowe i zmienione narzędzia
+  `READ_ONLY` są zatwierdzane (`definition_registered`), `UPDATE` i `DESTRUCTIVE` czekają (`pending_approval`, `source: ci`,
+  `definition_submitted`), usunięte znikają (`tool_removed`). `approve` (`mcp-platform-admin`, hash równy `pendingHash`) daje 204,
+  409 `hash_mismatch` albo 422 `risk_lowered`; obniżenie ryzyka jest zawsze odrzucane (`risk_lowered`), także po usunięciu i dodaniu
+  narzędzia. Rejestr, lista i diff są tylko dla administratorów (403 dla reszty).
+  Stan leży w tabelach `registry_servers` (ostatni przyjęty manifest), `registry_tools` (zatwierdzony i oczekujący wpis narzędzia;
+  Flyway V5 przenosi manifesty z M3 jako zatwierdzone) i `registry_risk_floor`.
+- **Co widzi klient.** `tools/list` składa się z zatwierdzonych definicji, nie z odpowiedzi serwera; odpowiedź serwera tylko rozstrzyga,
+  czy narzędzie wolno pokazać. Odczyt `tools/list` serwera jest ważny do TTL (domyślnie 30 s, najwyżej 60 s) i jest wspólny dla
+  użytkowników; porównanie z zatwierdzonym hashem dzieje się przy każdym `tools/list` i przed każdym `tools/call`. Inna definicja
+  (`definition_changed`) albo brak narzędzia na serwerze (`tool_not_served`) ukrywa je, a wywołanie to `tool_disabled`. Inna definicja
+  z serwera zostawia wpis `source: server` (nie zastępuje wpisu `ci`; znika, gdy serwer wraca do zatwierdzonej). Odczyt, który się nie
+  udał, niczego nie dowodzi: lista bierze ostatni odczyt, wywołanie dostaje `upstream_unavailable` i nie dociera do serwera.
+- **Start.** Zapisany manifest, który nie przechodzi sprawdzeń (`credential_type_mismatch`, `environment_mismatch`), wyłącza serwer
+  (`enabled: false`, narzędzia `tool_disabled`) bez kasowania; po rejestracji przechodzącego manifestu serwer wraca. Bootstrap manifestu
+  z serwera istnieje tylko w trybie dev i zatwierdza wszystko (zaufanie przy pierwszym kontakcie).
+- **Typ poświadczenia.** `gateway.servers.<id>.credential.type` (jeden z `accepted-types`; wystarcza, gdy typ jest jeden albo
+  `token-exchange: true`; przy kilku wymagany) trafia do `context.credentialType` każdej decyzji Cedar, przed oceną. Rejestracja
+  sprawdza, że manifest przyjmuje ten typ. `403 exchange_denied` z brokera to C10 `access_denied` bez grup, `422 system_not_configured`
+  to `internal_error` z przyczyną w logu; oba zostawiają zdarzenie `credential_resolve`. Token wymieniony (`token-exchange`) bez
+  `expiresAt` jest odrzucany.
+- **Offboarding.** `POST /admin/v1/users/{sub}/purge` (certyfikat `mcp-offboarding`, bez tokenu) usuwa linki, oczekujące potwierdzenia
+  i ślady, sesje MCP w Redisie (indeks `gw:session:of:<sha256(sub)>`, bo konto Redis gateway'a nie ma `SCAN`) i cache poświadczeń
+  instancji; zwraca 204 także dla nieznanego `sub`; zdarzenie `admin_change`/`user_purged` jest zawsze jedno, plus
+  `virtual_server_change` na link. Aktywność zostaje do końca retencji. Awaria bazy albo Redisu to 503 (powtórz wywołanie).
+- **Limity.** Liczniki w Redisie (okno od pierwszego żądania): użytkownik, (użytkownik, klient), (użytkownik, narzędzie), niższy limit
+  dla DESTRUCTIVE i limity poszczególnych narzędzi. Żądanie odrzucone nie zużywa pozostałych liczników. `tools/call` ponad limit to C10
+  `rate_limited` z `retryAfterSeconds` >= 1, inne żądania to 429 z `Retry-After`, bez `WWW-Authenticate` i bez `X-RateLimit-*`.
+  Audyt `rate_limited_user|client|tool`, najwyżej jedno zdarzenie na użytkownika i powód w odstępie (domyślnie 10 s), reszta w
+  `mcp_audit_rate_limited_suppressed_total{reason}`. Redis, który nie odpowiada, przepuszcza żądanie (licznik
+  `mcp.gateway.rate.unavailable`): limity chronią pojemność systemów, a sprawdzenia chroniące dane (polityka, potwierdzenia) działają
+  niezależnie i zamykają się same.
+- **Tryb dev.** Klucze `dev-` (JWT C2 i paczki polityk) wymagają profilu `devstack` razem z `allow-test-keys`; `environment: dev`
+  w manifeście jest odrzucany poza profilem `devstack` (422 `environment_mismatch`). Profil `devstack` i dwie zgody: sekcja niżej.
+- **Paczki polityk.** Gateway ładuje paczki na schemacie 4.0.0 (`schemaVersion` w `manifest.json`; paczka 3.1.x to `schema_mismatch`).
+  Ta sama rewizja co załadowana (`latest.json` wrócił) nie jest błędem: ETag jest zapamiętywany, paczka nie jest pobierana w kółko
+  i nic nie trafia do logu na ERROR.
 
 ## Profil `devstack`: jedyne miejsce na relaksacje dev
 
@@ -204,7 +243,10 @@ Zmienne środowiska (nazwy z `mcp-platform-dev`, usługa `mcp-gateway` profilu `
 | `MCP_PUBLIC_URL` | wymagany: publiczny origin portalu i gateway'a (`https://...`, `http://` tylko z `MCP_ALLOW_PLAIN_HTTP`), bez ścieżki; źródło `resource_metadata`, `url` linków i `connectUrl` |
 | `MCP_DB_URL`, `MCP_DB_USER`, `MCP_DB_PASSWORD` | PostgreSQL (baza `gateway`): linki; Flyway zakłada tabelę przy starcie, bez bazy gateway nie wstaje |
 | `MCP_ADMIN_AUDIENCE`, `MCP_ADMIN_AUTHORIZED_PARTY` | C5: `aud` tokenu BFF (domyślnie `mcp-gateway-admin`, token z `aud` `mcp-gateway` jest odrzucany, a token MCP z `aud` admina też) i wymagane `azp` (domyślnie `mcp-portal-bff`) |
-| `MCP_ADMIN_CLIENT_CNS`, `MCP_ADMIN_REGISTRY_CLIENT_CNS` | C5: CN certyfikatów klienta dla operacji BFF (domyślnie `mcp-portal-bff`) i dla zapisu rejestru (domyślnie `mcp-registry-ci`); przydział operacji do listy jest w kodzie wg `x-allowed-client-cn`, operacja spoza kontraktu to 403 dla każdego CN |
+| `MCP_ADMIN_CLIENT_CNS`, `MCP_ADMIN_OFFBOARDING_CLIENT_CNS` | C5: CN certyfikatów klienta dla operacji BFF (domyślnie `mcp-portal-bff`) i dla `purge` (domyślnie `mcp-offboarding`); CN potoku rejestru nie jest konfiguracją: `mcp-registry-ci-<serverId>` równe `serverId` ze ścieżki (CC-161). Przydział operacji jest w kodzie wg `x-allowed-client-cn`, operacja spoza kontraktu to 403 dla każdego CN |
+| `MCP_REGISTRY_DEFINITION_CHECK_TTL` | jak długo odczyt `tools/list` serwera jest ważny (domyślnie 30 s, najwyżej 60 s; większa wartość zatrzymuje start) |
+| `MCP_RATE_LIMIT_ENABLED`, `_WINDOW`, `_PER_USER`, `_PER_CLIENT`, `_PER_TOOL`, `_DESTRUCTIVE_PER_TOOL`, `_AUDIT_INTERVAL` | limity zapytań w oknie (domyślnie 1 min: 600 na użytkownika, 300 na parę użytkownik-klient, 120 na parę użytkownik-narzędzie, 10 na narzędzie DESTRUCTIVE); limit pojedynczego narzędzia: `gateway.rate-limit.tools.<system>__<narzędzie>` w `application.yml` |
+| `MCP_ACTIVITY_RETENTION` | jak długo tabela aktywności trzyma zdarzenia (domyślnie `30d`, CC-134) |
 | `MCP_VIRTUAL_SERVERS_MAX_PER_USER` | limit linków na użytkownika (domyślnie 50); nadmiar to 409 `virtual_server_limit_reached` (zdarzenie audytu z powodem `virtual_server_limit`) |
 | `MCP_METRICS_CLIENT_CNS` | CN certyfikatów klienta dla `/actuator/prometheus` (puste = nikt) |
 | `MCP_SERVER_<SYSTEM>_MCP_URL`, `_ENABLED`, `_VERSION` | adres (`https`), wyłącznik i wersja serwera dla JIRA, CONFLUENCE, GITLAB, SERVICEDESK, OPENSEARCH; adresy domyślne `https://mcp-<system>.internal:8443/mcp`, dla Jiry `MCP_SERVER_JIRA_URL` + `/mcp` |
@@ -329,8 +371,7 @@ pl.aiwcorpo.mcp.gateway
 └── upstream/  klient Streamable HTTP do serwerów, sesje per użytkownik
 ```
 
-Miejsca na M4: pinning i diff w rejestrze (CC-097), `rate_limited` per użytkownik, HA (klucze C2, klucz kursora i rejestr
-współdzielone przez instancje), paczka `overrides` jako osobny pipeline.
+Zostaje na po M4: HA (klucze C2 i klucz kursora wspólne dla instancji, `WAIT` przy stanie potwierdzeń), testy obciążeniowe.
 
 ## Audyt odrzuconych tokenów: ryzyko zalewu
 
