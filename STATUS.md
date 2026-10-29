@@ -1,6 +1,6 @@
 # Status ws-05 (mcp-gateway)
 
-Kamień: **M4** (fala z 2026-10-29) na kontraktach `mcp-contracts` **4.0.1**. Pod spodem M3 (od "Kamienie pośrednie M3" niżej),
+Kamień: **M4** (fala z 2026-10-29) na kontraktach `mcp-contracts` **4.1.0**. Pod spodem M3 (od "Kamienie pośrednie M3" niżej),
 M2 i M1; wiersze zastąpione w M4 są oznaczone.
 
 ## Kamienie pośrednie M4
@@ -11,6 +11,7 @@ M2 i M1; wiersze zastąpione w M4 są oznaczone.
 | K2 | `POST /admin/v1/users/{sub}/purge` (CN `mcp-offboarding`), retencja aktywności z konfiguracji, limity w Redisie (użytkownik, klient, narzędzie, DESTRUCTIVE osobno), C10 `rate_limited` i 429, audyt z agregacją | `8b953aa` | - |
 | K3 | `403 exchange_denied` -> `access_denied`, `422 system_not_configured` -> `internal_error` z odrębną przyczyną, token-exchange bez `expiresAt` odrzucany, testy poświadczeń i `context.credentialType`, README i STATUS, obraz | `019d69a` | `m4-019d69a` (zastąpiony) |
 | K3b | poprawki przeglądu Opus (niżej), kontrakty 4.0.1, 516 testów gateway'a | `23a49eb` | `m4-23a49eb` (glibc; po pełnym `./mvnw -B install`; kolejne commity zmieniają tylko STATUS) |
+| K4 | kontrakty 4.1.0 (CC-165..CC-168): wyniki aktywności wg wektorów (63), typ z brokera musi należeć do zbioru typów systemu, limity fail-closed z ciałem wektora, podłoga z wpisem oczekującym i `riskLowered`, `acceptRiskLowering`, `risk_lowered_by_admin`, odmowa startu przy mieszanym zbiorze typów i reguła manifestu | patrz niżej | patrz niżej |
 
 ## M4: zakres z zadania
 
@@ -47,6 +48,7 @@ Wektory 4.0.0 dotyczące gateway'a: `gateway-authentication/` (15, w tym `rate-l
 - **`exchange_denied` w aktywności** to wynik `denied_not_granted` (propozycja CC niżej).
 - **Zmienne usunięte:** `MCP_ADMIN_REGISTRY_CLIENT_CNS` (CN potoku wynika z `serverId`). Nowe: `MCP_ADMIN_OFFBOARDING_CLIENT_CNS`, `MCP_REGISTRY_DEFINITION_CHECK_TTL`, `MCP_RATE_LIMIT_*`, `MCP_ACTIVITY_RETENTION`.
 - **Migracja z M3:** Flyway V5 tworzy `registry_tools` i wypełnia ją z zapisanych manifestów (wszystko zatwierdzone w wersji manifestu).
+- **4.1.0 (K4):** `PUT` poniżej podłogi nie jest już 422: narzędzie czeka jako `riskLowered` (migracja Flyway V6, kolumna `pending_risk_lowered`), `approve` przyjmuje `acceptRiskLowering` (nie-boolean to 400, nie-admin 403, MFA to sprawa BFF), podłoga spada do zatwierdzonego ryzyka, zdarzenie `risk_lowered_by_admin` zamiast `definition_approved`; ryzyko z konfiguracji dalej 422. `exchange_denied`: `tool_call` allow + `denied`. `credential_type_mismatch` sprawdza każdy typ ze zbioru systemu, więc domyślny `accepted-types` Jiry to samo `user-secret` (manifest serwera Jira przyjmuje tylko ten typ; OAuth dla Jiry wymaga zmiany serwera i konfiguracji). Poprzednie decyzje o podłodze i fail-closed zostają, przy czym przegląd Opus L8 jest zamknięty przez CC-166.
 - **Przegląd Opus M4 (0 HIGH, 2 MEDIUM, 9 LOW), poprawki w kolejnym commicie:** M1 fail-closed; podłoga ryzyka od zgłoszenia; L1 numer generacji w `DefinitionGuard` (odczyt w locie podczas `approve`/`PUT` jest odrzucany i powtarzany, po 3 próbach `upstream_unavailable`); L2 `policy_decision` `deny`/`upstream_unavailable` przy nieudanym odczycie; L3 sesja i jej wpis w indeksie zapisywane jednym skryptem, sesje sprzed M4 unieważniane przy wdrożeniu (README, "Przejście z M3 na M4"); L5 wersja spoza SemVer to `0.0.0-invalid` (nie wersja zatwierdzona) i WARN; L6 walidacja konfiguracji limitów przy starcie; L7 ETag nie jest zapamiętywany po `bad_signature` (poprawiona paczka pod tym samym wskaźnikiem zostanie pobrana), ERROR raz na rewizję i powód, potem DEBUG; L9 usunięte 4-argumentowe `evaluate`. **L4** (wiele instancji): `purge` czyści cache poświadczeń i sesje do serwerów tylko instancji, która go dostała; pozostałe czekają na `credential.invalidated` z brokera albo TTL <= 60 s, a offboarding woła broker i gateway w dowolnej kolejności, więc okno wynosi do 60 s. **L8** (`credential_type_mismatch` porównuje jeden typ): decyzja człowieka, typ z konfiguracji. **M2**: wyniki aktywności `rate_limited_*`, `definition_changed`, `tool_not_served`, `exchange_denied` mapuję na `denied` (`rate_limited`, `tool_disabled`, `denied_not_granted`); po kontrakcie 4.1.0 przejść na jego wektory. Kontrakty 4.0.1.
 - **Niezrobione:** przeładowanie konfiguracji limitów bez restartu (klasa czyta ustawienia z dostawcy, ale nic go nie odświeża), `WAIT` przy stanie potwierdzeń w HA, test obciążeniowy, `curl` w obrazie.
 

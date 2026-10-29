@@ -213,7 +213,7 @@ public final class GatewayTestEnvironment {
         registry.add("gateway.servers.mcp-gitlab.manifest", () -> "required");
         registry.add("gateway.servers.mcp-gitlab.system", () -> "gitlab");
         registry.add("gateway.servers.mcp-gitlab.internal-url", () -> "https://127.0.0.1:" + gitlab.port() + "/mcp");
-        registry.add("gateway.servers.mcp-gitlab.credential.accepted-types", () -> "user-secret,user-oauth");
+        registry.add("gateway.servers.mcp-gitlab.credential.accepted-types", () -> "user-secret");
         registry.add("gateway.servers.mcp-gitlab.credential.type", () -> "user-secret");
         registry.add("gateway.servers.mcp-gitlab.tools.get_issue.risk", () -> "READ_ONLY");
         registry.add("gateway.servers.mcp-gitlab.tools.get_issue.description", () -> "Returns one GitLab issue.");

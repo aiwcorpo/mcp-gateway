@@ -134,6 +134,9 @@ public class RegistryController {
         body.put("pendingHash", waiting.hash());
         body.put("pendingVersion", waiting.version());
         body.put("source", waiting.source());
+        if (waiting.riskLowered()) {
+            body.put("riskLowered", true);
+        }
         return ok(requestId, body);
     }
 
@@ -146,9 +149,13 @@ public class RegistryController {
         }
         byte[] raw = request.getInputStream().readNBytes(4097);
         String hash;
+        boolean acceptRiskLowering = false;
         try {
             JsonNode body = raw.length > 4096 ? null : json.readTree(raw);
-            hash = body != null && body.isObject() && body.size() == 1 ? body.path("definitionHash").asString(null) : null;
+            boolean shape = body != null && body.isObject() && body.has("definitionHash")
+                    && (body.size() == 1 || (body.size() == 2 && body.path("acceptRiskLowering").isBoolean()));
+            hash = shape ? body.path("definitionHash").asString(null) : null;
+            acceptRiskLowering = shape && body.path("acceptRiskLowering").asBoolean(false);
         } catch (JacksonException e) {
             hash = null;
         }
@@ -158,7 +165,7 @@ public class RegistryController {
         if (!TOOL_NAME.matcher(tool).matches()) {
             return error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
         }
-        return switch (registry.approve(requestId, serverId, tool, hash, GatewayUser.from(token))) {
+        return switch (registry.approve(requestId, serverId, tool, hash, acceptRiskLowering, GatewayUser.from(token))) {
             case RegistryService.Approval.Approved approved -> ResponseEntity.noContent().header("X-Request-Id", requestId)
                     .cacheControl(CacheControl.noStore()).build();
             case RegistryService.Approval.NotFound notFound -> error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
@@ -190,6 +197,9 @@ public class RegistryController {
                 entry.put("status", "pending_approval");
                 entry.put("change", pending.change());
                 entry.put("source", pending.source());
+                if (pending.riskLowered()) {
+                    entry.put("riskLowered", true);
+                }
             } else {
                 entry.put("status", "approved");
             }

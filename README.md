@@ -8,7 +8,7 @@ audytu C8 z jednym `requestId`.
 Stan: kamień M4 (przypinanie definicji w rejestrze, offboarding, limity zapytań, typ poświadczenia w Cedar, tryb dev tylko ze
 stosem dev) na M3 (potwierdzenia TOTP akcji DESTRUCTIVE, Cedar z podpisanych paczek, `/activity/calls`), M2 (wirtualne serwery,
 API C5 dla BFF, jedna domena) i M1 (OAuth RS, broker, C2/C3, audyt). Co działa, czego nie ma i odstępstwa: [STATUS.md](STATUS.md).
-Kontrakty: `mcp-contracts` 4.0.0.
+Kontrakty: `mcp-contracts` 4.1.0.
 
 ## Moduły
 
@@ -170,10 +170,15 @@ Przebieg na żywo: `scripts/m3-demo.sh` (po uruchomieniu skryptów z sekcji niż
   to 403 i zdarzenie `client_certificate_rejected`). Ciało to manifest z przeglądanego commitu: nowe i zmienione narzędzia
   `READ_ONLY` są zatwierdzane (`definition_registered`), `UPDATE` i `DESTRUCTIVE` czekają (`pending_approval`, `source: ci`,
   `definition_submitted`), usunięte znikają (`tool_removed`). `approve` (`mcp-platform-admin`, hash równy `pendingHash`) daje 204,
-  409 `hash_mismatch` albo 422 `risk_lowered`; obniżenie ryzyka jest zawsze odrzucane (`risk_lowered`), także po usunięciu i dodaniu
-  narzędzia. Podłoga ryzyka to najwyższe ryzyko, jakie kiedykolwiek zgłoszono dla narzędzia, także we wpisie oczekującym:
-  oczekujące DESTRUCTIVE nie da się zastąpić commitem z UPDATE (422 `risk_lowered`). Rejestr, lista i diff są tylko dla
-  administratorów (403 dla reszty).
+  409 `hash_mismatch` albo 422 `risk_lowered`. Podłoga ryzyka to najwyższe ryzyko, jakie kiedykolwiek zgłoszono dla narzędzia,
+  także we wpisie oczekującym (CC-167). `PUT` z niższym ryzykiem nie odrzuca manifestu: to jedno narzędzie jest `pending_approval`
+  z `riskLowered: true` (`change` `new` dla narzędzia dodanego ponownie, także gdy wraca do starszej zatwierdzonej definicji), a
+  reszta manifestu przechodzi; zatwierdzone wcześniej wpisy zostają w mocy. Jedyna droga w dół to `approve` z
+  `acceptRiskLowering: true` (administrator; BFF żąda świeżego MFA i wysyła pole tylko przy `true`): podłoga spada do zatwierdzonego
+  ryzyka, w audycie jest jedno zdarzenie `risk_lowered_by_admin` z polem `risk` zamiast `definition_approved`; bez flagi 422
+  `risk_lowered`, flaga przy wpisie, który niczego nie obniża, jest ignorowana. Ryzyko z konfiguracji (`gateway.servers.*.tools.*.risk`)
+  nie obniża się nigdy: `PUT` poniżej niego to 422 `risk_lowered`. Krok rejestracji w CI powinien pokazać `riskLowered: true` z
+  odpowiedzi `200`, bo narzędzie znika z `tools/list` do decyzji. Rejestr, lista i diff są tylko dla administratorów (403 dla reszty).
   Stan leży w tabelach `registry_servers` (ostatni przyjęty manifest), `registry_tools` (zatwierdzony i oczekujący wpis narzędzia;
   Flyway V5 przenosi manifesty z M3 jako zatwierdzone) i `registry_risk_floor`.
 - **Co widzi klient.** `tools/list` składa się z zatwierdzonych definicji, nie z odpowiedzi serwera; odpowiedź serwera tylko rozstrzyga,
@@ -186,11 +191,15 @@ Przebieg na żywo: `scripts/m3-demo.sh` (po uruchomieniu skryptów z sekcji niż
   (`enabled: false`, narzędzia `tool_disabled`) bez kasowania; po rejestracji przechodzącego manifestu serwer wraca. Bootstrap manifestu
   z serwera istnieje tylko w trybie dev i zatwierdza wszystko (zaufanie przy pierwszym kontakcie).
 - **Typ poświadczenia.** `gateway.servers.<id>.credential.type` (jeden z `accepted-types`; wystarcza, gdy typ jest jeden albo
-  `token-exchange: true`; przy kilku wymagany) trafia do `context.credentialType` każdej decyzji Cedar, przed oceną. To typ z
+  `token-exchange: true`; przy kilku wymagany) to typ domyślny systemu i trafia do `context.credentialType` każdej decyzji Cedar, przed oceną. To typ z
   konfiguracji systemu, nie typ poświadczenia użytego w wywołaniu: dla Jiry i GitLaba (użytkownik ma PAT albo OAuth) reguła Cedar
   nie może więc rozróżniać `user-oauth` od `user-secret`; sensowne są reguły o `service-account` i `token-exchange`. Rejestracja
   sprawdza, że manifest przyjmuje ten typ. `403 exchange_denied` z brokera to C10 `access_denied` bez grup, `422 system_not_configured`
-  to `internal_error` z przyczyną w logu; oba zostawiają zdarzenie `credential_resolve`. Token wymieniony (`token-exchange`) bez
+  to `internal_error` z przyczyną w logu; oba zostawiają zdarzenie `credential_resolve`. `accepted-types` to zbiór typów systemu
+  (CC-166): typ zwrócony przez brokera spoza zbioru to `internal_error` i `credential_resolve`/`credential_type_mismatch` (z typem
+  brokera), poświadczenie nie jest użyte ani zapamiętane; zbiór nie miesza `service-account` z typami użytkownika (start odmawia,
+  CC-168). Rejestracja wymaga, by manifest przyjmował każdy typ ze zbioru systemu (domyślna konfiguracja Jiry ma więc tylko
+  `user-secret`, jak manifest serwera). `exchange_denied` to `tool_call` z `decision: allow` i `outcome: denied` (CC-165). Token wymieniony (`token-exchange`) bez
   `expiresAt` jest odrzucany.
 - **Offboarding.** `POST /admin/v1/users/{sub}/purge` (certyfikat `mcp-offboarding`, bez tokenu) usuwa linki, oczekujące potwierdzenia
   i ślady, sesje MCP w Redisie (indeks `gw:session:of:<sha256(sub)>`, bo konto Redis gateway'a nie ma `SCAN`) i cache poświadczeń
@@ -201,7 +210,8 @@ Przebieg na żywo: `scripts/m3-demo.sh` (po uruchomieniu skryptów z sekcji niż
   `rate_limited` z `retryAfterSeconds` >= 1, inne żądania to 429 z `Retry-After`, bez `WWW-Authenticate` i bez `X-RateLimit-*`.
   Audyt `rate_limited_user|client|tool`, najwyżej jedno zdarzenie na użytkownika i powód w odstępie (domyślnie 10 s), reszta w
   `mcp_audit_rate_limited_suppressed_total{reason}`. Redis, który nie odpowiada, odrzuca żądanie (fail-closed,
-  decyzja z 2026-10-29): `tools/call` dostaje C10 `upstream_unavailable`, inne żądania 503 `upstream_unavailable` z `Retry-After`;
+  CC-167): `tools/call` dostaje C10 `upstream_unavailable`, inne żądania 503 `upstream_unavailable` z `Retry-After: 10` i ciałem z
+  wektora `rate-limit-store-unavailable`; zdarzenie `tool_call` z powodem `upstream_unavailable`;
   WARN i licznik `mcp.gateway.rate.unavailable`. Start odmawia konfiguracji, w której limit DESTRUCTIVE jest wyższy niż zwykły limit
   narzędzia, okna spoza 1 s .. 1 h i limitu narzędzia mniejszego niż 1.
 - **Tryb dev.** Klucze `dev-` (JWT C2 i paczki polityk) wymagają profilu `devstack` razem z `allow-test-keys`; `environment: dev`

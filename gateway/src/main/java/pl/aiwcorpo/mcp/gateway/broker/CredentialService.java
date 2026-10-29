@@ -54,7 +54,7 @@ public class CredentialService {
         Resolution resolution = broker.resolve(user, system, scopes, subjectToken, tool, requestId);
         if (resolution instanceof Resolution.Granted granted) {
             if (!policy.acceptedTypes().contains(granted.credential().type())) {
-                return record(new Resolution.Failed("credential_type_not_accepted"));
+                return record(new Resolution.TypeMismatch(granted.credential().type()));
             }
             if (cacheUsable && granted.credential().cacheTtlSeconds() > 0) {
                 cache.put(key, granted.credential(), generation);
@@ -68,6 +68,7 @@ public class CredentialService {
             case Resolution.Granted g -> "granted";
             case Resolution.Required r -> "credential_required";
             case Resolution.Denied d -> "denied";
+            case Resolution.TypeMismatch t -> "type_mismatch";
             case Resolution.Unavailable u -> "unavailable";
             case Resolution.Failed f -> "failed";
         };

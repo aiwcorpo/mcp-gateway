@@ -14,6 +14,10 @@ public sealed interface Resolution {
     record Denied(String reason) implements Resolution {
     }
 
+    /** The broker answered with a credential type outside the set of the system's configuration (CC-166): not used, not cached. */
+    record TypeMismatch(String returnedType) implements Resolution {
+    }
+
     /** Broker, IdP or network unavailable (C10 upstream_unavailable). */
     record Unavailable(String reason) implements Resolution {
     }

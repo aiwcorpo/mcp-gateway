@@ -24,7 +24,7 @@ public final class RegistryPlanner {
     /**
      * @param tools the registry after the registration
      * @param changes what to audit, in manifest order, removals last
-     * @param lowered tools whose risk is below what was approved or configured; when not empty nothing may be written
+     * @param lowered tools whose risk is below the minimum of the gateway configuration; when not empty nothing may be written
      * @param risks risk ordinal of every tool this registration approved or submitted, for the floors: the highest risk ever reported for a tool
      */
     public record Plan(Map<String, RegisteredTool> tools, List<Change> changes, List<String> lowered, Map<String, Integer> risks) {
@@ -34,11 +34,13 @@ public final class RegistryPlanner {
     }
 
     /**
-     * @param minimum risk ordinal per tool below which a manifest may not go (the highest approved so far, the configured minimum)
+     * @param floors the highest risk ever reported per tool (ordinal), pending entries included (CC-167): a tool below it does not
+     *        reject the manifest, it waits for an administrator who accepts the lowering
+     * @param configuredMinimum risk ordinal per tool below which a manifest may never go: the operator's configuration
      * @param approveAll the dev bootstrap: the manifest the server serves is taken whole, there is no reviewed commit behind it
      */
     public static Plan plan(JsonNode manifest, String credentialJson, Map<String, RegisteredTool> existing,
-                            Map<String, Integer> minimum, boolean approveAll) {
+                            Map<String, Integer> floors, Map<String, Integer> configuredMinimum, boolean approveAll) {
         String version = manifest.path("version").asString();
         Map<String, RegisteredTool> next = new LinkedHashMap<>();
         List<Change> changes = new ArrayList<>();
@@ -49,12 +51,24 @@ public final class RegistryPlanner {
             String hash = entry.path("definitionHash").asString();
             int risk = Risk.valueOf(entry.path("risk").asString()).ordinal();
             RegisteredTool current = existing.get(name);
-            int floor = Math.max(minimum.getOrDefault(name, 0), current == null ? 0 : current.approvedRisk());
-            if (risk < floor) {
+            if (risk < configuredMinimum.getOrDefault(name, 0)) {
                 lowered.add(name);
                 continue;
             }
             RegisteredTool.Approved approved = current == null ? null : current.approved();
+            int floor = Math.max(floors.getOrDefault(name, 0), current == null ? 0 : current.approvedRisk());
+            if (risk < floor && !approveAll) {
+                // Below the highest risk ever reported: never approved by a commit, not even a return to an older definition.
+                RegisteredTool.Pending kept = current == null ? null : current.pending();
+                if (kept != null && kept.riskLowered() && kept.hash().equals(hash) && "ci".equals(kept.source())) {
+                    next.put(name, new RegisteredTool(name, approved, kept));
+                } else {
+                    next.put(name, new RegisteredTool(name, approved, new RegisteredTool.Pending(entry, hash, version,
+                            approved == null ? "new" : "changed", "ci", credentialJson, true)));
+                    changes.add(new Change("definition_submitted", name, hash));
+                }
+                continue;
+            }
             if (approved != null && approved.hash().equals(hash)) {
                 next.put(name, new RegisteredTool(name, approved, null));
                 continue;

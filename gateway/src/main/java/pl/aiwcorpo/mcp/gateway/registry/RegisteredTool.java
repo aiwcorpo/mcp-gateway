@@ -12,8 +12,15 @@ public record RegisteredTool(String name, Approved approved, Pending pending) {
     public record Approved(JsonNode entry, String hash, String version, String credentialJson) {
     }
 
-    /** {@code change} is {@code new} or {@code changed}, {@code source} is {@code ci} or {@code server} (CC-162). */
-    public record Pending(JsonNode entry, String hash, String version, String change, String source, String credentialJson) {
+    /**
+     * {@code change} is {@code new} or {@code changed}, {@code source} is {@code ci} or {@code server} (CC-162); {@code riskLowered}: the
+     * entry has a risk below the floor and only an administrator who accepts the lowering can approve it (CC-167).
+     */
+    public record Pending(JsonNode entry, String hash, String version, String change, String source, String credentialJson,
+                          boolean riskLowered) {
+        public Pending(JsonNode entry, String hash, String version, String change, String source, String credentialJson) {
+            this(entry, hash, version, change, source, credentialJson, false);
+        }
     }
 
     public RegisteredTool {

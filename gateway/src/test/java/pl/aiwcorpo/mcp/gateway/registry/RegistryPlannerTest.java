@@ -22,7 +22,14 @@ class RegistryPlannerTest {
     private static final String CREDENTIAL = "{\"required\":true,\"acceptedTypes\":[\"user-secret\"]}";
 
     private static RegistryPlanner.Plan plan(ObjectNode manifest, Map<String, RegisteredTool> existing) {
-        return RegistryPlanner.plan(manifest, CREDENTIAL, existing, Map.of(), false);
+        return RegistryPlanner.plan(manifest, CREDENTIAL, existing, floorsOf(existing), Map.of(), false);
+    }
+
+    /** The floors of a registry whose tools were approved: the approved risk of each. */
+    private static Map<String, Integer> floorsOf(Map<String, RegisteredTool> existing) {
+        Map<String, Integer> floors = new LinkedHashMap<>();
+        existing.forEach((name, tool) -> floors.put(name, tool.approvedRisk()));
+        return floors;
     }
 
     private static Map<String, RegisteredTool> registered(ObjectNode manifest) {
@@ -104,25 +111,60 @@ class RegistryPlannerTest {
     }
 
     @Test
-    void aLoweredRiskStopsTheWholeRegistration() {
+    void aLoweredRiskDoesNotRejectTheManifestItHoldsThatOneToolForAnAdministrator() {
         Map<String, RegisteredTool> before = registered(Manifests.jira("1.4.0", Tool.readOnly("get_issue")));
         RegisteredTool approvedUpdate = new RegisteredTool("update_issue", new RegisteredTool.Approved(
                 Manifests.tool(Manifests.jira("1", Tool.update("update_issue")), "update_issue"), "sha256:" + "a".repeat(64), "1.4.0",
                 CREDENTIAL), null);
         before.put("update_issue", approvedUpdate);
+        ObjectNode next = Manifests.jira("1.5.0", Tool.readOnly("get_issue").described("Better."), Tool.readOnly("update_issue"));
 
-        RegistryPlanner.Plan plan = plan(Manifests.jira("1.5.0", Tool.readOnly("get_issue"), Tool.readOnly("update_issue")), before);
+        RegistryPlanner.Plan plan = plan(next, before);
 
-        assertThat(plan.lowered()).containsExactly("update_issue");
+        assertThat(plan.lowered()).isEmpty();
+        assertThat(plan.tools().get("get_issue").approved().version()).as("the rest of the manifest goes through").isEqualTo("1.5.0");
+        RegisteredTool held = plan.tools().get("update_issue");
+        assertThat(held.approved()).as("the approved definition stays in force").isEqualTo(approvedUpdate.approved());
+        assertThat(held.pending().riskLowered()).isTrue();
+        assertThat(held.pending().change()).isEqualTo("changed");
+        assertThat(held.pending().source()).isEqualTo("ci");
+        assertThat(plan.risks()).as("a lowered risk raises nothing").doesNotContainKey("update_issue");
     }
 
     @Test
-    void aRiskBelowTheFloorOrTheConfiguredMinimumIsLoweredEvenWithoutAnApprovedEntry() {
+    void aToolRemovedAndAddedAgainBelowItsFloorIsNewAndHeld() {
+        ObjectNode first = Manifests.jira("1.4.0", Tool.update("update_issue"));
+
+        RegistryPlanner.Plan plan = RegistryPlanner.plan(Manifests.jira("1.5.0", Tool.readOnly("update_issue")), CREDENTIAL, Map.of(),
+                Map.of("update_issue", 1), Map.of(), false);
+
+        RegisteredTool tool = plan.tools().get("update_issue");
+        assertThat(tool.approved()).isNull();
+        assertThat(tool.pending().change()).isEqualTo("new");
+        assertThat(tool.pending().riskLowered()).isTrue();
+        assertThat(first).isNotNull();
+    }
+
+    @Test
+    void aReturnToTheApprovedDefinitionBelowTheFloorWaitsToo() {
+        ObjectNode approvedManifest = Manifests.jira("1.4.0", Tool.readOnly("get_issue"));
+        Map<String, RegisteredTool> before = registered(approvedManifest);
+
+        // A DESTRUCTIVE version was submitted since and raised the floor; the commit goes back to the approved read-only definition.
+        RegistryPlanner.Plan plan = RegistryPlanner.plan(Manifests.jira("1.6.0", Tool.readOnly("get_issue")), CREDENTIAL, before,
+                Map.of("get_issue", 2), Map.of(), false);
+
+        assertThat(plan.tools().get("get_issue").pending().riskLowered()).isTrue();
+        assertThat(plan.tools().get("get_issue").approved().version()).isEqualTo("1.4.0");
+    }
+
+    @Test
+    void theRiskOfTheConfigurationIsNeverLoweredNotEvenForAnAdministrator() {
         ObjectNode manifest = Manifests.jira("1.4.0", Tool.readOnly("delete_issue"));
 
-        assertThat(RegistryPlanner.plan(manifest, CREDENTIAL, Map.of(), Map.of("delete_issue", 2), false).lowered())
-                .as("a tool that was DESTRUCTIVE once and was removed").containsExactly("delete_issue");
-        assertThat(RegistryPlanner.plan(manifest, CREDENTIAL, Map.of(), Map.of("delete_issue", 0), false).lowered()).isEmpty();
+        assertThat(RegistryPlanner.plan(manifest, CREDENTIAL, Map.of(), Map.of(), Map.of("delete_issue", 2), false).lowered())
+                .containsExactly("delete_issue");
+        assertThat(RegistryPlanner.plan(manifest, CREDENTIAL, Map.of(), Map.of(), Map.of("delete_issue", 0), false).lowered()).isEmpty();
     }
 
     @Test
@@ -153,7 +195,7 @@ class RegistryPlannerTest {
     void theDevBootstrapApprovesEverythingTheServerServes() {
         ObjectNode manifest = Manifests.jira("1.4.0", Tool.update("update_issue"), Tool.destructive("delete_issue"));
 
-        RegistryPlanner.Plan plan = RegistryPlanner.plan(manifest, CREDENTIAL, Map.of(), Map.of(), true);
+        RegistryPlanner.Plan plan = RegistryPlanner.plan(manifest, CREDENTIAL, Map.of(), Map.of(), Map.of(), true);
 
         assertThat(plan.tools().values()).allSatisfy(tool -> {
             assertThat(tool.approved()).isNotNull();
@@ -167,9 +209,9 @@ class RegistryPlannerTest {
         RegistryPlanner.Plan plan = plan(Manifests.jira("1.4.0", Tool.destructive("delete_issue")), Map.of());
 
         assertThat(plan.risks()).containsEntry("delete_issue", 2);
-        // The next registration, with the same pending entry, lowers it to UPDATE: refused against the floor that submission raised.
-        Map<String, RegisteredTool> held = new LinkedHashMap<>(plan.tools());
-        assertThat(RegistryPlanner.plan(Manifests.jira("1.5.0", Tool.update("delete_issue")), CREDENTIAL, held,
-                plan.risks(), false).lowered()).containsExactly("delete_issue");
+        // The next registration, with the same pending entry, lowers it to UPDATE: held as a lowering against the floor submission raised.
+        RegistryPlanner.Plan next = RegistryPlanner.plan(Manifests.jira("1.5.0", Tool.update("delete_issue")), CREDENTIAL,
+                new LinkedHashMap<>(plan.tools()), plan.risks(), Map.of(), false);
+        assertThat(next.tools().get("delete_issue").pending().riskLowered()).isTrue();
     }
 }

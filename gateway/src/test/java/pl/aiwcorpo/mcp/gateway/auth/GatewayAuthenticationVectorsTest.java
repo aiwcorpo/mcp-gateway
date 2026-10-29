@@ -31,7 +31,7 @@ class GatewayAuthenticationVectorsTest {
     @TestFactory
     List<DynamicTest> everyVector() {
         List<Vectors.Vector> vectors = Vectors.of("gateway-authentication");
-        assertThat(vectors).hasSize(15);
+        assertThat(vectors).hasSize(16);
         return vectors.stream().map(v -> DynamicTest.dynamicTest(v.name(), () -> check(v.document()))).toList();
     }
 
@@ -45,7 +45,12 @@ class GatewayAuthenticationVectorsTest {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", input.path("resourcePath").asString() + "/mcp");
         MockHttpServletResponse response = new MockHttpServletResponse();
 
-        if ("rate_limited".equals(input.path("reason").asString())) {
+        if ("rate_limit_store_unavailable".equals(input.path("reason").asString())) {
+            org.springframework.http.ResponseEntity<String> refused = RateLimitResponse.unavailable("0192d1b2-7c3a-7d4e-8f10-2a3b4c5d6e7f", 10);
+            response.setStatus(refused.getStatusCode().value());
+            refused.getHeaders().forEach((name, values) -> response.setHeader(name, values.getFirst()));
+            response.getWriter().write(refused.getBody());
+        } else if ("rate_limited".equals(input.path("reason").asString())) {
             // The wait is a decimal in a vector (0.2 s): the limiter rounds up to whole seconds, at least one.
             int seconds = (int) Math.max(1, Math.ceil(input.path("retryAfterSeconds").asDouble()));
             org.springframework.http.ResponseEntity<String> limited = RateLimitResponse.of("0192d1b2-7c3a-7d4e-8f10-2a3b4c5d6e7f", seconds);

@@ -117,11 +117,11 @@ class RegistryServiceTest extends GatewayTestBase {
         register(manifest);
         String hash = hash(manifest, "update_issue");
 
-        assertThat(service.approve(requestId, SERVER, "update_issue", "sha256:" + "0".repeat(64), admin())).isInstanceOf(Approval.HashMismatch.class);
-        assertThat(service.approve(requestId, SERVER, "get_issue", hash, admin())).as("nothing pending").isInstanceOf(Approval.NotFound.class);
+        assertThat(service.approve(requestId, SERVER, "update_issue", "sha256:" + "0".repeat(64), false, admin())).isInstanceOf(Approval.HashMismatch.class);
+        assertThat(service.approve(requestId, SERVER, "get_issue", hash, false, admin())).as("nothing pending").isInstanceOf(Approval.NotFound.class);
         assertThat(server().tools()).isEmpty();
 
-        assertThat(service.approve(requestId, SERVER, "update_issue", hash, admin())).isInstanceOf(Approval.Approved.class);
+        assertThat(service.approve(requestId, SERVER, "update_issue", hash, false, admin())).isInstanceOf(Approval.Approved.class);
 
         assertThat(server().tools()).containsOnlyKeys("update_issue");
         assertThat(tool("update_issue").pending()).isNull();
@@ -131,57 +131,88 @@ class RegistryServiceTest extends GatewayTestBase {
         assertThat(event.path("sub").asString()).as("the administrator, not the pipeline").isEqualTo(ADMIN_SUB);
         assertThat(event.path("definitionHash").asString()).isEqualTo(hash);
         assertThat(event.path("event").asString()).isEqualTo("admin_change");
-        assertThat(service.approve(requestId, SERVER, "update_issue", hash, admin())).as("approved once").isInstanceOf(Approval.NotFound.class);
+        assertThat(service.approve(requestId, SERVER, "update_issue", hash, false, admin())).as("approved once").isInstanceOf(Approval.NotFound.class);
     }
 
     @Test
-    void anApprovalThatWouldLowerTheRiskIsRefusedWhateverTheHash() {
+    void aLoweredRiskWaitsForAnAdministratorWhoAcceptsItAndThenTheFloorFalls(CapturedOutput output) {
+        ObjectNode manifest = Manifests.jira("1.4.0", Tool.readOnly("get_issue"), Tool.update("update_issue"));
+        register(manifest);
+        service.approve(requestId, SERVER, "update_issue", hash(manifest, "update_issue"), false, admin());
+
+        ObjectNode lowered = Manifests.jira("1.5.0", Tool.readOnly("get_issue").described("Reviewed text."), Tool.readOnly("update_issue"));
+        Result result = service.register(requestId, SERVER, lowered, "ci");
+
+        assertThat(result).as("the manifest is taken, only that tool waits").isInstanceOf(Result.Accepted.class);
+        assertThat(tool("get_issue").approved().version()).isEqualTo("1.5.0");
+        RegisteredTool.Pending pending = tool("update_issue").pending();
+        assertThat(pending.riskLowered()).isTrue();
+        assertThat(pending.change()).isEqualTo("changed");
+        assertThat(tool("update_issue").approved().version()).as("what was approved stays in force").isEqualTo("1.4.0");
+        String hash = hash(lowered, "update_issue");
+
+        Approval refused = service.approve(requestId, SERVER, "update_issue", hash, false, admin());
+        assertThat(refused).isInstanceOf(Approval.RiskLowered.class);
+        assertThat(((Approval.RiskLowered) refused).message()).contains("UPDATE").contains("READ_ONLY");
+        assertThat(store.floors(SERVER)).containsEntry("update_issue", 1);
+
+        Approval accepted = service.approve(requestId, SERVER, "update_issue", hash, true, admin());
+
+        assertThat(accepted).isEqualTo(new Approval.Approved(0));
+        assertThat(store.floors(SERVER)).containsEntry("update_issue", 0);
+        assertThat(tool("update_issue").pending()).isNull();
+        assertThat(tool("update_issue").approved().entry().path("risk").asString()).isEqualTo("READ_ONLY");
+        List<JsonNode> events = auditEvents(output, requestId).stream().filter(e -> "update_issue".equals(e.path("tool").asString())
+                && "ok".equals(e.path("outcome").asString()) && e.has("sub")).toList();
+        assertThat(events).hasSize(2);
+        JsonNode lowering = events.stream().filter(e -> "risk_lowered_by_admin".equals(e.path("reason").asString())).findFirst().orElseThrow();
+        assertThat(lowering.path("risk").asString()).isEqualTo("READ_ONLY");
+        assertThat(lowering.path("sub").asString()).isEqualTo(ADMIN_SUB);
+        assertThat(lowering.path("definitionHash").asString()).isEqualTo(hash);
+        assertThat(events).as("one event instead of definition_approved for the lowering").noneMatch(e ->
+                "definition_approved".equals(e.path("reason").asString()) && hash.equals(e.path("definitionHash").asString()));
+    }
+
+    @Test
+    void theFlagIsIgnoredForAnEntryThatLowersNothing(CapturedOutput output) {
         ObjectNode manifest = Manifests.jira("1.4.0", Tool.update("update_issue"));
         register(manifest);
-        service.approve(requestId, SERVER, "update_issue", hash(manifest, "update_issue"), admin());
-        // A pending entry that says READ_ONLY next to an approved UPDATE cannot come from a registration; the store is made to hold one.
-        ObjectNode lowered = Manifests.jira("1.5.0", Tool.readOnly("update_issue"));
-        JsonNode entry = Manifests.tool(lowered, "update_issue");
-        store.locked(SERVER, tx -> {
-            tx.saveTool(tool("update_issue").withPending(new RegisteredTool.Pending(entry, hash(lowered, "update_issue"), "1.5.0", "changed",
-                    "ci", "null")));
-            return null;
-        });
 
-        Approval result = service.approve(requestId, SERVER, "update_issue", hash(lowered, "update_issue"), admin());
+        Approval result = service.approve(requestId, SERVER, "update_issue", hash(manifest, "update_issue"), true, admin());
 
-        assertThat(result).isInstanceOf(Approval.RiskLowered.class);
-        assertThat(((Approval.RiskLowered) result).message()).contains("UPDATE").contains("READ_ONLY");
+        assertThat(result).isEqualTo(new Approval.Approved(-1));
+        assertThat(auditReasons(output, requestId)).contains("definition_approved").doesNotContain("risk_lowered_by_admin");
     }
 
     @Test
-    void aLoweredRiskIsRefusedAndNothingIsStoredEvenAfterTheToolWasRemoved() {
-        ObjectNode first = Manifests.jira("1.4.0", Tool.readOnly("get_issue"), Tool.update("update_issue"));
+    void aToolRemovedAndAddedAgainBelowItsFloorIsNewAndHeld() {
+        ObjectNode first = Manifests.jira("1.4.0", Tool.destructive("delete_issue"), Tool.readOnly("get_issue"));
         register(first);
-        service.approve(requestId, SERVER, "update_issue", hash(first, "update_issue"), admin());
-
-        Result lowered = service.register(requestId, SERVER, Manifests.jira("1.5.0", Tool.readOnly("get_issue"), Tool.readOnly("update_issue")), "ci");
-        assertThat(lowered).isInstanceOf(Result.Rejected.class);
-        assertThat(((Result.Rejected) lowered).reason()).isEqualTo("risk_lowered");
-        assertThat(tool("update_issue").approved().version()).as("nothing was written").isEqualTo("1.4.0");
-
+        service.approve(requestId, SERVER, "delete_issue", hash(first, "delete_issue"), false, admin());
         register(Manifests.jira("1.5.0", Tool.readOnly("get_issue")));
-        assertThat(tool("update_issue")).as("removed").isNull();
-        Result again = service.register(requestId, SERVER, Manifests.jira("1.6.0", Tool.readOnly("get_issue"), Tool.readOnly("update_issue")), "ci");
-        assertThat(again).as("removed and added again, still lower").isInstanceOf(Result.Rejected.class);
-        assertThat(((Result.Rejected) again).reason()).isEqualTo("risk_lowered");
-        assertThat(service.registered(SERVER).orElseThrow().tools()).containsOnlyKeys("get_issue");
+        assertThat(tool("delete_issue")).isNull();
+
+        register(Manifests.jira("1.6.0", Tool.readOnly("get_issue"), Tool.readOnly("delete_issue")));
+
+        RegisteredTool.Pending pending = tool("delete_issue").pending();
+        assertThat(pending.change()).isEqualTo("new");
+        assertThat(pending.riskLowered()).isTrue();
+        assertThat(tool("delete_issue").approved()).isNull();
+        assertThat(server().tools()).containsOnlyKeys("get_issue");
     }
 
     @Test
-    void aPendingDestructiveToolCannotBeReplacedByAnUpdateOne() {
+    void aPendingDestructiveToolReplacedByAnUpdateOneIsHeldAsALowering() {
         register(Manifests.jira("1.4.0", Tool.destructive("delete_issue")));
 
-        Result lowered = service.register(requestId, SERVER, Manifests.jira("1.5.0", Tool.update("delete_issue")), "ci");
+        ObjectNode update = Manifests.jira("1.5.0", Tool.update("delete_issue"));
+        assertThat(service.register(requestId, SERVER, update, "ci")).isInstanceOf(Result.Accepted.class);
 
-        assertThat(((Result.Rejected) lowered).reason()).isEqualTo("risk_lowered");
-        assertThat(tool("delete_issue").pending().version()).as("the pending entry is as it was").isEqualTo("1.4.0");
-        assertThat(store.floors(SERVER)).containsEntry("delete_issue", 2);
+        RegisteredTool.Pending pending = tool("delete_issue").pending();
+        assertThat(pending.riskLowered()).isTrue();
+        assertThat(pending.hash()).isEqualTo(hash(update, "delete_issue"));
+        assertThat(store.floors(SERVER)).as("the floor is the highest risk ever reported").containsEntry("delete_issue", 2);
+        assertThat(server().tools()).isEmpty();
     }
 
     @Test
@@ -251,8 +282,8 @@ class RegistryServiceTest extends GatewayTestBase {
         RegisteredTool.Pending second = tool("get_issue").pending();
         assertThat(second.hash()).isNotEqualTo(first);
         assertThat(second.version()).as("a value that is no SemVer is marked as such").isEqualTo("0.0.0-invalid");
-        assertThat(service.approve(requestId, SERVER, "get_issue", first, admin())).isInstanceOf(Approval.HashMismatch.class);
-        assertThat(service.approve(requestId, SERVER, "get_issue", second.hash(), admin())).isInstanceOf(Approval.Approved.class);
+        assertThat(service.approve(requestId, SERVER, "get_issue", first, false, admin())).isInstanceOf(Approval.HashMismatch.class);
+        assertThat(service.approve(requestId, SERVER, "get_issue", second.hash(), false, admin())).isInstanceOf(Approval.Approved.class);
         assertThat(service.observe(server(), Map.of("get_issue", Manifests.definition(Tool.readOnly("get_issue").described("two"))), null))
                 .as("what the administrator approved is what the server presents").containsEntry("get_issue", Verdict.INTACT);
     }
@@ -273,7 +304,7 @@ class RegistryServiceTest extends GatewayTestBase {
     void anEntryOfThePipelineIsNeverReplacedByWhatTheServerPresents() {
         ObjectNode approved = Manifests.jira("1.4.0", Tool.update("update_issue"));
         register(approved);
-        service.approve(requestId, SERVER, "update_issue", hash(approved, "update_issue"), admin());
+        service.approve(requestId, SERVER, "update_issue", hash(approved, "update_issue"), false, admin());
         ObjectNode next = Manifests.jira("1.5.0", Tool.update("update_issue").described("Reviewed change."));
         register(next);
         String pendingHash = tool("update_issue").pending().hash();
@@ -313,7 +344,7 @@ class RegistryServiceTest extends GatewayTestBase {
     void aHeldManifestThatFailsTheChecksAtStartDisablesTheServerAndKeepsEverything() {
         ObjectNode manifest = Manifests.jira("1.4.0", Tool.readOnly("get_issue"), Tool.update("update_issue"));
         register(manifest);
-        service.approve(requestId, SERVER, "update_issue", hash(manifest, "update_issue"), admin());
+        service.approve(requestId, SERVER, "update_issue", hash(manifest, "update_issue"), false, admin());
         assertThat(server().enabled()).isTrue();
 
         // The configuration now asks the broker for token-exchange: the held manifest accepts user-secret only.

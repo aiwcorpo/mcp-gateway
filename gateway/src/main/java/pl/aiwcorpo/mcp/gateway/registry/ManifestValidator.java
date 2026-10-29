@@ -50,7 +50,8 @@ public final class ManifestValidator {
             out.add(new Rejection(null, "schema"));
             return out;
         }
-        ManifestRules.violations(json.writeValueAsString(manifest)).forEach(rule -> out.add(new Rejection(null, rule)));
+        ManifestRules.violations(json.writeValueAsString(manifest)).forEach(rule -> out.add(new Rejection(
+                "credential-types-not-mixed".equals(rule) ? CREDENTIAL_TYPE_MISMATCH : null, rule)));
         if (!configured.serverId().equals(manifest.path("serverId").asString())) {
             out.add(new Rejection(null, "serverId does not match the gateway configuration"));
         }
@@ -68,22 +69,21 @@ public final class ManifestValidator {
     }
 
     /**
-     * The type of credential the gateway asks the broker for in this system (the one of its configuration, also the
-     * {@code context.credentialType} of the Cedar decisions) must be one the server's manifest accepts, or a credential the gateway
-     * obtained would be refused by the server (CC-159). A system that needs no credential is not checked.
+     * Every credential type the configuration allows for the system must be one the server's manifest accepts, or a credential the
+     * broker may return would be refused by the server (CC-159 as amended by CC-166). A system that needs no credential is not checked.
      */
     private static Optional<Rejection> credentialMismatch(JsonNode manifest, McpServer configured) {
-        String asked = configured.credential().type();
-        if (!configured.credential().required() || asked == null) {
+        Set<String> asked = new java.util.TreeSet<>(configured.credential().acceptedTypes());
+        if (!configured.credential().required() || asked.isEmpty()) {
             return Optional.empty();
         }
         JsonNode credential = manifest.path("credential");
         Set<String> accepted = new java.util.TreeSet<>();
         credential.path("acceptedTypes").forEach(type -> accepted.add(type.asString()));
-        if (credential.path("required").asBoolean(false) && accepted.contains(asked)) {
+        if (credential.path("required").asBoolean(false) && accepted.containsAll(asked)) {
             return Optional.empty();
         }
-        return Optional.of(new Rejection(CREDENTIAL_TYPE_MISMATCH, "the gateway asks the broker for " + asked + " for "
+        return Optional.of(new Rejection(CREDENTIAL_TYPE_MISMATCH, "the gateway allows " + String.join(", ", asked) + " for "
                 + configured.system() + ", the manifest accepts " + (accepted.isEmpty() ? "none" : String.join(", ", accepted))));
     }
 

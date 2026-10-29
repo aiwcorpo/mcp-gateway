@@ -142,9 +142,9 @@ gateway:
       internal-url: ${MCP_SERVER_JIRA_MCP_URL:${MCP_SERVER_JIRA_URL}/mcp}
       credential:
         required: true
-        accepted-types: [user-secret, user-oauth]
-        # context.credentialType of the Cedar decisions (CC-136): one type per system, since a user may hold either.
-        type: user-secret
+        # The set of types the broker may return for the system (CC-166); the manifest of the server must accept every one of them
+        # (CC-159). The Jira server accepts user-secret only, so OAuth is not allowed here until its manifest says so.
+        accepted-types: [user-secret]
       tools:
         search_issues:
           risk: READ_ONLY
@@ -203,6 +203,8 @@ gateway:
       credential:
         required: true
         accepted-types: [user-oauth, user-secret]
+        # context.credentialType of the Cedar decisions (CC-136, CC-166): the default type of the system; the type the broker
+        # returns must be in accepted-types.
         type: user-oauth
       tools:
         list_projects:

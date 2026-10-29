@@ -44,9 +44,9 @@ class CredentialServiceTest {
     }
 
     @Test
-    void credentialOfANotAcceptedTypeIsAnError() {
+    void credentialOfATypeOutsideTheSetIsAMismatch() {
         grant("service-account");
-        assertThat(service.resolve(user, "jira", secretPolicy, "get_issue", "rid")).isInstanceOf(Resolution.Failed.class);
+        assertThat(service.resolve(user, "jira", secretPolicy, "get_issue", "rid")).isEqualTo(new Resolution.TypeMismatch("service-account"));
         assertThat(cache.size()).isZero();
     }
 

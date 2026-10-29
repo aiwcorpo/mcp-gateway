@@ -58,7 +58,8 @@ public final class RegistryService {
     }
 
     public sealed interface Approval {
-        record Approved() implements Approval {
+        /** {@code loweredTo}: the new risk (ordinal) when an administrator accepted a lowering, else -1. */
+        record Approved(int loweredTo) implements Approval {
         }
 
         record NotFound() implements Approval {
@@ -148,10 +149,9 @@ public final class RegistryService {
             if (bootstrap && tx.server().isPresent()) {
                 return new Written.AlreadyThere();
             }
-            Map<String, Integer> minimum = new java.util.HashMap<>(servers.configuredMinimumRisks(serverId));
-            tx.floors().forEach((name, risk) -> minimum.merge(name, risk, Math::max));
             Map<String, RegisteredTool> existing = tx.tools();
-            RegistryPlanner.Plan plan = RegistryPlanner.plan(manifest, credentialJson, existing, minimum, bootstrap);
+            RegistryPlanner.Plan plan = RegistryPlanner.plan(manifest, credentialJson, existing, tx.floors(),
+                    servers.configuredMinimumRisks(serverId), bootstrap);
             if (!plan.lowered().isEmpty()) {
                 return new Written.Lowered(plan.lowered());
             }
@@ -185,7 +185,8 @@ public final class RegistryService {
     }
 
     /** Approves the pending definition whose hash is {@code hash} (CC-133); the administrator is the actor of the audit event. */
-    public Approval approve(String requestId, String serverId, String tool, String hash, GatewayUser administrator) {
+    public Approval approve(String requestId, String serverId, String tool, String hash, boolean acceptRiskLowering,
+                            GatewayUser administrator) {
         Optional<McpServer> server = servers.find(serverId);
         if (server.isEmpty() || !server.get().approvalRequired()) {
             return new Approval.NotFound();
@@ -200,20 +201,31 @@ public final class RegistryService {
                 return new Approval.HashMismatch();
             }
             int risk = Risk.valueOf(pending.entry().path("risk").asString()).ordinal();
-            int floor = Math.max(tx.floors().getOrDefault(tool, 0), Math.max(servers.configuredMinimumRisks(serverId).getOrDefault(tool, 0),
-                    current.approvedRisk()));
-            if (risk < floor) {
-                return new Approval.RiskLowered(tool + " lowers risk from " + Risk.values()[floor] + " to " + Risk.values()[risk]);
+            int configured = servers.configuredMinimumRisks(serverId).getOrDefault(tool, 0);
+            int floor = Math.max(tx.floors().getOrDefault(tool, 0), current.approvedRisk());
+            boolean lowers = risk < floor;
+            if (risk < configured || (lowers && !acceptRiskLowering)) {
+                return new Approval.RiskLowered(tool + " lowers risk from " + Risk.values()[Math.max(floor, configured)] + " to " + Risk.values()[risk]);
             }
             tx.saveTool(new RegisteredTool(tool, new RegisteredTool.Approved(pending.entry(), pending.hash(), pending.version(),
                     pending.credentialJson()), null));
+            if (lowers) {
+                tx.setFloor(tool, risk);
+                return new Approval.Approved(risk);
+            }
             tx.raiseFloors(Map.of(tool, risk));
-            return new Approval.Approved();
+            return new Approval.Approved(-1);
         });
-        if (result instanceof Approval.Approved) {
+        if (result instanceof Approval.Approved approvedResult) {
             take(serverId);
-            audit.emit(AuditEvent.of("admin_change", requestId, componentId).userWithoutClient(administrator).server(serverId).tool(tool)
-                    .reason("definition_approved").definitionHash(hash).outcome("ok"));
+            AuditEvent event = AuditEvent.of("admin_change", requestId, componentId).userWithoutClient(administrator).server(serverId).tool(tool)
+                    .definitionHash(hash).outcome("ok");
+            if (approvedResult.loweredTo() >= 0) {
+                event.reason("risk_lowered_by_admin").risk(Risk.values()[approvedResult.loweredTo()].name());
+            } else {
+                event.reason("definition_approved");
+            }
+            audit.emit(event);
         } else if (result instanceof Approval.RiskLowered) {
             denied(requestId, serverId, "risk_lowered");
         }

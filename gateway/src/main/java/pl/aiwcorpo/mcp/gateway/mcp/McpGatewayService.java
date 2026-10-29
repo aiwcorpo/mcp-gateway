@@ -395,16 +395,24 @@ public class McpGatewayService {
                             errors.error("upstream_unavailable", "The credential service is unavailable. Try again later."));
                 }
                 case Resolution.Denied denied -> {
-                    // The IdP refused the exchange: the user may not use this system. The answer names no group (CC-157).
-                    resolveEvent(ctx, server, tool, denied.reason(), "denied", "access_denied");
-                    return finish(callKey, ctx, server, tool, null, started, argsLength, "deny", denied.reason(), null,
+                    // The IdP refused the exchange: the user may not use this system. The answer names no group (CC-157). The gateway
+                    // let the call through, the IdP refused: tool_call allow with outcome denied (CC-165).
+                    resolveEvent(ctx, server, tool, denied.reason(), "denied", "access_denied", null);
+                    return finishDenied(callKey, ctx, server, tool, started, argsLength, denied.reason(),
                             errors.error("access_denied", "You are not allowed to use this tool."));
+                }
+                case Resolution.TypeMismatch mismatch -> {
+                    log.error("credential for rid={}: the broker returned the type {} which the configuration of {} does not allow",
+                            ctx.requestId(), mismatch.returnedType(), server.system());
+                    resolveEvent(ctx, server, tool, "credential_type_mismatch", "error", "internal_error", mismatch.returnedType());
+                    return finish(callKey, ctx, server, tool, null, started, argsLength, "allow", null, null,
+                            errors.error("internal_error", "The call could not be completed."));
                 }
                 case Resolution.Failed failed -> {
                     log.error("credential for rid={} failed: {}", ctx.requestId(), failed.reason());
                     if ("system_not_configured".equals(failed.reason())) {
                         // A defect of the installation, not of the request: the client sees internal_error, the audit says why (CC-158).
-                        resolveEvent(ctx, server, tool, "system_not_configured", "error", "internal_error");
+                        resolveEvent(ctx, server, tool, "system_not_configured", "error", "internal_error", null);
                     }
                     return finish(callKey, ctx, server, tool, null, started, argsLength, "allow", null, null,
                             errors.error("internal_error", "The call could not be completed."));
@@ -597,8 +605,20 @@ public class McpGatewayService {
     }
 
     /** The gateway's own record of a credential resolution that did not give a credential for a reason the contract names. */
-    private void resolveEvent(CallContext ctx, McpServer server, ToolDefinition tool, String reason, String outcome, String errorCode) {
-        audit.emit(base(ctx, server, "credential_resolve", tool).reason(reason).outcome(outcome, errorCode));
+    private void resolveEvent(CallContext ctx, McpServer server, ToolDefinition tool, String reason, String outcome, String errorCode,
+                              String credentialType) {
+        audit.emit(base(ctx, server, "credential_resolve", tool).reason(reason).credentialType(credentialType).outcome(outcome, errorCode));
+    }
+
+    /** The call was allowed and the system refused it: decision allow, outcome denied (CC-165). */
+    private ObjectNode finishDenied(String callKey, CallContext ctx, McpServer server, ToolDefinition tool, long startedNanos,
+                                    int argsLength, String reason, ObjectNode result) {
+        long latencyNanos = System.nanoTime() - startedNanos;
+        audit.emit(base(ctx, server, "tool_call", tool).risk(tool.risk().name()).decision("allow", reason)
+                .policyRevision(authorizer.policyRevision()).outcome("denied", errors.codeOf(result))
+                .latencyMs(latencyNanos / 1_000_000).argsLength(argsLength).callKey(callKey));
+        count(server, tool, "denied", errors.codeOf(result), latencyNanos);
+        return result;
     }
 
     private void decisionEvent(CallContext ctx, McpServer server, ToolDefinition tool, String decision, String reason,

@@ -364,21 +364,59 @@ class RegistryTest extends GatewayTestBase {
     // --- what a registration refuses -------------------------------------------------------------------------
 
     @Test
-    void aManifestThatLowersTheRiskIsRefusedWithItsReasonAndNothingChanges(CapturedOutput output) throws Exception {
-        ObjectNode lowered = edited(m -> {
-            tool(m, "delete_issue").put("risk", "READ_ONLY").put("action", "read");
-            rehash(m, "delete_issue");
+    void aManifestThatLowersTheRiskIsTakenAndOnlyThatToolWaitsForAnAdministratorWhoAcceptsTheLowering(CapturedOutput output) throws Exception {
+        ObjectNode withUpdate = edited(m -> {
+            ObjectNode tool = tool(m, "search_issues").deepCopy();
+            tool.put("name", "lower_me").put("risk", "UPDATE").put("action", "update");
+            ((ObjectNode) tool.get("definition")).put("name", "lower_me").put("title", "Lower me").put("description", "Changes something.");
+            ((tools.jackson.databind.node.ArrayNode) m.get("tools")).add(tool);
+            rehash(m, "lower_me");
         });
+        assertThat(register(withUpdate).statusCode()).isEqualTo(200);
+        assertThat(asAdmin("POST", "/admin/v1/registry/servers/mcp-gitlab/tools/lower_me/approve",
+                "{\"definitionHash\":\"" + hashOf(withUpdate, "lower_me") + "\"}").statusCode()).isEqualTo(204);
 
+        ObjectNode lowered = edited(m -> {
+            ObjectNode tool = tool(withUpdate.deepCopy(), "lower_me").deepCopy();
+            tool.put("risk", "READ_ONLY").put("action", "read");
+            ((tools.jackson.databind.node.ArrayNode) m.get("tools")).add(tool);
+            rehash(m, "lower_me");
+            describe(m, "get_issue", "Returns one issue, reviewed text.");
+        });
         HttpResponse<String> response = register(lowered);
 
-        assertThat(response.statusCode()).as(response.body()).isEqualTo(422);
-        JsonNode body = JSON.readTree(response.body());
-        assertThat(Contracts.gatewayAdminErrors("ManifestRejected", body)).isEmpty();
-        assertThat(body.path("error").asString()).isEqualTo("manifest_rejected");
-        assertThat(body.path("reason").asString()).isEqualTo("risk_lowered");
-        assertThat(registryEntry("delete_issue").path("risk").asString()).isEqualTo("DESTRUCTIVE");
-        assertThat(events(output, "admin_change", "risk_lowered")).isNotEmpty();
+        assertThat(response.statusCode()).as("the manifest is not rejected: " + response.body()).isEqualTo(200);
+        JsonNode view = JSON.readTree(response.body());
+        assertThat(Contracts.gatewayAdminErrors("RegistryServer", view)).isEmpty();
+        for (JsonNode t : view.path("tools")) {
+            if ("lower_me".equals(t.path("name").asString())) {
+                assertThat(t.path("status").asString()).isEqualTo("pending_approval");
+                assertThat(t.path("riskLowered").asBoolean()).isTrue();
+                assertThat(t.path("change").asString()).isEqualTo("changed");
+            } else if ("get_issue".equals(t.path("name").asString())) {
+                assertThat(t.path("status").asString()).as("the rest of the manifest goes through").isEqualTo("approved");
+            }
+        }
+        JsonNode diff = JSON.readTree(asAdmin("GET", "/admin/v1/registry/servers/mcp-gitlab/tools/lower_me/pending", null).body());
+        assertThat(Contracts.gatewayAdminErrors("PendingTool", diff)).isEmpty();
+        assertThat(diff.path("riskLowered").asBoolean()).isTrue();
+        String hash = diff.path("pendingHash").asString();
+        String approve = "/admin/v1/registry/servers/mcp-gitlab/tools/lower_me/approve";
+
+        HttpResponse<String> refused = asAdmin("POST", approve, "{\"definitionHash\":\"" + hash + "\"}");
+        assertThat(refused.statusCode()).isEqualTo(422);
+        assertThat(Contracts.gatewayAdminErrors("ManifestRejected", JSON.readTree(refused.body()))).isEmpty();
+        assertThat(JSON.readTree(refused.body()).path("reason").asString()).isEqualTo("risk_lowered");
+        assertThat(asAdmin("POST", approve, "{\"definitionHash\":\"" + hash + "\",\"acceptRiskLowering\":\"yes\"}").statusCode())
+                .as("the flag is a boolean").isEqualTo(400);
+        assertThat(admin("POST", approve, UUID.randomUUID().toString(), "bob", List.of("mcp-gitlab-read"),
+                "{\"definitionHash\":\"" + hash + "\",\"acceptRiskLowering\":true}").statusCode()).as("only an administrator").isEqualTo(403);
+
+        assertThat(asAdmin("POST", approve, "{\"definitionHash\":\"" + hash + "\",\"acceptRiskLowering\":true}").statusCode()).isEqualTo(204);
+
+        assertThat(registryEntry("lower_me").path("risk").asString()).isEqualTo("READ_ONLY");
+        assertThat(events(output, "admin_change", "risk_lowered_by_admin")).anyMatch(e -> hash.equals(e.path("definitionHash").asString())
+                && "READ_ONLY".equals(e.path("risk").asString()) && ADMIN_SUB.equals(e.path("sub").asString()));
     }
 
     @Test

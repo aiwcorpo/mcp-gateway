@@ -54,6 +54,8 @@ class ServerRegistryTest {
                 false, null))).hasMessageContaining("credential.type is required");
         assertThatThrownBy(() -> withCredential(new GatewayProperties.Credential(true, List.of("user-secret"), List.of(), false,
                 "service-account"))).hasMessageContaining("one of accepted-types");
+        assertThatThrownBy(() -> withCredential(new GatewayProperties.Credential(true, List.of("service-account", "user-secret"), List.of(),
+                false, "service-account"))).hasMessageContaining("mixes service-account");
         assertThatThrownBy(() -> withCredential(new GatewayProperties.Credential(true, List.of("user-secret"), List.of(), true, null)))
                 .hasMessageContaining("token-exchange");
     }

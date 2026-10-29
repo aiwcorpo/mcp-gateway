@@ -57,7 +57,7 @@ public final class RateLimiter {
     }
 
     /** Seconds a client is told to wait when Redis does not answer. */
-    private static final int UNAVAILABLE_RETRY_SECONDS = 5;
+    private static final int UNAVAILABLE_RETRY_SECONDS = 10;
 
     private static final DefaultRedisScript<List> CHECK_AND_COUNT = new DefaultRedisScript<>("""
             for i = 1, #KEYS do

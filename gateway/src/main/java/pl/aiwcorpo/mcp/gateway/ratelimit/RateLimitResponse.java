@@ -31,6 +31,6 @@ public final class RateLimitResponse {
                 .header("Cache-Control", "no-store")
                 .header("Retry-After", Integer.toString(seconds))
                 .header("X-Request-Id", requestId)
-                .body("{\"error\":\"upstream_unavailable\",\"message\":\"The service is unavailable. Try again later.\"}");
+                .body("{\"error\":\"upstream_unavailable\",\"message\":\"Request limits are temporarily unavailable. Try again in a few seconds.\"}");
     }
 }

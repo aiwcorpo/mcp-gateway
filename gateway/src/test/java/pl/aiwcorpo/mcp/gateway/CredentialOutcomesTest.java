@@ -44,8 +44,11 @@ class CredentialOutcomesTest extends GatewayTestBase {
         assertThat(resolve.path("outcome").asString()).isEqualTo("denied");
         assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", resolve)).isEmpty();
         JsonNode call = events(output, sub, "tool_call").getFirst();
-        assertThat(call.path("decision").asString()).isEqualTo("deny");
+        assertThat(call.path("decision").asString()).as("the gateway let it through, the IdP refused (CC-165)").isEqualTo("allow");
+        assertThat(call.path("outcome").asString()).isEqualTo("denied");
+        assertThat(call.path("reason").asString()).isEqualTo("exchange_denied");
         assertThat(call.path("errorCode").asString()).isEqualTo("access_denied");
+        assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", call)).isEmpty();
         assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
         assertThat(credentialCache.get(new CredentialCache.Key(sub, "jira", List.of()))).isNull();
     }
@@ -75,6 +78,24 @@ class CredentialOutcomesTest extends GatewayTestBase {
         JsonNode error = toolError(callGetIssue(env.idp.token(sub, "forever", GROUPS)));
 
         assertThat(error.path("error").asString()).isEqualTo("internal_error");
+        assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
+        assertThat(credentialCache.get(new CredentialCache.Key(sub, "jira", List.of()))).isNull();
+    }
+
+    @Test
+    void aTypeFromTheBrokerOutsideTheSetOfTheSystemIsInternalErrorAndIsNeverUsedOrCached(CapturedOutput output) throws Exception {
+        String sub = UUID.randomUUID().toString();
+        env.broker.mode(BrokerStub.Mode.OTHER_TYPE);
+
+        JsonNode error = toolError(callGetIssue(env.idp.token(sub, "other-type", GROUPS)));
+
+        assertThat(error.path("error").asString()).isEqualTo("internal_error");
+        JsonNode resolve = events(output, sub, "credential_resolve").getFirst();
+        assertThat(resolve.path("reason").asString()).isEqualTo("credential_type_mismatch");
+        assertThat(resolve.path("outcome").asString()).isEqualTo("error");
+        assertThat(resolve.path("errorCode").asString()).isEqualTo("internal_error");
+        assertThat(resolve.path("credentialType").asString()).as("the type the broker returned").isEqualTo("user-oauth");
+        assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", resolve)).isEmpty();
         assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
         assertThat(credentialCache.get(new CredentialCache.Key(sub, "jira", List.of()))).isNull();
     }

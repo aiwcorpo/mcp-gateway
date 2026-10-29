@@ -164,6 +164,10 @@ public final class ServerRegistry {
         if (!CREDENTIAL_TYPES.containsAll(accepted)) {
             throw new IllegalStateException("gateway.servers." + serverId + ".credential.accepted-types: unknown type");
         }
+        if (accepted.contains("service-account") && accepted.size() > 1) {
+            // context.credentialType is one default type: a mixed set would hide a service account from the rules about it (CC-168).
+            throw new IllegalStateException("gateway.servers." + serverId + ".credential.accepted-types mixes service-account with user types (CC-168)");
+        }
         if (!SEMVER.matcher(server.version()).matches()) {
             throw new IllegalStateException("gateway.servers." + serverId + ".version must be a SemVer");
         }
