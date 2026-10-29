@@ -52,6 +52,7 @@ import tools.jackson.databind.json.JsonMapper;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @org.springframework.test.context.ActiveProfiles("devstack")
+@org.springframework.context.annotation.Import(pl.aiwcorpo.mcp.gateway.support.RateLimitTestConfiguration.class)
 @ExtendWith(OutputCaptureExtension.class)
 public abstract class GatewayTestBase {
 

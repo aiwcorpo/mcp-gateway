@@ -31,7 +31,7 @@ class CredentialServiceTest {
     private final AtomicBoolean live = new AtomicBoolean(true);
     private final CredentialService service = new CredentialService(broker, exchange, cache, live::get, new SimpleMeterRegistry());
     private final GatewayUser user = new GatewayUser("sub-1", "alice", "claude-code", List.of(), "raw-idp-token");
-    private final CredentialPolicy secretPolicy = new CredentialPolicy(true, Set.of("user-secret"), List.of(), false);
+    private final CredentialPolicy secretPolicy = new CredentialPolicy(true, Set.of("user-secret"), List.of(), false, "user-secret");
 
     @Test
     void cacheIsBypassedWhileTheInvalidationSubscriptionIsDown() {
@@ -52,7 +52,7 @@ class CredentialServiceTest {
 
     @Test
     void tokenExchangeSystemsSendTheExchangedTokenNeverTheRawOne() {
-        CredentialPolicy exchangePolicy = new CredentialPolicy(true, Set.of("token-exchange"), List.of(), true);
+        CredentialPolicy exchangePolicy = new CredentialPolicy(true, Set.of("token-exchange"), List.of(), true, "token-exchange");
         when(exchange.exchange("raw-idp-token")).thenReturn("exchanged");
         when(broker.resolve(any(), eq("opensearch"), anyList(), eq("exchanged"), any(), any())).thenReturn(
                 new Resolution.Granted(new Credential("Bearer", "os-token", "token-exchange", null, 30), false));
@@ -62,7 +62,7 @@ class CredentialServiceTest {
 
     @Test
     void failedExchangeIsUnavailableAndTheBrokerIsNotCalled() {
-        CredentialPolicy exchangePolicy = new CredentialPolicy(true, Set.of("token-exchange"), List.of(), true);
+        CredentialPolicy exchangePolicy = new CredentialPolicy(true, Set.of("token-exchange"), List.of(), true, "token-exchange");
         when(exchange.exchange(any())).thenReturn(null);
         assertThat(service.resolve(user, "opensearch", exchangePolicy, "search_logs", "rid"))
                 .isInstanceOf(Resolution.Unavailable.class);

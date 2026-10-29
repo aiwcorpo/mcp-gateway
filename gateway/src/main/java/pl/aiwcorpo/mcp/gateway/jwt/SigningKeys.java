@@ -41,7 +41,11 @@ public final class SigningKeys {
         this.publicSet = new JWKSet(all.stream().map(k -> (JWK) k.toPublicJWK()).toList());
     }
 
-    public static SigningKeys load(String keysFile, String activeKid, boolean allowTestKeys) {
+    /**
+     * @param devstackProfile true under the devstack profile; {@code dev-} keys need it together with {@code allowTestKeys}
+     *                        (dev mode, CC-137), {@code test-} keys need {@code allowTestKeys} alone (CC-044)
+     */
+    public static SigningKeys load(String keysFile, String activeKid, boolean allowTestKeys, boolean devstackProfile) {
         List<ECKey> keys;
         ECKey active;
         if (keysFile == null || keysFile.isBlank()) {
@@ -57,6 +61,10 @@ public final class SigningKeys {
         for (ECKey key : keys) {
             if (!allowTestKeys && key.getKeyID().startsWith("test-")) {
                 throw new IllegalStateException("kid " + key.getKeyID() + ": test- keys are rejected outside tests (CC-044)");
+            }
+            if (!(allowTestKeys && devstackProfile) && key.getKeyID().startsWith("dev-")) {
+                throw new IllegalStateException("kid " + key.getKeyID() + ": dev- keys need dev mode, the devstack profile and "
+                        + "gateway.internal-jwt.allow-test-keys together (CC-137)");
             }
             if (!allowTestKeys && isPublishedTestKey(key)) {
                 throw new IllegalStateException("kid " + key.getKeyID() + " is a published mcp-contracts test key");

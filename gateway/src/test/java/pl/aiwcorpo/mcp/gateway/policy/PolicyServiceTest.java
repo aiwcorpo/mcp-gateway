@@ -108,6 +108,29 @@ class PolicyServiceTest {
     }
 
     @Test
+    void aBundleThatIsNotNewerIsFetchedOnceAndIsNotAnError() {
+        server.publishMain(TestBundles.main(TestBundles.revision(5), Map.of()));
+        PolicyService service = service(false, null, Duration.ofSeconds(5), Duration.ofSeconds(1)).start();
+        try {
+            // latest.json went back to the revision in force: same content, nothing to learn from it again.
+            server.publishMain(TestBundles.main(TestBundles.revision(4), Map.of()));
+            service.sync(Channel.MAIN);
+            int afterFirst = server.requests();
+            for (int i = 0; i < 5; i++) {
+                service.sync(Channel.MAIN);
+            }
+            assertThat(server.requests() - afterFirst).as("only the conditional latest.json request, answered 304").isEqualTo(5);
+            assertThat(meters.find("gateway_policy_bundle_rejected_total").counters()).as("not an error").isEmpty();
+            assertThat(service.revision()).isEqualTo(TestBundles.revision(5));
+            server.publishMain(TestBundles.main(TestBundles.revision(6), Map.of()));
+            service.sync(Channel.MAIN);
+            assertThat(service.revision()).as("a newer bundle is still taken").isEqualTo(TestBundles.revision(6));
+        } finally {
+            service.destroy();
+        }
+    }
+
+    @Test
     void theRollbackProtectionHoldsAcrossARestart() {
         server.publishMain(TestBundles.main(TestBundles.revision(7), Map.of()));
         service(false, null, Duration.ofSeconds(5), Duration.ofSeconds(1)).start().destroy();

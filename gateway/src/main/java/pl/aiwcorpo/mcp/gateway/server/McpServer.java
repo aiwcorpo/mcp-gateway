@@ -10,13 +10,12 @@ import java.util.Optional;
  * keeps its tools in the catalog but none of them can be listed or called.
  */
 public record McpServer(String serverId, String system, URI internalUrl, String version, boolean enabled,
-                        CredentialPolicy credential, Map<String, ToolDefinition> tools, boolean approvalRequired,
-                        String manifestCredentialJson) {
+                        CredentialPolicy credential, Map<String, ToolDefinition> tools, boolean approvalRequired) {
 
     /** A server whose tools come from the static configuration. */
     public McpServer(String serverId, String system, URI internalUrl, String version, boolean enabled, CredentialPolicy credential,
                      Map<String, ToolDefinition> tools) {
-        this(serverId, system, internalUrl, version, enabled, credential, tools, false, null);
+        this(serverId, system, internalUrl, version, enabled, credential, tools, false);
     }
 
     public String tlsName() {

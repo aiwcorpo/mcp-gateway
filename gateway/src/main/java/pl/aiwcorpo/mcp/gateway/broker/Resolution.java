@@ -10,6 +10,10 @@ public sealed interface Resolution {
     record Required(String system, String connectUrl) implements Resolution {
     }
 
+    /** 403 exchange_denied: the IdP refused the token exchange, the user may not use this system (C10 access_denied, CC-157). */
+    record Denied(String reason) implements Resolution {
+    }
+
     /** Broker, IdP or network unavailable (C10 upstream_unavailable). */
     record Unavailable(String reason) implements Resolution {
     }

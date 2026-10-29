@@ -90,15 +90,30 @@ public class BrokerClient implements AuthenticatorPort {
         return switch (status) {
             case 200 -> granted(body, requestId);
             case 409 -> required(body, system, requestId);
+            case 403 -> "exchange_denied".equals(errorOf(body)) ? new Resolution.Denied("exchange_denied") : failed(status, requestId);
+            case 422 -> "system_not_configured".equals(errorOf(body)) ? configuration(system, requestId) : failed(status, requestId);
             case 503 -> new Resolution.Unavailable("broker_503");
-            default -> {
-                if (status >= 500) {
-                    yield new Resolution.Unavailable("broker_" + status);
-                }
-                log.error("broker resolve rid={} answered {}: the gateway's request was rejected", requestId, status);
-                yield new Resolution.Failed("broker_" + status);
-            }
+            default -> status >= 500 ? new Resolution.Unavailable("broker_" + status) : failed(status, requestId);
         };
+    }
+
+    private Resolution failed(int status, String requestId) {
+        log.error("broker resolve rid={} answered {}: the gateway's request was rejected", requestId, status);
+        return new Resolution.Failed("broker_" + status);
+    }
+
+    /** CC-158: a defect of the installation; the client gets internal_error, the log and the audit say why. */
+    private Resolution configuration(String system, String requestId) {
+        log.error("broker resolve rid={}: the system {} is not configured in the broker (system_not_configured)", requestId, system);
+        return new Resolution.Failed("system_not_configured");
+    }
+
+    private String errorOf(byte[] body) {
+        try {
+            return json.readTree(body).path("error").asString(null);
+        } catch (JacksonException e) {
+            return null;
+        }
     }
 
     /** {@code GET /v1/authenticator}; {@code tool} is the server-side name of the tool being confirmed (C2, CC-092). */
@@ -221,6 +236,11 @@ public class BrokerClient implements AuthenticatorPort {
             }
             JsonNode expiresNode = node.path("expiresAt");
             Instant expiresAt = expiresNode.isString() ? Instant.parse(expiresNode.asString()) : null;
+            if ("token-exchange".equals(type) && expiresAt == null) {
+                // CC-157: an exchanged token always says when it ends; one that does not is not cached and not used.
+                log.error("broker resolve rid={}: a token-exchange credential without expiresAt", requestId);
+                return new Resolution.Failed("broker_body_invalid");
+            }
             return new Resolution.Granted(new Credential(scheme, value, type, expiresAt, ttl.asInt()), false);
         } catch (JacksonException | DateTimeParseException e) {
             log.error("broker resolve rid={}: unreadable 200 body", requestId);

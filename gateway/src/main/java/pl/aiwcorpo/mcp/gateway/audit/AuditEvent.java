@@ -46,6 +46,11 @@ public final class AuditEvent {
         return this;
     }
 
+    /** The actor of an event the system itself raises about a user (offboarding): the sub of the user concerned. */
+    public AuditEvent sub(String sub) {
+        return put("sub", sub);
+    }
+
     public AuditEvent client(String client) {
         return put("client", client);
     }
@@ -115,12 +120,26 @@ public final class AuditEvent {
         return put("reason", reason);
     }
 
+    /** Reason alone, for events that have no allow or deny decision (admin_change, credential_resolve, virtual_server_change). */
+    public AuditEvent reason(String reason) {
+        return put("reason", reason);
+    }
+
+    /** Hash of the definition an admin_change concerns (CC-133). */
+    public AuditEvent definitionHash(String hash) {
+        return put("definitionHash", hash);
+    }
+
     public AuditEvent policyRevision(String revision) {
         return put("policyRevision", revision);
     }
 
     public AuditEvent credentialType(String type) {
         return put("credentialType", type);
+    }
+
+    public AuditEvent outcome(String outcome) {
+        return put("outcome", outcome);
     }
 
     public AuditEvent outcome(String outcome, String errorCode) {

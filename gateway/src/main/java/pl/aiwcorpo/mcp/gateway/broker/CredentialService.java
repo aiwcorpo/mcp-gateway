@@ -67,6 +67,7 @@ public class CredentialService {
         String outcome = switch (resolution) {
             case Resolution.Granted g -> "granted";
             case Resolution.Required r -> "credential_required";
+            case Resolution.Denied d -> "denied";
             case Resolution.Unavailable u -> "unavailable";
             case Resolution.Failed f -> "failed";
         };

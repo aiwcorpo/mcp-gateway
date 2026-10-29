@@ -35,13 +35,15 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * The gateway-level vectors of policy-decisions/ (mcp-contracts 3.1.0) through the gateway's own loader and evaluator: the
+ * The gateway-level vectors of policy-decisions/ (mcp-contracts 4.0.0) through the gateway's own loader and evaluator: the
  * bundle is pulled, verified and loaded like in production, and the decision is the one the vector expects. The step-up rule is
  * not in a production bundle, so the vectors that only it decides are not applicable.
  */
 class CedarDecisionVectorsTest {
 
     private static final JsonMapper JSON = JsonMapper.builder().build();
+    private static final Map<String, String> CONFIGURED_TYPES = Map.of("jira", "user-secret", "confluence", "user-secret",
+            "gitlab", "user-oauth", "servicedesk", "service-account", "opensearch", "token-exchange");
     private static PolicyServer server;
     private static PolicyService policies;
     private static CedarToolAuthorizer authorizer;
@@ -103,8 +105,10 @@ class CedarDecisionVectorsTest {
                     });
                     caller = caller.withVirtualServer(VirtualServerScope.fromClaims(c.path("vs").asString(), vsc));
                 }
+                // The gateway puts the type of the system from its configuration into every decision (CC-136).
+                String credentialType = input.path("credentialType").asString(CONFIGURED_TYPES.get(tool.path("system").asString()));
                 CedarToolAuthorizer.Evaluation result = authorizer.evaluate(caller, descriptor,
-                        JSON.convertValue(input.path("arguments"), Map.class), List.of());
+                        JSON.convertValue(input.path("arguments"), Map.class), List.of(), credentialType);
                 assertThat(result.decision().allowed()).as(document.path("description").asString())
                         .isEqualTo("allow".equals(document.path("expected").path("decision").asString()));
                 SortedSet<String> actual = new TreeSet<>(result.determiningPolicies());

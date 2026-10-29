@@ -40,6 +40,9 @@ public class ClientSessionStore {
         String value = json.writeValueAsString(Map.of("sub", sub, "client", client == null ? "" : client,
                 "protocolVersion", protocolVersion));
         redis.opsForValue().set(prefix + id, value, idleTimeout);
+        // The index lets an offboarding find the sessions of a user; the gateway's Redis account has no SCAN.
+        redis.opsForSet().add(indexKey(sub), id);
+        redis.expire(indexKey(sub), idleTimeout.plusMinutes(1));
         return new ClientSession(id, sub, client, protocolVersion);
     }
 
@@ -54,8 +57,11 @@ public class ClientSessionStore {
         }
         try {
             JsonNode node = json.readTree(value);
-            return Optional.of(new ClientSession(id, node.path("sub").asString(), node.path("client").asString(),
-                    node.path("protocolVersion").asString()));
+            String sub = node.path("sub").asString();
+            // A session that outlives its first index entry (it is used) stays findable by an offboarding.
+            redis.opsForSet().add(indexKey(sub), id);
+            redis.expire(indexKey(sub), idleTimeout.plusMinutes(1));
+            return Optional.of(new ClientSession(id, sub, node.path("client").asString(), node.path("protocolVersion").asString()));
         } catch (JacksonException e) {
             return Optional.empty();
         }
@@ -63,5 +69,24 @@ public class ClientSessionStore {
 
     public void delete(String id) {
         redis.delete(prefix + id);
+    }
+
+    /** Ends every session of the user (offboarding). Idempotent; an unreachable Redis is a DataAccessException for the caller. */
+    public int deleteAllOf(String sub) {
+        java.util.Set<String> ids = redis.opsForSet().members(indexKey(sub));
+        int removed = 0;
+        if (ids != null) {
+            for (String id : ids) {
+                if (Boolean.TRUE.equals(redis.delete(prefix + id))) {
+                    removed++;
+                }
+            }
+        }
+        redis.delete(indexKey(sub));
+        return removed;
+    }
+
+    private String indexKey(String sub) {
+        return prefix + "of:" + pl.aiwcorpo.mcp.gateway.redis.KeyHash.of(sub);
     }
 }

@@ -77,14 +77,22 @@ public final class InternalJwtVerifier {
     private final String issuer;
     private final String audience;
     private final boolean allowTestKeys;
+    private final boolean devstackProfile;
     private final KeySource keys;
     private final Clock clock;
     private final Map<String, Long> seenJtis = new ConcurrentHashMap<>();
 
     public InternalJwtVerifier(String issuer, String audience, boolean allowTestKeys, KeySource keys, Clock clock) {
+        this(issuer, audience, allowTestKeys, false, keys, clock);
+    }
+
+    /** {@code dev-} keys need both consents of dev mode: the devstack profile and {@code allowTestKeys} (CC-137). */
+    public InternalJwtVerifier(String issuer, String audience, boolean allowTestKeys, boolean devstackProfile, KeySource keys,
+                               Clock clock) {
         this.issuer = Objects.requireNonNull(issuer);
         this.audience = Objects.requireNonNull(audience);
         this.allowTestKeys = allowTestKeys;
+        this.devstackProfile = devstackProfile;
         this.keys = Objects.requireNonNull(keys);
         this.clock = Objects.requireNonNull(clock);
     }
@@ -116,7 +124,7 @@ public final class InternalJwtVerifier {
         if (kid == null || kid.isEmpty()) {
             return Result.reject("unknown_kid");
         }
-        if (!allowTestKeys && kid.startsWith("test-")) {
+        if ((!allowTestKeys && kid.startsWith("test-")) || (!(allowTestKeys && devstackProfile) && kid.startsWith("dev-"))) {
             return Result.reject("test_key_not_allowed");
         }
         JWK key = keys.find(kid);

@@ -15,12 +15,13 @@ import tools.jackson.databind.node.ObjectNode;
 /** The calls of one user as rows (CC-095): one row per call, newest first, filtered after the aggregation. */
 public final class ActivityService {
 
-    public static final Duration RETENTION = Duration.ofDays(30);
+    /** Default retention of the activity table (CC-134); the deployment decides, this is not a constant of the contract. */
+    public static final Duration DEFAULT_RETENTION = Duration.ofDays(30);
     private static final int BATCH = 100;
     private static final int MAX_BATCHES = 50;
     private static final Set<String> DENIED = Set.of("denied_not_granted", "denied_link_scope", "denied_policy", "tool_disabled",
-            "step_up_required");
-    private static final Set<String> FAILED = Set.of("error", "credential_required", "rate_limited");
+            "step_up_required", "rate_limited");
+    private static final Set<String> FAILED = Set.of("error", "credential_required");
 
     /** What the caller asked for; the user is always the caller's own sub. */
     public record Query(String sub, int limit, Instant from, Instant to, String resultGroup, String q, ActivityCursor.Position after) {
@@ -32,16 +33,18 @@ public final class ActivityService {
     private final ActivityStore store;
     private final ActivityAggregator aggregator;
     private final Clock clock;
+    private final Duration retention;
 
-    public ActivityService(ActivityStore store, ActivityAggregator aggregator, Clock clock) {
+    public ActivityService(ActivityStore store, ActivityAggregator aggregator, Clock clock, Duration retention) {
         this.store = store;
         this.aggregator = aggregator;
         this.clock = clock;
+        this.retention = retention;
     }
 
     public Page calls(Query query) {
         Instant now = clock.instant();
-        Instant notBefore = now.minus(RETENTION);
+        Instant notBefore = now.minus(retention);
         List<ObjectNode> rows = new ArrayList<>();
         Instant afterTs = query.after() == null ? null : Instant.parse(query.after().ts());
         String afterRequestId = query.after() == null ? null : query.after().requestId();
@@ -103,6 +106,6 @@ public final class ActivityService {
     }
 
     public List<JsonNode> recentEvents(String sub, int limit) {
-        return store.recent(sub, clock.instant().minus(RETENTION), limit);
+        return store.recent(sub, clock.instant().minus(retention), limit);
     }
 }

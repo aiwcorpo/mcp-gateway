@@ -3,13 +3,14 @@ package pl.aiwcorpo.mcp.gateway.registry;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 
 import com.networknt.schema.Schema;
 import com.networknt.schema.SchemaLocation;
 import com.networknt.schema.SchemaRegistry;
 import com.networknt.schema.SpecificationVersion;
 
-import pl.aiwcorpo.mcp.cedar.entities.ResourceRef;
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
 import pl.aiwcorpo.mcp.manifest.ManifestRules;
 import tools.jackson.databind.JsonNode;
@@ -18,37 +19,72 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * What the gateway checks before it takes a manifest (C5 registerServer, C6): the JSON Schema (a title in every definition, a
  * closed and bounded inputSchema), the semantic rules of {@code mcp-manifest} (names, resource references, the hash recomputed
- * from the definition) and the binding of the server to the gateway's own configuration (serverId, system, address).
+ * from the definition), the binding of the server to the gateway's own configuration (serverId, system, address), the
+ * environment the server was built for (CC-138) and the credential types the gateway asks the broker for (CC-159).
  */
 public final class ManifestValidator {
 
     private static final Schema SCHEMA = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12)
             .getSchema(SchemaLocation.of("classpath:mcp-contracts/schemas/server-manifest.schema.json"));
 
-    private final JsonMapper json;
+    public static final String ENVIRONMENT_MISMATCH = "environment_mismatch";
+    public static final String CREDENTIAL_TYPE_MISMATCH = "credential_type_mismatch";
 
-    public ManifestValidator(JsonMapper json) {
-        this.json = json;
+    /** A refusal; {@code reason} is a value of {@code ManifestRejected.reason} or null for the older kinds (schema, rule, binding). */
+    public record Rejection(String reason, String message) {
     }
 
-    /** Reasons the manifest is refused; empty when it is acceptable for {@code configured}. Never quotes manifest values. */
-    public List<String> violations(JsonNode manifest, McpServer configured) {
-        List<String> out = new ArrayList<>();
+    private final JsonMapper json;
+    private final boolean devMode;
+
+    /** @param devMode the devstack profile is in force: a manifest of environment dev is accepted only then */
+    public ManifestValidator(JsonMapper json, boolean devMode) {
+        this.json = json;
+        this.devMode = devMode;
+    }
+
+    /** Why the manifest is refused for {@code configured}; empty when it is acceptable. Never quotes manifest values. */
+    public List<Rejection> check(JsonNode manifest, McpServer configured) {
+        List<Rejection> out = new ArrayList<>();
         if (!SCHEMA.validate(manifest).isEmpty()) {
-            out.add("schema");
+            out.add(new Rejection(null, "schema"));
             return out;
         }
-        out.addAll(ManifestRules.violations(json.writeValueAsString(manifest)));
+        ManifestRules.violations(json.writeValueAsString(manifest)).forEach(rule -> out.add(new Rejection(null, rule)));
         if (!configured.serverId().equals(manifest.path("serverId").asString())) {
-            out.add("serverId does not match the gateway configuration");
+            out.add(new Rejection(null, "serverId does not match the gateway configuration"));
         }
         if (!configured.system().equals(manifest.path("system").asString())) {
-            out.add("system does not match the gateway configuration");
+            out.add(new Rejection(null, "system does not match the gateway configuration"));
         }
         if (!addressMatches(manifest.path("internalUrl").asString(), configured)) {
-            out.add("internalUrl does not match the gateway configuration");
+            out.add(new Rejection(null, "internalUrl does not match the gateway configuration"));
         }
+        if ("dev".equals(manifest.path("environment").asString("production")) && !devMode) {
+            out.add(new Rejection(ENVIRONMENT_MISMATCH, "the manifest of " + configured.serverId() + " declares environment dev"));
+        }
+        credentialMismatch(manifest, configured).ifPresent(out::add);
         return out;
+    }
+
+    /**
+     * The type of credential the gateway asks the broker for in this system (the one of its configuration, also the
+     * {@code context.credentialType} of the Cedar decisions) must be one the server's manifest accepts, or a credential the gateway
+     * obtained would be refused by the server (CC-159). A system that needs no credential is not checked.
+     */
+    private static Optional<Rejection> credentialMismatch(JsonNode manifest, McpServer configured) {
+        String asked = configured.credential().type();
+        if (!configured.credential().required() || asked == null) {
+            return Optional.empty();
+        }
+        JsonNode credential = manifest.path("credential");
+        Set<String> accepted = new java.util.TreeSet<>();
+        credential.path("acceptedTypes").forEach(type -> accepted.add(type.asString()));
+        if (credential.path("required").asBoolean(false) && accepted.contains(asked)) {
+            return Optional.empty();
+        }
+        return Optional.of(new Rejection(CREDENTIAL_TYPE_MISMATCH, "the gateway asks the broker for " + asked + " for "
+                + configured.system() + ", the manifest accepts " + (accepted.isEmpty() ? "none" : String.join(", ", accepted))));
     }
 
     /** The manifest names the server by the configured address or by the TLS name the gateway checks, on the configured port. */
@@ -68,19 +104,8 @@ public final class ManifestValidator {
         return uri.getPort() == -1 ? 443 : uri.getPort();
     }
 
-    /** The approved view of an accepted manifest. */
-    public ApprovedServer approved(JsonNode manifest) {
-        java.util.Map<String, ApprovedTool> tools = new java.util.LinkedHashMap<>();
-        for (JsonNode tool : manifest.path("tools")) {
-            List<ResourceRef> refs = new ArrayList<>();
-            tool.path("resourceRefs").forEach(ref -> refs.add(new ResourceRef(ref.path("argument").asString(), ref.path("type").asString())));
-            JsonNode definition = tool.path("definition");
-            String name = tool.path("name").asString();
-            tools.put(name, new ApprovedTool(name, tool.path("risk").asString(), tool.path("action").asString(), List.copyOf(refs),
-                    definition.path("title").asString(null), definition.path("description").asString(""), definition,
-                    tool.path("definitionHash").asString(), tool));
-        }
-        return new ApprovedServer(manifest.path("serverId").asString(), manifest.path("system").asString(),
-                manifest.path("version").asString(), json.writeValueAsString(manifest.path("credential")), java.util.Map.copyOf(tools), manifest);
+    /** The credential object of a manifest as it enters every hash of its tools; an absent object is JSON null. */
+    public String credentialJson(JsonNode manifest) {
+        return manifest.has("credential") ? json.writeValueAsString(manifest.get("credential")) : "null";
     }
 }

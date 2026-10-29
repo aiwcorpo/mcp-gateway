@@ -78,4 +78,11 @@ final class InMemoryConfirmationStore implements ConfirmationStore {
         check();
         burned.add(epoch + ":" + sub);
     }
+
+    @Override
+    public synchronized void deleteUser(String sub, long currentEpoch) throws StoreUnavailableException {
+        check();
+        states.remove(sub);
+        burned.remove(currentEpoch + ":" + sub);
+    }
 }

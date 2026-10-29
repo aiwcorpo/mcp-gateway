@@ -9,7 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 
-/** Deletes activity events older than the 30 days of the contract, once at start and then hourly. */
+/** Deletes activity events older than the configured retention (30 days by default, CC-134), an hour after the start and then hourly. */
 public final class ActivityRetention implements DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(ActivityRetention.class);
@@ -20,12 +20,12 @@ public final class ActivityRetention implements DisposableBean {
         return thread;
     });
 
-    public ActivityRetention(ActivityStore store, Clock clock) {
+    public ActivityRetention(ActivityStore store, Clock clock, java.time.Duration retention) {
         scheduler.scheduleWithFixedDelay(() -> {
             try {
-                int removed = store.deleteOlderThan(clock.instant().minus(ActivityService.RETENTION));
+                int removed = store.deleteOlderThan(clock.instant().minus(retention));
                 if (removed > 0) {
-                    log.info("removed {} activity events older than {}", removed, ActivityService.RETENTION);
+                    log.info("removed {} activity events older than {}", removed, retention);
                 }
             } catch (RuntimeException e) {
                 log.warn("activity retention failed: {}", e.getClass().getName());

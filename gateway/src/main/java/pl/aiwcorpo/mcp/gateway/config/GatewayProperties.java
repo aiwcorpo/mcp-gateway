@@ -41,6 +41,7 @@ public record GatewayProperties(
         @DefaultValue @Valid Audit audit,
         @DefaultValue @Valid Confirmations confirmations,
         @DefaultValue @Valid Activity activity,
+        @DefaultValue @Valid RateLimit rateLimit,
         @DefaultValue @Valid Registry registry,
         @Valid @NotNull Policy policy,
         /* Dev only: allows http for the IdP token endpoint (token exchange); never for the broker or servers. */
@@ -136,8 +137,8 @@ public record GatewayProperties(
             @DefaultValue("mcp-portal-bff") @NotBlank String authorizedParty,
             /* Certificate names of the operations the contract gives to the BFF (x-allowed-client-cn). */
             @DefaultValue("mcp-portal-bff") @NotEmpty List<String> allowedClientCns,
-            /* Certificate names of the operations the contract gives to registry CI. */
-            @DefaultValue("mcp-registry-ci") @NotEmpty List<String> registryClientCns) {
+            /* Certificate names of the offboarding call (x-allowed-client-cn of purgeUser). */
+            @DefaultValue("mcp-offboarding") @NotEmpty List<String> offboardingClientCns) {
     }
 
     public record VirtualServers(
@@ -194,7 +195,25 @@ public record GatewayProperties(
     /** The activity views (C5 /activity/calls). */
     public record Activity(
             /* Key of the HMAC on the cursor, at least 16 bytes; empty = random per process (cursors do not survive a restart). */
-            String cursorKey) {
+            String cursorKey,
+            /* How long the activity table keeps events (CC-134); a user who left keeps theirs until then. */
+            @DefaultValue("30d") Duration retention) {
+    }
+
+    /**
+     * Request limits (CC-135): per user, per (user, AI client) and per (user, tool), requests per window; a DESTRUCTIVE tool has its
+     * own, lower limit and {@code tools} sets a limit for single tools by their name as the client sees it ({@code jira__delete_issue}).
+     */
+    public record RateLimit(
+            @DefaultValue("true") boolean enabled,
+            @DefaultValue("1m") Duration window,
+            @DefaultValue("600") @Min(1) int perUser,
+            @DefaultValue("300") @Min(1) int perClient,
+            @DefaultValue("120") @Min(1) int perTool,
+            @DefaultValue("10") @Min(1) int destructivePerTool,
+            @DefaultValue Map<String, Integer> tools,
+            /* One audit event per user and reason in this time; the rest is only counted. */
+            @DefaultValue("10s") Duration auditInterval) {
     }
 
     /** Caps on authentication events that cost the sender nothing (CC-120, CC-125). */
@@ -227,7 +246,12 @@ public record GatewayProperties(
             @DefaultValue List<String> acceptedTypes,
             @DefaultValue List<String> scopes,
             /* token-exchange systems need the user's token exchanged for the broker (C4 subjectToken). */
-            @DefaultValue("false") boolean tokenExchange) {
+            @DefaultValue("false") boolean tokenExchange,
+            /*
+             * The credential type of the system for context.credentialType (CC-136), one of accepted-types. Optional when only
+             * one type is accepted (or token-exchange is on); required when a user may hold several.
+             */
+            String type) {
     }
 
     /** {@code action} defaults from the risk (read, update, delete); {@code title} is optional (CC-082). */

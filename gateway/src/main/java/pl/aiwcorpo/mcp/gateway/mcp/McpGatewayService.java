@@ -14,6 +14,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import pl.aiwcorpo.mcp.gateway.audit.AuditEvent;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
+import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
 import pl.aiwcorpo.mcp.gateway.auth.PublicUrls;
 import pl.aiwcorpo.mcp.gateway.authz.ToolAuthorizer;
 import pl.aiwcorpo.mcp.gateway.authz.ToolDecision;
@@ -25,8 +26,11 @@ import pl.aiwcorpo.mcp.gateway.confirm.ConfirmationService;
 import pl.aiwcorpo.mcp.gateway.confirm.OperationDescription;
 import pl.aiwcorpo.mcp.gateway.confirm.PendingCall;
 import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
-import pl.aiwcorpo.mcp.gateway.registry.DefinitionCheck;
+import pl.aiwcorpo.mcp.gateway.ratelimit.RateLimitAuditThrottle;
+import pl.aiwcorpo.mcp.gateway.ratelimit.RateLimiter;
 import pl.aiwcorpo.mcp.gateway.registry.DefinitionGuard;
+import pl.aiwcorpo.mcp.gateway.registry.DefinitionGuard.Verdict;
+import pl.aiwcorpo.mcp.gateway.registry.RegistryService;
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
 import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
 import pl.aiwcorpo.mcp.gateway.server.ToolDefinition;
@@ -60,13 +64,16 @@ public class McpGatewayService {
     private final MeterRegistry meters;
     private final String componentId;
     private final ConfirmationService confirmations;
-    private final DefinitionCheck definitionCheck;
+    private final RegistryService registryService;
     private final DefinitionGuard definitionGuard;
+    private final RateLimiter rateLimiter;
+    private final RateLimitAuditThrottle rateLimitAudit;
 
     public McpGatewayService(ServerRegistry registry, PublicUrls urls, UpstreamSessions upstream,
                              CredentialService credentials, ToolAuthorizer authorizer, AuditLog audit, ToolErrors errors,
                              JsonMapper json, MeterRegistry meters, String componentId, ConfirmationService confirmations,
-                             DefinitionCheck definitionCheck, DefinitionGuard definitionGuard) {
+                             RegistryService registryService, DefinitionGuard definitionGuard, RateLimiter rateLimiter,
+                             RateLimitAuditThrottle rateLimitAudit) {
         this.registry = registry;
         this.urls = urls;
         this.upstream = upstream;
@@ -78,8 +85,27 @@ public class McpGatewayService {
         this.meters = meters;
         this.componentId = componentId;
         this.confirmations = confirmations;
-        this.definitionCheck = definitionCheck;
+        this.registryService = registryService;
         this.definitionGuard = definitionGuard;
+        this.rateLimiter = rateLimiter;
+        this.rateLimitAudit = rateLimitAudit;
+    }
+
+    /**
+     * The limits of the user and of the user's client for a request that is not a tool call (initialize, tools/list, ...). Empty means
+     * go on; a refusal is audited as a policy decision (at most one event per user and reason in an interval) and becomes HTTP 429.
+     */
+    public Optional<RateLimiter.Limited> limitRequest(GatewayUser user, Target target, String requestId, String clientRequestId) {
+        Optional<RateLimiter.Limited> limited = rateLimiter.check(user.sub(), user.client(), null, null);
+        limited.ifPresent(l -> {
+            meters.counter("mcp.gateway.requests.limited").increment();
+            if (rateLimitAudit.due(user.sub(), l.reason())) {
+                audit.emit(AuditEvent.of("policy_decision", requestId, componentId).clientRequestId(clientRequestId).user(user)
+                        .virtualServer(target.virtualSlug()).decision("deny", l.reason()).policyRevision(authorizer.policyRevision())
+                        .outcome("denied", "rate_limited"));
+            }
+        });
+        return limited;
     }
 
     public ObjectNode listTools(CallContext ctx) throws RpcFailure {
@@ -110,26 +136,38 @@ public class McpGatewayService {
         if (!anyVisible) {
             return;
         }
-        for (JsonNode tool : liveTools(ctx, server)) {
-            String name = tool.path("name").asString(null);
-            Optional<ToolDefinition> definition = name == null ? Optional.empty() : server.tool(name);
-            if (definition.isEmpty() || !visible(ctx, server, definition.get()) || !intact(server, definition.get(), tool)) {
-                continue;
+        if (!server.approvalRequired()) {
+            for (JsonNode tool : readTools(ctx, server)) {
+                String name = tool.path("name").asString(null);
+                Optional<ToolDefinition> definition = name == null ? Optional.empty() : server.tool(name);
+                if (definition.isPresent() && visible(ctx, server, definition.get())) {
+                    out.add(listed(server, definition.get(), tool));
+                }
             }
-            ObjectNode copy = (ObjectNode) tool.deepCopy();
-            copy.put("name", server.qualifiedName(definition.get()));
-            if (definition.get().requiresConfirmation()) {
-                addConfirmationCode(copy);
-            }
-            out.add(copy);
+            return;
         }
+        // The list the client sees is built from the approved definitions; the server's own list only decides which of them
+        // may be shown now (CC-133).
+        DefinitionGuard.Reading reading = definitions(ctx, server, false);
+        server.tools().values().stream().sorted(java.util.Comparator.comparing(ToolDefinition::name)).forEach(definition -> {
+            if (visible(ctx, server, definition)
+                    && reading.verdicts().getOrDefault(definition.name(), Verdict.NOT_SERVED) == Verdict.INTACT) {
+                out.add(listed(server, definition, definition.definition()));
+            }
+        });
     }
 
-    /**
-     * Every tool the server lists now, all pages. The verdict of the approved-definition check for each tool of the server is
-     * recorded on the way, so a call right after a list does not ask the server again.
-     */
-    private List<JsonNode> liveTools(CallContext ctx, McpServer server) throws RpcFailure {
+    private ObjectNode listed(McpServer server, ToolDefinition definition, JsonNode source) {
+        ObjectNode copy = (ObjectNode) source.deepCopy();
+        copy.put("name", server.qualifiedName(definition));
+        if (definition.requiresConfirmation()) {
+            addConfirmationCode(copy);
+        }
+        return copy;
+    }
+
+    /** Every tool the server lists now, all pages. */
+    private List<JsonNode> readTools(CallContext ctx, McpServer server) throws RpcFailure {
         List<JsonNode> tools = new ArrayList<>();
         String cursor = null;
         boolean complete = false;
@@ -156,42 +194,54 @@ public class McpGatewayService {
         if (!complete) {
             log.warn("{} returned more than {} pages of tools; list truncated", server.serverId(), MAX_LIST_PAGES);
         }
-        if (server.approvalRequired()) {
-            java.util.Map<String, Boolean> verdicts = new LinkedHashMap<>();
-            server.tools().keySet().forEach(name -> verdicts.put(name, false));
-            for (JsonNode tool : tools) {
-                String name = tool.path("name").asString(null);
-                Optional<ToolDefinition> approved = name == null ? Optional.empty() : server.tool(name);
-                if (approved.isPresent()) {
-                    boolean intact = definitionCheck.intact(server, approved.get(), tool);
-                    verdicts.put(name, intact);
-                    if (!intact) {
-                        meters.counter("mcp.gateway.definition.mismatch", "server", server.serverId()).increment();
-                        log.warn("{}: the definition of {} differs from the approved one; the tool is hidden", server.serverId(), name);
-                    }
-                }
-            }
-            definitionGuard.record(server.serverId(), verdicts);
-        }
         return tools;
     }
 
-    /** A tool of a server with approved definitions is usable only while its live definition is the approved one. */
-    private boolean intact(McpServer server, ToolDefinition approved, JsonNode live) {
-        return !server.approvalRequired() || definitionCheck.intact(server, approved, live);
-    }
-
-    /** The result of the last check of the server's definitions, or a new check when there is none young enough. */
-    private boolean definitionsIntact(CallContext ctx, McpServer server, ToolDefinition tool) throws RpcFailure {
-        if (!server.approvalRequired()) {
-            return true;
-        }
-        Optional<Boolean> fresh = definitionGuard.fresh(server.serverId(), tool.name());
+    /**
+     * The tool list of the server as of the last read that is not older than the TTL, or a new read. A read that fails is no proof
+     * of a change or of a missing tool: for the list the last reading, whatever its age, still decides; a call ({@code needFresh})
+     * is refused instead, so that nothing reaches a server whose definitions cannot be checked.
+     */
+    private DefinitionGuard.Reading definitions(CallContext ctx, McpServer server, boolean needFresh) throws RpcFailure {
+        Optional<DefinitionGuard.Reading> fresh = definitionGuard.fresh(server.serverId());
         if (fresh.isPresent()) {
             return fresh.get();
         }
-        liveTools(ctx, server);
-        return definitionGuard.fresh(server.serverId(), tool.name()).orElse(false);
+        List<JsonNode> tools;
+        try {
+            tools = readTools(ctx, server);
+        } catch (RpcFailure failure) {
+            Optional<DefinitionGuard.Reading> last = definitionGuard.last(server.serverId());
+            if (!needFresh && last.isPresent()) {
+                return last.get();
+            }
+            throw failure;
+        }
+        Map<String, JsonNode> live = new LinkedHashMap<>();
+        for (JsonNode tool : tools) {
+            String name = tool.path("name").asString(null);
+            if (name != null) {
+                live.putIfAbsent(name, tool);
+            }
+        }
+        Map<String, Verdict> verdicts = registryService.observe(server, live, upstream.serverVersion(server.serverId()));
+        verdicts.forEach((name, verdict) -> {
+            if (verdict != Verdict.INTACT) {
+                meters.counter("mcp.gateway.definition.mismatch", "server", server.serverId(), "reason", verdict.reason()).increment();
+                log.warn("{}: the tool {} is blocked ({}): {}", server.serverId(), name, verdict.reason(),
+                        verdict == Verdict.CHANGED ? "the definition differs from the approved one" : "the server does not list it");
+            }
+        });
+        return definitionGuard.record(server.serverId(), live, upstream.serverVersion(server.serverId()), verdicts);
+    }
+
+    /** Why an approved tool of an approved-manifest server may not be used now, from a reading not older than the TTL. */
+    private Optional<Verdict> blocked(CallContext ctx, McpServer server, ToolDefinition tool) throws RpcFailure {
+        if (!server.approvalRequired()) {
+            return Optional.empty();
+        }
+        Verdict verdict = definitions(ctx, server, true).verdicts().getOrDefault(tool.name(), Verdict.NOT_SERVED);
+        return verdict == Verdict.INTACT ? Optional.empty() : Optional.of(verdict);
     }
 
     /** The code field is added to the schema the client sees; it is not part of the tool's own schema or its hash (C11). */
@@ -249,6 +299,11 @@ public class McpGatewayService {
         int argsLength = json.writeValueAsString(arguments).getBytes(StandardCharsets.UTF_8).length;
         Optional<ServerRegistry.Resolved> resolved = registry.resolve(clientName)
                 .filter(r -> inScope(ctx, r.server(), r.tool()));
+        Optional<RateLimiter.Limited> limited = rateLimiter.check(ctx.user().sub(), ctx.user().client(),
+                resolved.map(r -> r.server().qualifiedName(r.tool())).orElse(null), resolved.map(r -> r.tool().risk()).orElse(null));
+        if (limited.isPresent()) {
+            return rateLimitedCall(ctx, resolved, limited.get(), started, argsLength);
+        }
         if (resolved.isEmpty()) {
             // Outside the configuration or outside the link: the same answer, the link hides what it does not name
             // (C10: tool_disabled is only for a tool an administrator switched off).
@@ -261,7 +316,7 @@ public class McpGatewayService {
                 decisionEvent(ctx, addressed, null, "deny", "not_found_or_denied", "not_found_or_denied");
             }
             return finish(ctx, addressed, null, null, started, argsLength, "deny", "not_found_or_denied", null,
-                    errors.error("not_found_or_denied", "This tool was not found or is not available to you."));
+                    errors.error("not_found_or_denied", ToolErrors.NOT_FOUND_OR_DENIED_MESSAGE));
         }
         McpServer server = resolved.get().server();
         ToolDefinition tool = resolved.get().tool();
@@ -288,9 +343,11 @@ public class McpGatewayService {
             return finish(ctx, server, tool, null, started, argsLength, "deny", decision.reason(), null, error);
         }
         try {
-            if (!definitionsIntact(ctx, server, tool)) {
-                decisionEvent(ctx, server, tool, "deny", "tool_disabled", "tool_disabled");
-                return finish(ctx, server, tool, null, started, argsLength, "deny", "tool_disabled", null,
+            Optional<Verdict> blocked = blocked(ctx, server, tool);
+            if (blocked.isPresent()) {
+                String reason = blocked.get().reason();
+                decisionEvent(ctx, server, tool, "deny", reason, "tool_disabled");
+                return finish(ctx, server, tool, null, started, argsLength, "deny", reason, null,
                         errors.error("tool_disabled", "This tool is not available."));
             }
         } catch (RpcFailure failure) {
@@ -324,8 +381,18 @@ public class McpGatewayService {
                     return finish(callKey, ctx, server, tool, null, started, argsLength, "allow", null, null,
                             errors.error("upstream_unavailable", "The credential service is unavailable. Try again later."));
                 }
+                case Resolution.Denied denied -> {
+                    // The IdP refused the exchange: the user may not use this system. The answer names no group (CC-157).
+                    resolveEvent(ctx, server, tool, denied.reason(), "denied", "access_denied");
+                    return finish(callKey, ctx, server, tool, null, started, argsLength, "deny", denied.reason(), null,
+                            errors.error("access_denied", "You are not allowed to use this tool."));
+                }
                 case Resolution.Failed failed -> {
                     log.error("credential for rid={} failed: {}", ctx.requestId(), failed.reason());
+                    if ("system_not_configured".equals(failed.reason())) {
+                        // A defect of the installation, not of the request: the client sees internal_error, the audit says why (CC-158).
+                        resolveEvent(ctx, server, tool, "system_not_configured", "error", "internal_error");
+                    }
                     return finish(callKey, ctx, server, tool, null, started, argsLength, "allow", null, null,
                             errors.error("internal_error", "The call could not be completed."));
                 }
@@ -364,6 +431,23 @@ public class McpGatewayService {
                     errors.error("internal_error", "The call could not be completed."));
         }
         return finish(callKey, ctx, server, tool, credential, started, argsLength, "allow", null, null, (ObjectNode) result);
+    }
+
+    /** The call is refused before anything else happens: no policy, no broker, no server (CC-156). */
+    private ObjectNode rateLimitedCall(CallContext ctx, Optional<ServerRegistry.Resolved> resolved, RateLimiter.Limited limited,
+                                       long started, int argsLength) {
+        McpServer server = resolved.map(ServerRegistry.Resolved::server).orElse(ctx.target().server());
+        ToolDefinition tool = resolved.map(ServerRegistry.Resolved::tool).orElse(null);
+        ObjectNode result = errors.error("rate_limited", "Too many calls. Try again later.",
+                Map.of("retryAfterSeconds", limited.retryAfterSeconds()));
+        long latencyNanos = System.nanoTime() - started;
+        if (rateLimitAudit.due(ctx.user().sub(), limited.reason())) {
+            audit.emit(base(ctx, server, "tool_call", tool).risk(tool == null ? null : tool.risk().name())
+                    .decision("deny", limited.reason()).policyRevision(authorizer.policyRevision())
+                    .outcome("denied", "rate_limited").latencyMs(latencyNanos / 1_000_000).argsLength(argsLength));
+        }
+        count(server, tool, "denied", "rate_limited", latencyNanos);
+        return result;
     }
 
     private record Confirmed(ObjectNode refusal, String confirmationId, JsonNode arguments) {
@@ -495,6 +579,11 @@ public class McpGatewayService {
         request.put("id", "gw-" + UuidV7.next());
         request.put("method", method);
         return request;
+    }
+
+    /** The gateway's own record of a credential resolution that did not give a credential for a reason the contract names. */
+    private void resolveEvent(CallContext ctx, McpServer server, ToolDefinition tool, String reason, String outcome, String errorCode) {
+        audit.emit(base(ctx, server, "credential_resolve", tool).reason(reason).outcome(outcome, errorCode));
     }
 
     private void decisionEvent(CallContext ctx, McpServer server, ToolDefinition tool, String decision, String reason,

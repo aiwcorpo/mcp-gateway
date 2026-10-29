@@ -171,9 +171,9 @@ public class GatewayConfiguration {
 
     @Bean
     @DependsOn("devstackGuard")
-    SigningKeys signingKeys(GatewayProperties properties) {
+    SigningKeys signingKeys(GatewayProperties properties, org.springframework.core.env.Environment environment) {
         GatewayProperties.InternalJwt jwt = properties.internalJwt();
-        return SigningKeys.load(jwt.keysFile(), jwt.activeKid(), jwt.allowTestKeys());
+        return SigningKeys.load(jwt.keysFile(), jwt.activeKid(), jwt.allowTestKeys(), DevstackGuard.devstackActive(environment));
     }
 
     @Bean
@@ -309,8 +309,8 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    ActivityService activityService(ActivityStore store, JsonMapper gatewayJson, Clock clock) {
-        return new ActivityService(store, new ActivityAggregator(gatewayJson), clock);
+    ActivityService activityService(ActivityStore store, JsonMapper gatewayJson, Clock clock, GatewayProperties properties) {
+        return new ActivityService(store, new ActivityAggregator(gatewayJson), clock, properties.activity().retention());
     }
 
     /** Key of the cursor MAC: shared by all instances (M4 HA); without one a random key is made at start and cursors die with it. */
@@ -333,8 +333,8 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    ActivityRetention activityRetention(ActivityStore store, Clock clock) {
-        return new ActivityRetention(store, clock);
+    ActivityRetention activityRetention(ActivityStore store, Clock clock, GatewayProperties properties) {
+        return new ActivityRetention(store, clock, properties.activity().retention());
     }
 
     @Bean
@@ -355,6 +355,19 @@ public class GatewayConfiguration {
     }
 
     @Bean
+    pl.aiwcorpo.mcp.gateway.offboarding.UserPurge userPurge(VirtualServerStore links, ConfirmationService confirmations,
+                                                            ClientSessionStore sessions, UpstreamSessions upstream,
+                                                            CredentialCache credentials, AuditLog audit, GatewayProperties properties) {
+        return new pl.aiwcorpo.mcp.gateway.offboarding.UserPurge(links, confirmations, sessions, upstream, credentials, audit,
+                properties.componentId());
+    }
+
+    @Bean
+    pl.aiwcorpo.mcp.gateway.admin.OffboardingController offboardingController(pl.aiwcorpo.mcp.gateway.offboarding.UserPurge purge) {
+        return new pl.aiwcorpo.mcp.gateway.admin.OffboardingController(purge);
+    }
+
+    @Bean
     ConfirmationAdminController confirmationAdminController(ConfirmationService confirmations, JsonMapper gatewayJson) {
         return new ConfirmationAdminController(confirmations, gatewayJson);
     }
@@ -364,9 +377,21 @@ public class GatewayConfiguration {
                                         CredentialService credentials, ToolAuthorizer authorizer, AuditLog audit,
                                         ToolErrors errors, JsonMapper gatewayJson, MeterRegistry meters,
                                         GatewayProperties properties, ConfirmationService confirmations,
-                                        DefinitionCheck definitionCheck, DefinitionGuard definitionGuard) {
+                                        RegistryService registryService, DefinitionGuard definitionGuard,
+                                        pl.aiwcorpo.mcp.gateway.ratelimit.RateLimiter rateLimiter,
+                                        pl.aiwcorpo.mcp.gateway.ratelimit.RateLimitAuditThrottle rateLimitAudit) {
         return new McpGatewayService(registry, urls, upstream, credentials, authorizer, audit, errors, gatewayJson, meters,
-                properties.componentId(), confirmations, definitionCheck, definitionGuard);
+                properties.componentId(), confirmations, registryService, definitionGuard, rateLimiter, rateLimitAudit);
+    }
+
+    @Bean
+    pl.aiwcorpo.mcp.gateway.ratelimit.RateLimiter rateLimiter(StringRedisTemplate redis, GatewayProperties properties, MeterRegistry meters) {
+        return new pl.aiwcorpo.mcp.gateway.ratelimit.RateLimiter(redis, properties.redis().keyPrefix(), properties::rateLimit, meters);
+    }
+
+    @Bean
+    pl.aiwcorpo.mcp.gateway.ratelimit.RateLimitAuditThrottle rateLimitAuditThrottle(GatewayProperties properties, MeterRegistry meters) {
+        return new pl.aiwcorpo.mcp.gateway.ratelimit.RateLimitAuditThrottle(properties.rateLimit().auditInterval(), System::nanoTime, meters);
     }
 
     @Bean
@@ -391,8 +416,11 @@ public class GatewayConfiguration {
 
     @Bean
     RegistryService registryService(ServerRegistry servers, RegistryStore store, ManifestFetcher fetcher, DefinitionGuard guard,
-                                    JsonMapper gatewayJson) {
-        RegistryService registry = new RegistryService(servers, store, new ManifestValidator(gatewayJson), fetcher, guard);
+                                    DefinitionCheck definitionCheck, AuditLog audit, GatewayProperties properties, JsonMapper gatewayJson,
+                                    org.springframework.core.env.Environment environment) {
+        RegistryService registry = new RegistryService(servers, store,
+                new ManifestValidator(gatewayJson, DevstackGuard.devstackActive(environment)), fetcher, guard, definitionCheck, audit,
+                properties.componentId(), gatewayJson);
         registry.load();
         return registry;
     }

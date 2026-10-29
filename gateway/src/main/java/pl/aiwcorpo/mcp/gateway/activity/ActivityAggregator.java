@@ -27,9 +27,14 @@ public final class ActivityAggregator {
             "superseded", "pending_exists", "confirmation_expired", "cancelled_by_owner");
     private static final Set<String> WAITING_REASONS = Set.of("code_burned", "authenticator_disabled", "authenticator_not_registered",
             "upstream_unavailable");
-    private static final Map<String, String> DENIED_RESULTS = Map.of("not_granted", "denied_not_granted",
-            "link_scope", "denied_link_scope", "policy_forbid", "denied_policy", "tool_disabled", "tool_disabled",
-            "credential_required", "credential_required", "rate_limited", "rate_limited", "step_up_required", "step_up_required");
+    private static final Map<String, String> DENIED_RESULTS = Map.ofEntries(
+            Map.entry("not_granted", "denied_not_granted"), Map.entry("link_scope", "denied_link_scope"),
+            Map.entry("policy_forbid", "denied_policy"), Map.entry("tool_disabled", "tool_disabled"),
+            Map.entry("definition_changed", "tool_disabled"), Map.entry("tool_not_served", "tool_disabled"),
+            Map.entry("credential_required", "credential_required"), Map.entry("rate_limited", "rate_limited"),
+            Map.entry("rate_limited_user", "rate_limited"), Map.entry("rate_limited_client", "rate_limited"),
+            Map.entry("rate_limited_tool", "rate_limited"), Map.entry("step_up_required", "step_up_required"),
+            Map.entry("exchange_denied", "denied_not_granted"));
     private static final Map<String, String> CONFIRMATION_RESULTS = Map.of("superseded", "superseded",
             "attempts_exhausted", "confirmation_failed", "pending_exists", "blocked_by_pending", "cancelled_by_owner", "cancelled");
 

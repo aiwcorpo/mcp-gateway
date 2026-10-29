@@ -41,6 +41,7 @@ public class UpstreamSessions {
     private final String clientVersion;
     private final Map<String, Session> sessions = new ConcurrentHashMap<>();
     private final Map<String, Object> initLocks = new ConcurrentHashMap<>();
+    private final Map<String, String> serverVersions = new ConcurrentHashMap<>();
     private volatile Instant lastSweep = Instant.EPOCH;
 
     public UpstreamSessions(Map<String, StreamableHttpClient> clients, InternalTokenIssuer tokens, JsonMapper json,
@@ -100,6 +101,16 @@ public class UpstreamSessions {
         });
     }
 
+    /** Forgets the sessions this instance holds towards the servers for the user (offboarding); the servers drop them when idle. */
+    public void forgetUser(String sub) {
+        sessions.values().removeIf(session -> session.sub().equals(sub));
+    }
+
+    /** The version a server reported in its last initialize (serverInfo.version), or null; a value the server controls. */
+    public String serverVersion(String serverId) {
+        return serverVersions.get(serverId);
+    }
+
     int size() {
         return sessions.size();
     }
@@ -143,6 +154,10 @@ public class UpstreamSessions {
         check(response, server);
         JsonNode result = response.message() == null ? null : response.message().get("result");
         String version = result == null ? null : result.path("protocolVersion").asString(null);
+        String reported = result == null ? null : result.path("serverInfo").path("version").asString(null);
+        if (reported != null) {
+            serverVersions.put(server.serverId(), reported);
+        }
         if (version == null || !SUPPORTED_VERSIONS.contains(version)) {
             throw new UpstreamException(UpstreamException.Kind.PROTOCOL, "unsupported protocol version from " + server.serverId());
         }

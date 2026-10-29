@@ -9,7 +9,8 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import pl.aiwcorpo.mcp.gateway.config.GatewayProperties;
-import pl.aiwcorpo.mcp.gateway.registry.ApprovedServer;
+import pl.aiwcorpo.mcp.gateway.registry.RegisteredTool;
+import tools.jackson.databind.JsonNode;
 
 /**
  * The servers behind the gateway. {@code serverId -> system, internalUrl}, the credential policy and the enabled switch come
@@ -48,7 +49,7 @@ public final class ServerRegistry {
             McpServer fromConfig = build(serverId, server);
             built.put(serverId, MODE_REQUIRED.equals(mode)
                     ? new McpServer(fromConfig.serverId(), fromConfig.system(), fromConfig.internalUrl(), fromConfig.version(),
-                            fromConfig.enabled(), fromConfig.credential(), Map.of(), true, null)
+                            fromConfig.enabled(), fromConfig.credential(), Map.of(), true)
                     : fromConfig);
         });
         this.servers = Map.copyOf(built);
@@ -84,33 +85,46 @@ public final class ServerRegistry {
     }
 
     /**
-     * Takes the approved manifest of a server as its tools: metadata (risk, action, references, texts) and the hash each
-     * live definition must keep. A tool whose approved risk is below the configured minimum or an earlier approval
-     * ({@code approvedFloors}) is not served. The switches of the configuration stay: a disabled server or tool is disabled whatever the
-     * manifest says.
+     * Takes the approved definitions of a server as its tools: metadata (risk, action, references, texts), the approved definition
+     * the client is shown and the hash each live definition must keep. A tool whose approved risk is below the configured minimum or
+     * an earlier approval ({@code approvedFloors}) is not served. The switches of the configuration stay: a disabled server or tool
+     * is disabled whatever the manifest says. {@code manifestAccepted} false (the held manifest fails the checks of the start,
+     * CC-159) disables the server without removing anything.
      */
-    public synchronized void apply(ApprovedServer approved, Map<String, Integer> approvedFloors) {
-        McpServer current = servers.get(approved.serverId());
-        GatewayProperties.Server configured = config.get(approved.serverId());
+    public synchronized void apply(String serverId, String version, Map<String, RegisteredTool> registered,
+                                   Map<String, Integer> approvedFloors, boolean manifestAccepted) {
+        McpServer current = servers.get(serverId);
+        GatewayProperties.Server configured = config.get(serverId);
         if (current == null || configured == null || !current.approvalRequired()) {
-            throw new IllegalStateException("server " + approved.serverId() + " takes no manifest");
+            throw new IllegalStateException("server " + serverId + " takes no manifest");
         }
-        Map<String, Integer> minimum = new LinkedHashMap<>(configuredMinimumRisks(approved.serverId()));
+        Map<String, Integer> minimum = new LinkedHashMap<>(configuredMinimumRisks(serverId));
         approvedFloors.forEach((name, risk) -> minimum.merge(name, risk, Math::max));
         Map<String, ToolDefinition> tools = new LinkedHashMap<>();
-        approved.tools().forEach((name, tool) -> {
-            if (Risk.valueOf(tool.risk()).ordinal() < minimum.getOrDefault(name, 0)) {
+        registered.forEach((name, registeredTool) -> {
+            RegisteredTool.Approved approved = registeredTool.approved();
+            if (approved == null) {
+                return;
+            }
+            JsonNode entry = approved.entry();
+            Risk risk = Risk.valueOf(entry.path("risk").asString());
+            if (risk.ordinal() < minimum.getOrDefault(name, 0)) {
                 // The manifest says less than the configuration or an earlier approval: the tool is left out until it says enough.
-                log.error("{}: tool {} is approved with a risk below the minimum; it is not served", approved.serverId(), name);
+                log.error("{}: tool {} is approved with a risk below the minimum; it is not served", serverId, name);
                 return;
             }
             GatewayProperties.Tool switches = configured.tools().get(name);
-            tools.put(name, new ToolDefinition(name, Risk.valueOf(tool.risk()), tool.action(), tool.title(), tool.description(),
-                    switches != null && switches.disabled(), tool.resourceRefs(), tool.definitionHash()));
+            java.util.List<pl.aiwcorpo.mcp.cedar.entities.ResourceRef> refs = new java.util.ArrayList<>();
+            entry.path("resourceRefs").forEach(ref -> refs.add(
+                    new pl.aiwcorpo.mcp.cedar.entities.ResourceRef(ref.path("argument").asString(), ref.path("type").asString())));
+            JsonNode definition = entry.path("definition");
+            tools.put(name, new ToolDefinition(name, risk, entry.path("action").asString(), definition.path("title").asString(null),
+                    definition.path("description").asString(""), switches != null && switches.disabled(), List.copyOf(refs),
+                    approved.hash(), definition, approved.credentialJson()));
         });
         Map<String, McpServer> next = new LinkedHashMap<>(servers);
-        next.put(approved.serverId(), new McpServer(current.serverId(), current.system(), current.internalUrl(), approved.version(),
-                current.enabled(), current.credential(), Map.copyOf(tools), true, approved.credentialJson()));
+        next.put(serverId, new McpServer(current.serverId(), current.system(), current.internalUrl(), version,
+                config.get(serverId).enabled() && manifestAccepted, current.credential(), Map.copyOf(tools), true));
         this.servers = Map.copyOf(next);
     }
 
@@ -175,8 +189,32 @@ public final class ServerRegistry {
         });
         return new McpServer(serverId, server.system(), server.internalUrl(), server.version(), server.enabled(),
                 new CredentialPolicy(credential.required(), Set.copyOf(accepted), List.copyOf(credential.scopes()),
-                        credential.tokenExchange()),
+                        credential.tokenExchange(), credentialType(serverId, credential, accepted)),
                 Map.copyOf(tools));
+    }
+
+    /** The one type of the system for context.credentialType; ambiguous configuration is an error (fail-closed at start). */
+    private static String credentialType(String serverId, GatewayProperties.Credential credential, Set<String> accepted) {
+        if (!credential.required()) {
+            return null;
+        }
+        String explicit = credential.type() == null || credential.type().isBlank() ? null : credential.type();
+        if (explicit != null) {
+            if (!accepted.contains(explicit)) {
+                throw new IllegalStateException("gateway.servers." + serverId + ".credential.type must be one of accepted-types");
+            }
+            return explicit;
+        }
+        if (credential.tokenExchange()) {
+            if (!accepted.contains("token-exchange")) {
+                throw new IllegalStateException("gateway.servers." + serverId + ".credential.token-exchange needs token-exchange in accepted-types");
+            }
+            return "token-exchange";
+        }
+        if (accepted.size() == 1) {
+            return accepted.iterator().next();
+        }
+        throw new IllegalStateException("gateway.servers." + serverId + ".credential.type is required when several types are accepted");
     }
 
     private static String defaultAction(Risk risk) {

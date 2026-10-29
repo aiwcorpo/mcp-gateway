@@ -70,6 +70,12 @@ public class VirtualServerStore {
         return jdbc.sql("DELETE FROM virtual_servers WHERE slug = ? AND owner_sub = ?").params(slug, ownerSub).update() > 0;
     }
 
+    /** Removes every link of the owner (offboarding) and returns their slugs; none is a normal answer. */
+    public List<String> deleteAllOf(String ownerSub) {
+        return jdbc.sql("DELETE FROM virtual_servers WHERE owner_sub = ? RETURNING slug").param(ownerSub)
+                .query((rs, row) -> rs.getString("slug")).list();
+    }
+
     private VirtualServer map(String slug, String owner, String name, String tools, Timestamp createdAt) {
         return new VirtualServer(slug, owner, name, json.readValue(tools, STRINGS), createdAt.toInstant());
     }

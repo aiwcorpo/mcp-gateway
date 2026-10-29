@@ -67,8 +67,12 @@ public final class TestMcpServer implements AutoCloseable {
         }
     }
 
-    public record Config(String serverId, String path, String issuer, boolean allowTestKeys, URI jiraUrl,
+    public record Config(String serverId, String path, String issuer, boolean allowTestKeys, boolean devstackProfile, URI jiraUrl,
                          InternalJwtVerifier.KeySource keys) {
+        public Config(String serverId, String path, String issuer, boolean allowTestKeys, URI jiraUrl,
+                      InternalJwtVerifier.KeySource keys) {
+            this(serverId, path, issuer, allowTestKeys, false, jiraUrl, keys);
+        }
     }
 
     private record Session(String sub, String protocolVersion) {
@@ -84,7 +88,7 @@ public final class TestMcpServer implements AutoCloseable {
     public TestMcpServer(Config config, SSLContext sslContext, InetSocketAddress address) throws IOException {
         this.config = Objects.requireNonNull(config);
         this.verifier = new InternalJwtVerifier(config.issuer(), config.serverId(), config.allowTestKeys(),
-                config.keys(), java.time.Clock.systemUTC());
+                config.devstackProfile(), config.keys(), java.time.Clock.systemUTC());
         this.jira = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3))
                 .followRedirects(HttpClient.Redirect.NEVER).build();
         this.server = HttpsServer.create(address, 0);
@@ -166,6 +170,30 @@ public final class TestMcpServer implements AutoCloseable {
 
     public void describeAsApproved() {
         descriptionOverrides = Map.of();
+        hiddenTools = java.util.Set.of();
+        toolListFails = false;
+        reportedVersion = "0.1.0";
+    }
+
+    private volatile java.util.Set<String> hiddenTools = java.util.Set.of();
+    private volatile boolean toolListFails;
+    private volatile String reportedVersion = "0.1.0";
+
+    /** From now on {@code tools/list} leaves this tool out: a server that dropped it. */
+    public void hide(String tool) {
+        java.util.Set<String> next = new java.util.HashSet<>(hiddenTools);
+        next.add(tool);
+        hiddenTools = java.util.Set.copyOf(next);
+    }
+
+    /** {@code tools/list} answers 503 while this is on: a server that cannot be read. */
+    public void failToolList(boolean value) {
+        toolListFails = value;
+    }
+
+    /** The {@code serverInfo.version} of the next {@code initialize} (a value the server controls). */
+    public void reportVersion(String version) {
+        reportedVersion = version;
     }
 
     /** {@code GET /mcp-manifest} (C6): the definitions as they are approved, with their hashes. */
@@ -177,6 +205,12 @@ public final class TestMcpServer implements AutoCloseable {
             send(exchange, 401, null, null);
             return;
         }
+        record(exchange, headers, body, null, null, 200, null, (String) auth.claims().get("sub"), null);
+        send(exchange, 200, "application/json", JSON.writeValueAsString(manifest()));
+    }
+
+    /** The manifest of this server as a build of its reviewed commit would write it: what {@code GET /mcp-manifest} serves. */
+    public ObjectNode manifest() {
         String system = config.serverId().replaceFirst("^mcp-", "");
         ObjectNode credential = JSON.createObjectNode();
         credential.put("required", true);
@@ -207,8 +241,7 @@ public final class TestMcpServer implements AutoCloseable {
             entry.put("definitionHash", pl.aiwcorpo.mcp.manifest.DefinitionHash.compute(JSON.writeValueAsString(definition),
                     JSON.writeValueAsString(entry), system, JSON.writeValueAsString(credential)));
         }
-        record(exchange, headers, body, null, null, 200, null, (String) auth.claims().get("sub"), null);
-        send(exchange, 200, "application/json", JSON.writeValueAsString(manifest));
+        return manifest;
     }
 
     private void delete(HttpExchange exchange, Map<String, List<String>> headers, String body) throws IOException {
@@ -265,7 +298,7 @@ public final class TestMcpServer implements AutoCloseable {
             ObjectNode result = JSON.createObjectNode();
             result.put("protocolVersion", version);
             result.putObject("capabilities").putObject("tools").put("listChanged", false);
-            result.putObject("serverInfo").put("name", config.serverId() + "-test").put("version", "0.1.0");
+            result.putObject("serverInfo").put("name", config.serverId() + "-test").put("version", reportedVersion);
             record(exchange, headers, body, method, null, 200, null, sub, newSession);
             exchange.getResponseHeaders().add("Mcp-Session-Id", newSession);
             send(exchange, 200, "application/json", response(message.get("id"), result));
@@ -303,9 +336,20 @@ public final class TestMcpServer implements AutoCloseable {
                 send(exchange, 200, "application/json", response(id, JSON.createObjectNode()));
             }
             case "tools/list" -> {
+                if (toolListFails) {
+                    record(exchange, headers, body, method, null, 503, null, sub, sessionId);
+                    send(exchange, 503, null, null);
+                    return;
+                }
                 record(exchange, headers, body, method, null, 200, null, sub, sessionId);
                 ObjectNode result = JSON.createObjectNode();
-                result.set("tools", toolDefinitions(descriptionOverrides));
+                ArrayNode listed = JSON.createArrayNode();
+                toolDefinitions(descriptionOverrides).forEach(definition -> {
+                    if (!hiddenTools.contains(definition.path("name").asString())) {
+                        listed.add(definition);
+                    }
+                });
+                result.set("tools", listed);
                 send(exchange, 200, "application/json", response(id, result));
             }
             case "tools/call" -> {

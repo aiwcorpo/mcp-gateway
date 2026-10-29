@@ -27,6 +27,9 @@ public interface ConfirmationStore {
 
     void markBurnedInEpoch(String sub, long epoch, long ttlMillis) throws StoreUnavailableException;
 
+    /** Removes everything kept for the user (pending operations, their traces, the burn marker of the epoch); offboarding. */
+    void deleteUser(String sub, long currentEpoch) throws StoreUnavailableException;
+
     class StoreUnavailableException extends Exception {
         public StoreUnavailableException(Throwable cause) {
             super(cause.getClass().getSimpleName());

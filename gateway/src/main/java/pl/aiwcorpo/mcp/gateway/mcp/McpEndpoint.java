@@ -27,6 +27,8 @@ import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
 import pl.aiwcorpo.mcp.gateway.config.GatewayProperties;
 import pl.aiwcorpo.mcp.gateway.edge.JsonErrorController;
 import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
+import pl.aiwcorpo.mcp.gateway.ratelimit.RateLimiter;
+import pl.aiwcorpo.mcp.gateway.ratelimit.RateLimitResponse;
 import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
 import pl.aiwcorpo.mcp.gateway.upstream.UpstreamSessions;
 import pl.aiwcorpo.mcp.gateway.virtual.VirtualServerService;
@@ -128,6 +130,12 @@ public class McpEndpoint {
         String clientRequestId = request.getHeader("X-Request-Id");
         JsonNode meta = message.path("params").path("_meta");
 
+        if (!"tools/call".equals(method)) {
+            Optional<RateLimiter.Limited> limited = service.limitRequest(user, target.get(), requestId, clientRequestId);
+            if (limited.isPresent()) {
+                return RateLimitResponse.of(requestId, limited.get().retryAfterSeconds());
+            }
+        }
         if ("initialize".equals(method)) {
             return initialize(target.get(), user, message, requestId);
         }

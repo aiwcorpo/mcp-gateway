@@ -32,7 +32,7 @@ public final class BrokerStub implements AutoCloseable {
     public record Received(String method, String path, String body, String requestId, String rejectReason, String tool) {
     }
 
-    public enum Mode { GRANT, REQUIRED, UNAVAILABLE, DROP, REJECT, BAD_BODY }
+    public enum Mode { GRANT, REQUIRED, UNAVAILABLE, DROP, REJECT, BAD_BODY, EXCHANGE_DENIED, SYSTEM_NOT_CONFIGURED, EXCHANGED_WITHOUT_EXPIRY }
 
     private final HttpsServer server;
     private final InternalJwtVerifier verifier;
@@ -154,6 +154,10 @@ public final class BrokerStub implements AutoCloseable {
                 case UNAVAILABLE -> send(exchange, 503, "{\"error\":\"upstream_unavailable\"}");
                 case DROP -> throw new IOException("connection dropped on purpose");
                 case REJECT -> send(exchange, 401, "{\"error\":\"unauthenticated\"}");
+                case EXCHANGE_DENIED -> send(exchange, 403, "{\"error\":\"exchange_denied\"}");
+                case SYSTEM_NOT_CONFIGURED -> send(exchange, 422, "{\"error\":\"system_not_configured\"}");
+                case EXCHANGED_WITHOUT_EXPIRY -> send(exchange, 200, "{\"scheme\":\"Bearer\",\"value\":\"" + secret
+                        + "\",\"type\":\"token-exchange\",\"expiresAt\":null,\"cacheTtlSeconds\":30}");
                 case BAD_BODY -> send(exchange, 200, "{\"scheme\":\"Bearer\",\"type\":\"user-secret\",\"cacheTtlSeconds\":60}");
             }
         }

@@ -31,6 +31,7 @@ public final class TestServerMain {
                 env("MCP_PATH", "/mcp"),
                 env("MCP_GATEWAY_ISSUER", "https://mcp-gateway.internal"),
                 Boolean.parseBoolean(env("MCP_ALLOW_TEST_KEYS", "false")),
+                "devstack".equals(System.getenv("SPRING_PROFILES_ACTIVE")),
                 jira == null || jira.isBlank() ? null : URI.create(jira),
                 new JwksKeySource(jwks, tls, Duration.ofSeconds(10)));
         TestMcpServer server = new TestMcpServer(config, tls,

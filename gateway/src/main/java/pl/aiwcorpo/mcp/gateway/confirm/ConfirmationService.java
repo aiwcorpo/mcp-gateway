@@ -106,6 +106,11 @@ public final class ConfirmationService {
         this.ids = ids;
     }
 
+    /** Offboarding: the pending operations of the user, their traces and the burn marker of the current epoch are removed. */
+    public void purge(String sub) throws ConfirmationStore.StoreUnavailableException {
+        store.deleteUser(sub, store.epochStartedAt(clock.millis()));
+    }
+
     // ---------------------------------------------------------------- first call
 
     public FirstCallResult firstCall(CallInfo info) {

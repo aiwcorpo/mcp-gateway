@@ -79,6 +79,14 @@ public final class CredentialCache {
         }
     }
 
+    /** Drops every credential of the user (offboarding, this instance); other instances drop theirs on credential.invalidated or by TTL. */
+    public void invalidateUser(String sub) {
+        synchronized (generation) {
+            generation.incrementAndGet();
+            entries.keySet().removeIf(k -> k.sub().equals(sub));
+        }
+    }
+
     public void clear() {
         synchronized (generation) {
             generation.incrementAndGet();

@@ -65,6 +65,12 @@ public final class GatewayTestEnvironment {
     public final SSLContext scraperTls;
     /** A server identity of the internal CA (mcp-jira, serverAuth only), as servers use when they fetch the JWKS. */
     public final SSLContext serverIdentityTls;
+    /** Pipelines of the registry (CC-161): one certificate per server, and the former shared name, which is refused. */
+    public final SSLContext ciGitlabTls;
+    public final SSLContext ciJiraTls;
+    public final SSLContext sharedCiTls;
+    /** The offboarding process (CC-155). */
+    public final SSLContext offboardingTls;
 
     public static synchronized GatewayTestEnvironment get() {
         if (instance == null) {
@@ -88,6 +94,9 @@ public final class GatewayTestEnvironment {
         Path bffKeystore = pki.issue("bff.p12", "mcp-portal-bff", List.of(), false, true);
         Path scraperKeystore = pki.issue("scraper.p12", "mcp-prometheus", List.of(), false, true);
         Path ciKeystore = pki.issue("ci.p12", "mcp-registry-ci", List.of(), false, true);
+        Path ciGitlabKeystore = pki.issue("ci-gitlab.p12", "mcp-registry-ci-mcp-gitlab", List.of(), false, true);
+        Path ciJiraKeystore = pki.issue("ci-jira.p12", "mcp-registry-ci-mcp-jira", List.of(), false, true);
+        Path offboardingKeystore = pki.issue("offboarding.p12", "mcp-offboarding", List.of(), false, true);
         TestPki foreign = new TestPki(Files.createDirectory(dir.resolve("foreign")));
         Path foreignKeystore = foreign.issue("bff.p12", "mcp-portal-bff", List.of(), false, true);
         Path brokerKeystore = pki.issue("broker.p12", "mcp-credential-broker", List.of("mcp-credential-broker.internal"),
@@ -144,6 +153,10 @@ public final class GatewayTestEnvironment {
         noClientCertificateTls = trustOnly;
         scraperTls = Tls.fromPkcs12(scraperKeystore, pki.truststore(), TestPki.PASSWORD);
         serverIdentityTls = Tls.fromPkcs12(jiraKeystore, pki.truststore(), TestPki.PASSWORD);
+        ciGitlabTls = Tls.fromPkcs12(ciGitlabKeystore, pki.truststore(), TestPki.PASSWORD);
+        ciJiraTls = Tls.fromPkcs12(ciJiraKeystore, pki.truststore(), TestPki.PASSWORD);
+        sharedCiTls = otherComponentTls;
+        offboardingTls = Tls.fromPkcs12(offboardingKeystore, pki.truststore(), TestPki.PASSWORD);
     }
 
     public void register(DynamicPropertyRegistry registry) {
@@ -201,6 +214,7 @@ public final class GatewayTestEnvironment {
         registry.add("gateway.servers.mcp-gitlab.system", () -> "gitlab");
         registry.add("gateway.servers.mcp-gitlab.internal-url", () -> "https://127.0.0.1:" + gitlab.port() + "/mcp");
         registry.add("gateway.servers.mcp-gitlab.credential.accepted-types", () -> "user-secret,user-oauth");
+        registry.add("gateway.servers.mcp-gitlab.credential.type", () -> "user-secret");
         registry.add("gateway.servers.mcp-gitlab.tools.get_issue.risk", () -> "READ_ONLY");
         registry.add("gateway.servers.mcp-gitlab.tools.get_issue.description", () -> "Returns one GitLab issue.");
         registry.add("gateway.metrics.allowed-client-cns", () -> "mcp-prometheus");

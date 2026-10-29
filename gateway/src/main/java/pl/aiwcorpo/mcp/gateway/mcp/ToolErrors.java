@@ -17,6 +17,9 @@ public final class ToolErrors {
             "not_found_or_denied", "invalid_argument", "rate_limited", "step_up_required", "upstream_unavailable",
             "internal_error");
 
+    /** The one text of not_found_or_denied (CC-146): the same for a resource that is missing and one that is not visible. */
+    public static final String NOT_FOUND_OR_DENIED_MESSAGE = "The resource does not exist or you do not have access to it.";
+
     private final JsonMapper json;
 
     public ToolErrors(JsonMapper json) {

@@ -59,17 +59,30 @@ public final class CedarToolAuthorizer implements ToolAuthorizer {
         ToolDescriptor descriptor = new ToolDescriptor(server.serverId(), server.system(), tool.name(), tool.risk().name(),
                 tool.action(), tool.resourceRefs());
         Map<String, ?> values = arguments == null || !arguments.isObject() ? Map.of() : json.convertValue(arguments, Map.class);
-        return evaluate(caller, descriptor, values, requiredEntitlements(server, tool)).decision();
+        return evaluate(caller, descriptor, values, requiredEntitlements(server, tool), server.credential().type()).decision();
     }
 
-    /** The Cedar {@code call} for a caller as the token and the link describe it. Deny on anything that goes wrong. */
+    /** The Cedar {@code call} for a caller as the token and the link describe it, without a credential type. */
     public Evaluation evaluate(Caller caller, ToolDescriptor tool, Map<String, ?> arguments, List<String> entitlementsForAMissingPermit) {
+        return evaluate(caller, tool, arguments, entitlementsForAMissingPermit, null);
+    }
+
+    /**
+     * The Cedar {@code call} for a caller as the token and the link describe it. Deny on anything that goes wrong.
+     *
+     * @param credentialType the type of the system from the gateway configuration, put into {@code context.credentialType} before every
+     *                       decision (CC-136), not the type the broker answers with; null for a system that needs no credential
+     */
+    public Evaluation evaluate(Caller caller, ToolDescriptor tool, Map<String, ?> arguments, List<String> entitlementsForAMissingPermit,
+                               String credentialType) {
         Optional<PolicyStore.Snapshot> snapshot = policies.snapshot();
         if (snapshot.isEmpty() || !policies.ready()) {
             return new Evaluation(ToolDecision.deny("policy_unavailable", List.of()), java.util.Set.of());
         }
         try {
-            CedarRequest request = snapshot.get().entityBuilder().forToolCall(caller, tool, arguments);
+            var builder = credentialType == null ? snapshot.get().entityBuilder()
+                    : snapshot.get().entityBuilder().withCredentialType(credentialType);
+            CedarRequest request = builder.forToolCall(caller, tool, arguments);
             AuthorizationResponse response = ENGINE.isAuthorized(request.toAuthorizationRequest(snapshot.get().schema()),
                     snapshot.get().policies(), request.cedarEntities());
             return judge(response, tool.name(), entitlementsForAMissingPermit);

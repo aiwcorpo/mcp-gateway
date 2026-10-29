@@ -80,8 +80,18 @@ class AdminApiTest extends GatewayTestBase {
 
         assertThat(admin(env.bffTls, "PUT", "/admin/v1/registry/servers/mcp-jira", token, "{}").statusCode())
                 .as("the BFF may not write manifests").isEqualTo(403);
-        assertThat(admin(env.otherComponentTls, "PUT", "/admin/v1/registry/servers/mcp-jira", token, "{}").statusCode())
-                .as("registry CI passes the certificate check; the operation itself is not served yet").isNotEqualTo(403);
+        assertThat(admin(env.ciJiraTls, "PUT", "/admin/v1/registry/servers/mcp-jira", token, "{}").statusCode())
+                .as("the pipeline of mcp-jira passes the certificate check; the body is no manifest").isEqualTo(400);
+        assertThat(admin(env.ciGitlabTls, "PUT", "/admin/v1/registry/servers/mcp-jira", token, "{}").statusCode())
+                .as("the pipeline of another server (CC-161)").isEqualTo(403);
+        assertThat(admin(env.sharedCiTls, "PUT", "/admin/v1/registry/servers/mcp-jira", token, "{}").statusCode())
+                .as("the former shared name mcp-registry-ci").isEqualTo(403);
+        assertThat(admin(env.offboardingTls, "PUT", "/admin/v1/registry/servers/mcp-jira", token, "{}").statusCode())
+                .as("the offboarding process writes no manifests").isEqualTo(403);
+        assertThat(admin(env.ciJiraTls, "POST", "/admin/v1/users/someone/purge", null, null).statusCode())
+                .as("a pipeline does not offboard").isEqualTo(403);
+        assertThat(admin(env.bffTls, "POST", "/admin/v1/users/someone/purge", token, null).statusCode())
+                .as("the BFF does not offboard").isEqualTo(403);
 
         for (String path : List.of("/admin/v1/nothing", "/admin/v1", "/admin/v1/catalog/", "/admin/v1/virtual-servers/x/y")) {
             assertThat(admin(env.bffTls, "GET", path, token, null).statusCode()).as(path).isEqualTo(403);

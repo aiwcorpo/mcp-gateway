@@ -1,5 +1,7 @@
 package pl.aiwcorpo.mcp.gateway.registry;
 
+import java.util.Optional;
+
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ArrayNode;
@@ -11,8 +13,8 @@ import pl.aiwcorpo.mcp.manifest.DefinitionHash;
 
 /**
  * The comparison that keeps a server to what was approved: the hash (C6, CC-004) of the definition the server serves now, with
- * the approved risk, action and references and the manifest's system and credential, must equal the approved hash. A change of
- * a description, a schema or an annotation on the server, without a new registration, makes the tool unusable.
+ * the approved risk, action and references and the system and credential the approval was made with, must equal the approved
+ * hash. A change of a description, a schema or an annotation on the server, without a new registration, makes the tool unusable.
  */
 public final class DefinitionCheck {
 
@@ -22,22 +24,31 @@ public final class DefinitionCheck {
         this.json = json;
     }
 
-    /** True only when the live definition produces exactly the approved hash. Any malformed definition is a mismatch. */
-    public boolean intact(McpServer server, ToolDefinition approved, JsonNode live) {
-        if (approved.definitionHash() == null || server.manifestCredentialJson() == null) {
-            return false;
+    /** The hash the live definition would have as the approved tool; empty for anything that cannot be hashed (a mismatch). */
+    public Optional<String> hashOf(McpServer server, ToolDefinition approved, JsonNode live) {
+        if (approved.definitionHash() == null || approved.credentialJson() == null || live == null || !live.isObject()) {
+            return Optional.empty();
         }
         try {
-            ObjectNode entry = json.createObjectNode();
-            entry.put("risk", approved.risk().name());
-            entry.put("action", approved.action());
-            ArrayNode refs = entry.putArray("resourceRefs");
-            approved.resourceRefs().forEach(ref -> refs.addObject().put("argument", ref.argument()).put("type", ref.type()));
-            String hash = DefinitionHash.compute(json.writeValueAsString(live), json.writeValueAsString(entry), server.system(),
-                    server.manifestCredentialJson());
-            return approved.definitionHash().equals(hash);
+            return Optional.of(DefinitionHash.compute(json.writeValueAsString(live), json.writeValueAsString(entryOf(approved)),
+                    server.system(), approved.credentialJson()));
         } catch (RuntimeException e) {
-            return false;
+            return Optional.empty();
         }
+    }
+
+    /** True only when the live definition produces exactly the approved hash. Any malformed definition is a mismatch. */
+    public boolean intact(McpServer server, ToolDefinition approved, JsonNode live) {
+        return hashOf(server, approved, live).filter(approved.definitionHash()::equals).isPresent();
+    }
+
+    /** The entry a live definition is hashed and listed with: the approved risk, action and references, never the server's. */
+    public ObjectNode entryOf(ToolDefinition approved) {
+        ObjectNode entry = json.createObjectNode();
+        entry.put("risk", approved.risk().name());
+        entry.put("action", approved.action());
+        ArrayNode refs = entry.putArray("resourceRefs");
+        approved.resourceRefs().forEach(ref -> refs.addObject().put("argument", ref.argument()).put("type", ref.type()));
+        return entry;
     }
 }

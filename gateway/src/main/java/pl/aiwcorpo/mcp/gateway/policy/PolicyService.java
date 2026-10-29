@@ -53,9 +53,10 @@ public final class PolicyService implements DisposableBean {
         this.config = config;
         this.fetcher = fetcher;
         this.meters = meters;
-        BundleVerifier main = verifier(Channel.MAIN, config.mainKeyId(), config.mainKeyFile(), config);
+        BundleVerifier main = verifier(Channel.MAIN, config.mainKeyId(), config.mainKeyFile(), config).withDevstackProfile(developmentStack);
         BundleVerifier overrides = verifier(Channel.OVERRIDES, config.overridesKeyId() == null ? "none" : config.overridesKeyId(),
-                config.overridesKeyFile() == null ? config.mainKeyFile() : config.overridesKeyFile(), config);
+                config.overridesKeyFile() == null ? config.mainKeyFile() : config.overridesKeyFile(), config)
+                .withDevstackProfile(developmentStack);
         PolicyStore.Persistence persistence = persistence(config);
         if (persistence == null) {
             if (!developmentStack) {
@@ -146,12 +147,13 @@ public final class PolicyService implements DisposableBean {
         if (directory == null) {
             return;
         }
+        BundleFetcher.Fetched bundle = null;
         try {
             Optional<BundleFetcher.Fetched> fetched = fetcher.fetch(directory, etags.get(channel));
             if (fetched.isEmpty()) {
                 return;
             }
-            BundleFetcher.Fetched bundle = fetched.get();
+            bundle = fetched.get();
             if (channel == Channel.MAIN) {
                 store.loadMain(bundle.pointer(), bundle.archive(), bundle.signature());
             } else {
@@ -163,7 +165,20 @@ public final class PolicyService implements DisposableBean {
             }
             log.info("policy bundle {} loaded: revision {}", channel.name().toLowerCase(), bundle.pointer().revision());
         } catch (BundleRejectedException e) {
-            etags.remove(channel);
+            boolean notNewer = e.reason() == BundleRejectedException.Reason.NOT_NEWER;
+            // The same content is not looked at again: a rejected bundle keeps its ETag when the verdict cannot change with time
+            // (not newer than the one in force, signature that does not match), so the log says it once and the server is left alone.
+            boolean settled = notNewer || e.reason() == BundleRejectedException.Reason.BAD_SIGNATURE;
+            if (settled && bundle != null && bundle.etag() != null) {
+                etags.put(channel, bundle.etag());
+            } else {
+                etags.remove(channel);
+            }
+            if (notNewer) {
+                log.debug("policy bundle {} is not newer than the one in force ({}); it is ignored", channel.name().toLowerCase(),
+                        e.reason().wireCode());
+                return;
+            }
             meters.counter("gateway_policy_bundle_rejected_total", "channel", channel.name().toLowerCase(), "reason", e.reason().wireCode())
                     .increment();
             log.error("policy bundle {} rejected ({}); the previous one stays", channel.name().toLowerCase(), e.reason().wireCode());

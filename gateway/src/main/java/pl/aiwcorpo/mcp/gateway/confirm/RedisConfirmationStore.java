@@ -1,9 +1,5 @@
 package pl.aiwcorpo.mcp.gateway.confirm;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
 import java.util.List;
 
 import org.springframework.dao.DataAccessException;
@@ -105,6 +101,15 @@ public final class RedisConfirmationStore implements ConfirmationStore {
         }
     }
 
+    @Override
+    public void deleteUser(String sub, long currentEpoch) throws StoreUnavailableException {
+        try {
+            redis.delete(List.of(userKey(sub), burnKey(sub, currentEpoch)));
+        } catch (DataAccessException e) {
+            throw new StoreUnavailableException(e);
+        }
+    }
+
     private String userKey(String sub) {
         return prefix + "conf:u:" + hash(sub);
     }
@@ -114,10 +119,6 @@ public final class RedisConfirmationStore implements ConfirmationStore {
     }
 
     private static String hash(String sub) {
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(sub.getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException(e);
-        }
+        return pl.aiwcorpo.mcp.gateway.redis.KeyHash.of(sub);
     }
 }

@@ -17,12 +17,13 @@ import org.springframework.security.oauth2.server.resource.InvalidBearerTokenExc
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
+import pl.aiwcorpo.mcp.gateway.ratelimit.RateLimitResponse;
 import pl.aiwcorpo.mcp.gateway.support.Contracts;
 import pl.aiwcorpo.mcp.gateway.support.Vectors;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-/** CC-124: the 401 and 503 answers of gateway-authentication/ produced by the real entry point. */
+/** CC-124, CC-156: the 401, 503 and 429 answers of gateway-authentication/ produced by the real entry point and the real rate limit response. */
 class GatewayAuthenticationVectorsTest {
 
     private static final JsonMapper JSON = JsonMapper.builder().build();
@@ -30,7 +31,7 @@ class GatewayAuthenticationVectorsTest {
     @TestFactory
     List<DynamicTest> everyVector() {
         List<Vectors.Vector> vectors = Vectors.of("gateway-authentication");
-        assertThat(vectors).hasSize(13);
+        assertThat(vectors).hasSize(15);
         return vectors.stream().map(v -> DynamicTest.dynamicTest(v.name(), () -> check(v.document()))).toList();
     }
 
@@ -44,7 +45,16 @@ class GatewayAuthenticationVectorsTest {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", input.path("resourcePath").asString() + "/mcp");
         MockHttpServletResponse response = new MockHttpServletResponse();
 
-        entryPoint.commence(request, response, failure(input.path("reason").asString(), input.path("retryAfterSeconds").asInt(10)));
+        if ("rate_limited".equals(input.path("reason").asString())) {
+            // The wait is a decimal in a vector (0.2 s): the limiter rounds up to whole seconds, at least one.
+            int seconds = (int) Math.max(1, Math.ceil(input.path("retryAfterSeconds").asDouble()));
+            org.springframework.http.ResponseEntity<String> limited = RateLimitResponse.of("0192d1b2-7c3a-7d4e-8f10-2a3b4c5d6e7f", seconds);
+            response.setStatus(limited.getStatusCode().value());
+            limited.getHeaders().forEach((name, values) -> response.setHeader(name, values.getFirst()));
+            response.getWriter().write(limited.getBody());
+        } else {
+            entryPoint.commence(request, response, failure(input.path("reason").asString(), input.path("retryAfterSeconds").asInt(10)));
+        }
 
         JsonNode expected = vector.path("expected");
         assertThat(response.getStatus()).isEqualTo(expected.path("status").asInt());

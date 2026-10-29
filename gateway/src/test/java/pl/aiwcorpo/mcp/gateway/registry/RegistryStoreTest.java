@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -13,15 +14,12 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
 import pl.aiwcorpo.mcp.gateway.GatewayTestBase;
+import pl.aiwcorpo.mcp.gateway.support.Manifests;
+import pl.aiwcorpo.mcp.gateway.support.Manifests.Tool;
 import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
 
-/** The registry store on a real PostgreSQL: risk floors that outlive a tool, and registrations that cannot interleave. */
+/** The registry store on a real PostgreSQL: both entries of a tool survive a round trip, floors only rise, a server's changes cannot interleave. */
 class RegistryStoreTest extends GatewayTestBase {
-
-    private static final int READ_ONLY = 0;
-    private static final int UPDATE = 1;
-    private static final int DESTRUCTIVE = 2;
 
     @Autowired
     RegistryStore store;
@@ -35,99 +33,118 @@ class RegistryStoreTest extends GatewayTestBase {
         return name.toString();
     }
 
-    private static JsonNode manifest(String marker) {
-        return JsonMapper.builder().build().createObjectNode().put("marker", marker);
+    private static RegisteredTool toolWith(String name, boolean approved, boolean pending) {
+        JsonNode entry = Manifests.tool(Manifests.jira("1.0.0", Tool.update(name)), name);
+        RegisteredTool.Approved a = approved ? new RegisteredTool.Approved(entry, "sha256:" + "1".repeat(64), "1.0.0", "null") : null;
+        RegisteredTool.Pending p = pending ? new RegisteredTool.Pending(entry, "sha256:" + "2".repeat(64), "1.1.0", approved ? "changed" : "new",
+                "server", "null") : null;
+        return new RegisteredTool(name, a, p);
     }
 
     @Test
-    void aToolRemovedAndAddedAgainWithALowerRiskIsRefused() {
+    void theApprovedAndThePendingEntryOfAToolComeBackAsWritten() {
         String server = freshServer();
-        assertThat(store.write(server, manifest("1"), "ci", Map.of("delete_it", DESTRUCTIVE, "read_it", READ_ONLY), Map.of(), false))
-                .isInstanceOf(RegistryStore.Written.Done.class);
-        // The tool disappears from the manifest: the floor stays.
-        assertThat(store.write(server, manifest("2"), "ci", Map.of("read_it", READ_ONLY), Map.of(), false))
-                .isInstanceOf(RegistryStore.Written.Done.class);
-        RegistryStore.Written again = store.write(server, manifest("3"), "ci", Map.of("delete_it", UPDATE, "read_it", READ_ONLY), Map.of(), false);
-        assertThat(again).isEqualTo(new RegistryStore.Written.Lowered(List.of("delete_it")));
-        assertThat(store.find(server).orElseThrow().manifest().path("marker").asString()).as("nothing was written").isEqualTo("2");
-        assertThat(store.write(server, manifest("4"), "ci", Map.of("delete_it", DESTRUCTIVE), Map.of(), false))
-                .isInstanceOf(RegistryStore.Written.Done.class);
+        RegisteredTool both = toolWith("update_issue", true, true);
+        RegisteredTool onlyPending = toolWith("create_issue", false, true);
+        RegisteredTool onlyApproved = toolWith("get_issue", true, false);
+
+        store.locked(server, tx -> {
+            tx.saveServer(Manifests.jira("1.0.0", Tool.update("update_issue")), "ci");
+            tx.saveTool(both);
+            tx.saveTool(onlyPending);
+            tx.saveTool(onlyApproved);
+            return null;
+        });
+
+        assertThat(store.tools(server)).containsOnlyKeys("create_issue", "get_issue", "update_issue");
+        assertThat(store.tools(server).get("update_issue")).isEqualTo(both);
+        assertThat(store.tools(server).get("create_issue")).isEqualTo(onlyPending);
+        assertThat(store.tools(server).get("get_issue")).isEqualTo(onlyApproved);
+        assertThat(store.findServer(server).orElseThrow().source()).isEqualTo("ci");
     }
 
     @Test
-    void theConfiguredMinimumIsEnforcedFromTheFirstRegistration() {
+    void aToolCanLoseItsPendingEntryAndBeDeleted() {
         String server = freshServer();
-        assertThat(store.write(server, manifest("1"), "bootstrap", Map.of("delete_it", READ_ONLY), Map.of("delete_it", DESTRUCTIVE), true))
-                .isEqualTo(new RegistryStore.Written.Lowered(List.of("delete_it")));
-        assertThat(store.find(server)).isEmpty();
+        store.locked(server, tx -> {
+            tx.saveTool(toolWith("update_issue", true, true));
+            return null;
+        });
+        store.locked(server, tx -> {
+            tx.saveTool(toolWith("update_issue", true, false));
+            return null;
+        });
+        assertThat(store.tools(server).get("update_issue").pending()).isNull();
+        store.locked(server, tx -> {
+            tx.deleteTool("update_issue");
+            return null;
+        });
+        assertThat(store.tools(server)).isEmpty();
     }
 
     @Test
-    void floorsComeAlsoFromAStoredManifestThatIsNoLongerAcceptable() {
+    void aFloorIsNeverLoweredAndOutlivesTheTool() {
         String server = freshServer();
-        store.write(server, manifest("1"), "ci", Map.of("a", READ_ONLY), Map.of(), false);
-        store.raiseFloors(server, Map.of("a", UPDATE));
-        assertThat(store.write(server, manifest("2"), "ci", Map.of("a", READ_ONLY), Map.of(), false))
-                .isEqualTo(new RegistryStore.Written.Lowered(List.of("a")));
+        store.locked(server, tx -> {
+            tx.saveTool(toolWith("delete_it", true, false));
+            tx.raiseFloors(Map.of("delete_it", 2));
+            return null;
+        });
+        store.locked(server, tx -> {
+            tx.deleteTool("delete_it");
+            tx.raiseFloors(Map.of("delete_it", 0));
+            return null;
+        });
+        assertThat(store.floors(server)).containsEntry("delete_it", 2);
     }
 
     @Test
-    void theBootstrapNeverReplacesAnApproval() throws Exception {
+    void aFailedTransactionWritesNothing() {
         String server = freshServer();
-        store.write(server, manifest("from-ci"), "ci", Map.of("a", READ_ONLY), Map.of(), false);
+        try {
+            store.locked(server, tx -> {
+                tx.saveServer(Manifests.jira("1.0.0", Tool.update("update_issue")), "ci");
+                tx.saveTool(toolWith("update_issue", true, false));
+                throw new IllegalStateException("stop");
+            });
+        } catch (IllegalStateException expected) {
+            // the transaction was rolled back
+        }
+        assertThat(store.findServer(server)).isEmpty();
+        assertThat(store.tools(server)).isEmpty();
+    }
+
+    @Test
+    void changesToOneServerRunOneAfterAnother() throws Exception {
+        String server = freshServer();
         ExecutorService pool = Executors.newFixedThreadPool(8);
+        CountDownLatch start = new CountDownLatch(1);
         try {
-            List<Future<RegistryStore.Written>> results = new ArrayList<>();
+            List<Future<?>> done = new ArrayList<>();
             for (int i = 0; i < 24; i++) {
-                results.add(pool.submit(() -> store.write(server, manifest("from-server"), "bootstrap", Map.of("a", READ_ONLY), Map.of(), true)));
+                done.add(pool.submit(() -> {
+                    start.await();
+                    store.locked(server, tx -> {
+                        // read, think, write: without the lock two of these would both see the same count
+                        int seen = tx.tools().size();
+                        try {
+                            Thread.sleep(5);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                        tx.saveTool(toolWith("tool_" + (char) ('a' + seen), true, false));
+                        return null;
+                    });
+                    return null;
+                }));
             }
-            for (Future<RegistryStore.Written> result : results) {
-                assertThat(result.get()).isInstanceOf(RegistryStore.Written.AlreadyThere.class);
-            }
-        } finally {
-            pool.shutdownNow();
-        }
-        assertThat(store.find(server).orElseThrow().source()).isEqualTo("ci");
-        assertThat(store.find(server).orElseThrow().manifest().path("marker").asString()).isEqualTo("from-ci");
-    }
-
-    @Test
-    void aBootstrapRacingARegistrationNeverWinsOverIt() throws Exception {
-        ExecutorService pool = Executors.newFixedThreadPool(4);
-        try {
-            for (int round = 0; round < 25; round++) {
-                String server = freshServer();
-                Future<RegistryStore.Written> bootstrap = pool.submit(() ->
-                        store.write(server, manifest("from-server"), "bootstrap", Map.of("a", READ_ONLY), Map.of(), true));
-                Future<RegistryStore.Written> ci = pool.submit(() ->
-                        store.write(server, manifest("from-ci"), "ci", Map.of("a", READ_ONLY), Map.of(), false));
-                bootstrap.get();
-                assertThat(ci.get()).isInstanceOf(RegistryStore.Written.Done.class);
-                assertThat(store.find(server).orElseThrow().source()).as("round " + round).isEqualTo("ci");
+            start.countDown();
+            for (Future<?> future : done) {
+                future.get();
             }
         } finally {
             pool.shutdownNow();
         }
-    }
-
-    @Test
-    void aLoweringRegistrationRacingARaisingOneCannotSlipThrough() throws Exception {
-        ExecutorService pool = Executors.newFixedThreadPool(4);
-        try {
-            for (int round = 0; round < 40; round++) {
-                String server = freshServer();
-                Future<RegistryStore.Written> raising = pool.submit(() ->
-                        store.write(server, manifest("raising"), "ci", Map.of("a", DESTRUCTIVE), Map.of(), false));
-                Future<RegistryStore.Written> lowering = pool.submit(() ->
-                        store.write(server, manifest("lowering"), "ci", Map.of("a", READ_ONLY), Map.of(), false));
-                raising.get();
-                lowering.get();
-                assertThat(store.floors(server)).as("round " + round).containsEntry("a", DESTRUCTIVE);
-                assertThat(store.find(server).orElseThrow().manifest().path("marker").asString())
-                        .as("the stored manifest never ends below the floor, round " + round).isEqualTo("raising");
-            }
-        } finally {
-            pool.shutdownNow();
-        }
+        assertThat(store.tools(server)).hasSize(24);
     }
 }

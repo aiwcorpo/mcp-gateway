@@ -10,7 +10,10 @@ public final class AdminOperations {
     private AdminOperations() {
     }
 
-    public static List<Rule> admin(List<String> portalBff, List<String> registryCi) {
+    /** The certificate name of the pipeline of one server (CC-161): this prefix and the serverId of the request path, as a whole. */
+    public static final String REGISTRY_CI_PREFIX = "mcp-registry-ci-";
+
+    public static List<Rule> admin(List<String> portalBff) {
         return List.of(
                 Rule.of("GET", "/admin/v1/catalog", portalBff),
                 Rule.of("GET", "/admin/v1/virtual-servers", portalBff),
@@ -27,9 +30,11 @@ public final class AdminOperations {
                 Rule.of("GET", "/admin/v1/policy/status", portalBff));
     }
 
-    /** The one operation of the registry pipeline, which has no user token. */
-    public static List<Rule> registryPipeline(List<String> registryCi) {
-        return List.of(Rule.of("PUT", "/admin/v1/registry/servers/{serverId}", registryCi));
+    /** The operations that have no user token: the registry pipeline of one server and the offboarding process (CC-155, CC-161). */
+    public static List<Rule> certificateOnly(List<String> offboarding) {
+        return List.of(
+                Rule.of("PUT", "/admin/v1/registry/servers/{serverId}", List.of(REGISTRY_CI_PREFIX + "{serverId}")),
+                Rule.of("POST", "/admin/v1/users/{sub}/purge", offboarding));
     }
 
     public static List<Rule> metrics(List<String> scrapers) {

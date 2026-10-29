@@ -144,24 +144,26 @@ public class SecurityConfiguration {
     }
 
     /**
-     * C5 registerServer: the registry pipeline authenticates with its client certificate alone (CN {@code mcp-registry-ci},
-     * {@code security: mtls} in the contract); there is no user in CI, so no bearer token is asked for. Any other name is 403.
+     * The two operations of C5 that have no user: registerServer (the pipeline of one server, CN {@code mcp-registry-ci-<serverId>}
+     * equal to the {@code serverId} of the path, CC-161) and purgeUser (the offboarding process, CN {@code mcp-offboarding}, CC-155).
+     * Both are {@code security: mtls} in the contract, so no bearer token is asked for. Any other name is 403.
      */
     @Bean
     @Order(0)
     SecurityFilterChain registryPipelineFilterChain(HttpSecurity http, GatewayProperties properties,
                                                     ClientCertificateVerifier certificates, AuthenticationAudit authenticationAudit)
             throws Exception {
-        org.springframework.security.web.util.matcher.RequestMatcher registerServer =
-                request -> "PUT".equals(request.getMethod()) && request.getServletPath().startsWith("/admin/v1/registry/servers/");
-        http.securityMatcher(registerServer)
+        org.springframework.security.web.util.matcher.RequestMatcher certificateOnly =
+                request -> ("PUT".equals(request.getMethod()) && request.getServletPath().startsWith("/admin/v1/registry/servers/"))
+                        || ("POST".equals(request.getMethod()) && request.getServletPath().startsWith("/admin/v1/users/"));
+        http.securityMatcher(certificateOnly)
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .requestCache(cache -> cache.disable())
                 .formLogin(form -> form.disable())
                 .httpBasic(basic -> basic.disable())
                 .logout(logout -> logout.disable())
-                .addFilterBefore(new AdminClientCertificateFilter(AdminOperations.registryPipeline(properties.admin().registryClientCns()),
+                .addFilterBefore(new AdminClientCertificateFilter(AdminOperations.certificateOnly(properties.admin().offboardingClientCns()),
                         true, certificates, authenticationAudit), org.springframework.security.web.access.intercept.AuthorizationFilter.class)
                 .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
         return http.build();
@@ -195,8 +197,8 @@ public class SecurityConfiguration {
                 .formLogin(form -> form.disable())
                 .httpBasic(basic -> basic.disable())
                 .logout(logout -> logout.disable())
-                .addFilterBefore(new AdminClientCertificateFilter(AdminOperations.admin(properties.admin().allowedClientCns(),
-                        properties.admin().registryClientCns()), true, certificates, authenticationAudit),
+                .addFilterBefore(new AdminClientCertificateFilter(AdminOperations.admin(properties.admin().allowedClientCns()),
+                        true, certificates, authenticationAudit),
                         BearerTokenAuthenticationFilter.class)
                 .authorizeHttpRequests(auth -> auth.anyRequest().authenticated())
                 .oauth2ResourceServer(rs -> rs.jwt(jwt -> jwt.decoder(decoder)).authenticationEntryPoint(unauthenticated)

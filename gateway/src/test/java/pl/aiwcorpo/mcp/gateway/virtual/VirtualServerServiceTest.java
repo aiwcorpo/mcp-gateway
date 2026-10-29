@@ -120,7 +120,7 @@ class VirtualServerServiceTest {
 
     private static GatewayProperties.Server server(String system, String url, Map<String, GatewayProperties.Tool> tools) {
         return new GatewayProperties.Server(system, URI.create(url), "1.0.0", true, "static",
-                new GatewayProperties.Credential(true, List.copyOf(Set.of("user-secret")), List.of(), false), tools);
+                new GatewayProperties.Credential(true, List.copyOf(Set.of("user-secret")), List.of(), false, null), tools);
     }
 
     private static GatewayProperties.Tool tool(String risk) {

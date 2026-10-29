@@ -74,7 +74,7 @@ gateway:
     audience: ${MCP_ADMIN_AUDIENCE:mcp-gateway-admin}
     authorized-party: ${MCP_ADMIN_AUTHORIZED_PARTY:mcp-portal-bff}
     allowed-client-cns: ${MCP_ADMIN_CLIENT_CNS:mcp-portal-bff}
-    registry-client-cns: ${MCP_ADMIN_REGISTRY_CLIENT_CNS:mcp-registry-ci}
+    offboarding-client-cns: ${MCP_ADMIN_OFFBOARDING_CLIENT_CNS:mcp-offboarding}
   # Signed policy bundles (C7). No start without a main bundle (CC-068). The key files are PEM public keys (Ed25519);
   # identifiers starting with test- are accepted only with MCP_POLICY_ALLOW_TEST_KEYS=true (dev).
   policy:
@@ -94,8 +94,20 @@ gateway:
   registry:
     mode: ${MCP_REGISTRY_MODE:required}
     bootstrap-from-server: ${MCP_REGISTRY_BOOTSTRAP:false}
+    definition-check-ttl: ${MCP_REGISTRY_DEFINITION_CHECK_TTL:30s}
   activity:
     cursor-key: ${MCP_ACTIVITY_CURSOR_KEY:}
+    retention: ${MCP_ACTIVITY_RETENTION:30d}
+  # Request limits per window (CC-135): per user, per (user, AI client), per (user, tool); DESTRUCTIVE tools have a lower limit and
+  # single tools can be set under tools: by the name the client sees, e.g. jira__delete_issue: 3.
+  rate-limit:
+    enabled: ${MCP_RATE_LIMIT_ENABLED:true}
+    window: ${MCP_RATE_LIMIT_WINDOW:1m}
+    per-user: ${MCP_RATE_LIMIT_PER_USER:600}
+    per-client: ${MCP_RATE_LIMIT_PER_CLIENT:300}
+    per-tool: ${MCP_RATE_LIMIT_PER_TOOL:120}
+    destructive-per-tool: ${MCP_RATE_LIMIT_DESTRUCTIVE_PER_TOOL:10}
+    audit-interval: ${MCP_RATE_LIMIT_AUDIT_INTERVAL:10s}
   virtual-servers:
     max-per-user: ${MCP_VIRTUAL_SERVERS_MAX_PER_USER:50}
   metrics:
@@ -131,6 +143,8 @@ gateway:
       credential:
         required: true
         accepted-types: [user-secret, user-oauth]
+        # context.credentialType of the Cedar decisions (CC-136): one type per system, since a user may hold either.
+        type: user-secret
       tools:
         search_issues:
           risk: READ_ONLY
@@ -189,6 +203,7 @@ gateway:
       credential:
         required: true
         accepted-types: [user-oauth, user-secret]
+        type: user-oauth
       tools:
         list_projects:
           risk: READ_ONLY

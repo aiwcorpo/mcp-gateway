@@ -25,7 +25,7 @@ import tools.jackson.databind.json.JsonMapper;
 class InternalTokenIssuerTest {
 
     private static final JsonMapper JSON = JsonMapper.builder().build();
-    private final SigningKeys keys = SigningKeys.load(null, null, false);
+    private final SigningKeys keys = SigningKeys.load(null, null, false, false);
     private final InternalTokenIssuer issuer = new InternalTokenIssuer(keys, "https://mcp-gateway.internal",
             Duration.ofSeconds(30), () -> "00000000000000-0000000", Clock.systemUTC());
     private final GatewayUser alice = new GatewayUser("6f1c2a9e-4d4b-4c51-9a53-1e0f0c7d2b11", "alice", "claude-code",
@@ -103,14 +103,26 @@ class InternalTokenIssuerTest {
         Path published = dir.resolve("keys.json");
         String a = resource("mcp-contracts/test-vectors/keys/test-gateway-jwt-a.NOT-FOR-PRODUCTION.private.jwk.json");
         Files.writeString(published, "{\"keys\":[" + a + "]}");
-        assertThatThrownBy(() -> SigningKeys.load(published.toString(), "test-gw-2026-10-a", false))
+        assertThatThrownBy(() -> SigningKeys.load(published.toString(), "test-gw-2026-10-a", false, false))
                 .hasMessageContaining("test-");
 
         String renamed = a.replace("test-gw-2026-10-a", "prod-2026-10-a");
         Files.writeString(published, "{\"keys\":[" + renamed + "]}");
-        assertThatThrownBy(() -> SigningKeys.load(published.toString(), "prod-2026-10-a", false))
+        assertThatThrownBy(() -> SigningKeys.load(published.toString(), "prod-2026-10-a", false, false))
                 .hasMessageContaining("published mcp-contracts test key");
-        assertThat(SigningKeys.load(published.toString(), "prod-2026-10-a", true).active().getKeyID()).isEqualTo("prod-2026-10-a");
+        assertThat(SigningKeys.load(published.toString(), "prod-2026-10-a", true, false).active().getKeyID()).isEqualTo("prod-2026-10-a");
+    }
+
+    @Test
+    void devKeysNeedTheDevstackProfileAndTheTestKeySetting(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("keys.json");
+        String a = resource("mcp-contracts/test-vectors/keys/test-gateway-jwt-a.NOT-FOR-PRODUCTION.private.jwk.json");
+        Files.writeString(file, "{\"keys\":[" + a.replace("test-gw-2026-10-a", "dev-gw-2026-10-a") + "]}");
+        assertThatThrownBy(() -> SigningKeys.load(file.toString(), "dev-gw-2026-10-a", false, false)).hasMessageContaining("dev-");
+        assertThatThrownBy(() -> SigningKeys.load(file.toString(), "dev-gw-2026-10-a", true, false)).hasMessageContaining("dev mode");
+        assertThatThrownBy(() -> SigningKeys.load(file.toString(), "dev-gw-2026-10-a", false, true)).hasMessageContaining("dev mode");
+        assertThat(SigningKeys.load(file.toString(), "dev-gw-2026-10-a", true, true).active().getKeyID())
+                .isEqualTo("dev-gw-2026-10-a");
     }
 
     @Test

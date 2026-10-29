@@ -25,7 +25,8 @@ public final class TestBundles {
     public record Bundle(String revision, byte[] archive, byte[] signature) {
     }
 
-    private static final String[] EXAMPLE_POLICIES = {"call-tool", "read", "update", "forbid-restricted", "virtual-server"};
+    private static final String[] EXAMPLE_POLICIES = {"call-tool", "read", "update", "forbid-restricted", "virtual-server",
+        "credential-type"};
 
     private TestBundles() {
     }
@@ -75,7 +76,7 @@ public final class TestBundles {
 
     private static String manifest(String revision) {
         return "{\"revision\":\"" + revision + "\",\"gitSha\":\"" + revision.substring(15) + "0".repeat(33) + "\",\"createdAt\":\"2026-10-28T12:00:00Z\","
-                + "\"schemaVersion\":\"3.1.0\"}";
+                + "\"schemaVersion\":\"4.0.0\"}";
     }
 
     private static Bundle sign(String revision, Map<String, String> files, String keyName) {

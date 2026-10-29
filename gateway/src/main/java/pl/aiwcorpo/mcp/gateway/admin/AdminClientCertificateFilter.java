@@ -36,9 +36,14 @@ import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
  */
 public final class AdminClientCertificateFilter extends OncePerRequestFilter {
 
-    /** One operation (or all methods when {@code method} is null) and the certificate names allowed to call it. */
+    /**
+     * One operation (or all methods when {@code method} is null) and the certificate names allowed to call it. A name may carry a
+     * path variable of the pattern in braces ({@code mcp-registry-ci-{serverId}}, CC-161): the certificate then names exactly the
+     * value the request path has there, and no other.
+     */
     public record Rule(String method, PathPattern pattern, Set<String> names) {
         private static final PathPatternParser PARSER = new PathPatternParser();
+        private static final java.util.regex.Pattern VARIABLE = java.util.regex.Pattern.compile("\\{([A-Za-z]+)}");
 
         public static Rule of(String method, String pattern, Collection<String> names) {
             return new Rule(method, PARSER.parse(pattern), Set.copyOf(names));
@@ -46,6 +51,29 @@ public final class AdminClientCertificateFilter extends OncePerRequestFilter {
 
         boolean covers(String requestMethod, PathContainer path) {
             return (method == null || method.equals(requestMethod)) && pattern.matches(path);
+        }
+
+        /** Whether {@code certificateName} equals, as a whole and case-sensitively, one of the names this request allows. */
+        boolean allows(PathContainer path, String certificateName) {
+            PathPattern.PathMatchInfo match = pattern.matchAndExtract(path);
+            for (String template : names) {
+                java.util.regex.Matcher variable = VARIABLE.matcher(template);
+                StringBuilder resolved = new StringBuilder();
+                boolean complete = true;
+                while (variable.find()) {
+                    String value = match == null ? null : match.getUriVariables().get(variable.group(1));
+                    if (value == null) {
+                        complete = false;
+                        break;
+                    }
+                    variable.appendReplacement(resolved, java.util.regex.Matcher.quoteReplacement(value));
+                }
+                variable.appendTail(resolved);
+                if (complete && resolved.toString().equals(certificateName)) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 
@@ -85,7 +113,7 @@ public final class AdminClientCertificateFilter extends OncePerRequestFilter {
             return;
         }
         String name = commonName(client.get());
-        if (rule == null || name == null || !rule.names().contains(name)) {
+        if (rule == null || name == null || !rule.allows(path, name)) {
             reject(request, response, HttpServletResponse.SC_FORBIDDEN, "access_denied");
             return;
         }
