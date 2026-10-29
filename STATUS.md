@@ -9,7 +9,8 @@ M2 i M1; wiersze zastąpione w M4 są oznaczone.
 | --- | --- | --- | --- |
 | K1 | kontrakty 4.0.0; rejestr z przypinaniem definicji (CC-097, CC-133, CC-161, CC-162): certyfikat potoku `mcp-registry-ci-<serverId>`, `RegistryPlanner` (READ_ONLY zatwierdza commit, UPDATE/DESTRUCTIVE czeka), `approve` z 409/422, `tools/list` z zatwierdzonych definicji, TTL <= 60 s, `definition_changed`/`tool_not_served`, wpisy `source: server`, `upstream_unavailable` bez wołania serwera, start z nieprzechodzącym manifestem = serwer `enabled: false`; `environment_mismatch`, `credential_type_mismatch`; `context.credentialType`; klucze `dev-` tylko w trybie dev; stały tekst `not_found_or_denied`; paczki polityk na schemacie 4.0.0; poprawka z koordynatora (paczka "nie nowsza" nie jest błędem ERROR, ETag zapamiętany) | `a72782e` | - |
 | K2 | `POST /admin/v1/users/{sub}/purge` (CN `mcp-offboarding`), retencja aktywności z konfiguracji, limity w Redisie (użytkownik, klient, narzędzie, DESTRUCTIVE osobno), C10 `rate_limited` i 429, audyt z agregacją | `8b953aa` | - |
-| K3 | `403 exchange_denied` -> `access_denied`, `422 system_not_configured` -> `internal_error` z odrębną przyczyną, token-exchange bez `expiresAt` odrzucany, testy poświadczeń i `context.credentialType`, README i STATUS, obraz | `019d69a` | `m4-019d69a` (glibc; po pełnym `./mvnw -B install`; kolejne commity zmieniają tylko STATUS) |
+| K3 | `403 exchange_denied` -> `access_denied`, `422 system_not_configured` -> `internal_error` z odrębną przyczyną, token-exchange bez `expiresAt` odrzucany, testy poświadczeń i `context.credentialType`, README i STATUS, obraz | `019d69a` | `m4-019d69a` (zastąpiony) |
+| K3b | poprawki przeglądu Opus (niżej), kontrakty 4.0.1, 516 testów gateway'a | `23a49eb` | `m4-23a49eb` (glibc; po pełnym `./mvnw -B install`; kolejne commity zmieniają tylko STATUS) |
 
 ## M4: zakres z zadania
 
@@ -26,7 +27,7 @@ M2 i M1; wiersze zastąpione w M4 są oznaczone.
 ```
 ./mvnw -B install
 test-server: 106 testów
-gateway:     507 testów, 0 błędów (z 445 w M3 na 3.1.0)
+gateway:     516 testów, 0 błędów (z 445 w M3 na 3.1.0)
   nowe/zmienione w M4: RegistryPlannerTest 9, RegistryServiceTest 15 (PostgreSQL), RegistryStoreTest 5, RegistryTest 13 (HTTP, mTLS),
   ManifestAcceptanceTest 6, OffboardingTest 4, RateLimitTest 7, CredentialOutcomesTest 3, CredentialTypeContextTest 2,
   GatewayAuthenticationVectorsTest 15 (z 429), PolicyServiceTest +2 (`dev-`, paczka nie nowsza), ServerRegistryTest +1
