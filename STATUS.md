@@ -17,7 +17,7 @@ filtr to `EndpointFilter` z kontraktów.
 ```
 ./mvnw -B install
 test-server: 105 testów
-gateway:     675 testów (z 534 w M4); nowe: EndpointVectorsTest 147 (wektory endpoint-filter i endpoint-aggregate), AggregateEndpointTest 11,
+gateway:     678 testów (z 534 w M4); nowe: EndpointVectorsTest 147 (wektory endpoint-filter i endpoint-aggregate), AggregateEndpointTest 11,
              HighAvailabilityTest 4 (dwa procesy), ReplicatedStoreTest 1 (WAIT), PolicyServiceTest +1, DevstackContextTest +1, DevstackGuardTest +1,
              CredentialOutcomesTest +1, ConfirmationStateSizeTest +1; GatewayAuthenticationVectorsTest 18 (z 16)
 ci/self-test.sh: 8 sprawdzeń
@@ -53,7 +53,7 @@ Wektory 5.1.0 dla gateway'a: `endpoint-filter/` (parse, route, apply, call, call
 
 - Restart z trzymanym manifestem jako test na prawdziwym starcie: zostaje test jednostkowy `RegistryServiceTest` (`enabled: false`, nic nie skasowane) i `environment_mismatch` w `ManifestValidator` bez trybu dev.
 - `GET /admin/v1/policy/status` zwraca rewizję jednej instancji (tej, która odpowiedziała); pełna lista instancji wymaga zmiany kontraktu albo zapytania do każdej instancji.
-- Obraz końcowy: `mcp-gateway:m5-2f3c4a4` (zbudowany z jarów po `./mvnw -B install`, nie wdrożony; commit kodu `2f3c4a4`, ten wpis dochodzi osobnym commitem).
+- Obraz końcowy: `mcp-gateway:m5-3e8a3ae` (z jarów po `make ci`, nie wdrożony; commit kodu `3e8a3ae`, ten wpis dochodzi osobnym commitem). Poprzedni `m5-2f3c4a4` zastąpiony.
 - Pomiar liczby tokenów listy `/mcp` dla zalecenia filtra (README kontraktów mówi o pomiarze M5) należy do `mcp-load-tests`.
 
 ## Propozycje CC (M5, do ws-00)
@@ -607,4 +607,4 @@ Przegląd bez kontekstu: 0 CRITICAL, 0 HIGH, 4 MEDIUM, 13 LOW, wszystkie bez zmi
 | LOW-11 README o 5xx brokera, brak testów ścieżek `internal_error` | poprawione: README zgodne z kodem (każde 5xx -> `upstream_unavailable`); test 401 i 200 bez `value` -> `internal_error` bez `tools/call` |
 | LOW-12 wyciek połączeń pub/sub, trwałe wyłączenie cache po wyjątku | poprawione: połączenie zamykane po nieudanej subskrypcji; po wyjątku bez rozłączenia ponowna subskrypcja przywraca `live` |
 | LOW-13 testy limitu 1 MiB, wzorzec `prv`, `tool` na `mcp-jira` | poprawione: test 413, `policy-revision` sprawdzany wzorcem przy starcie; test `tool` na prawdziwym `mcp-jira` należy do ws-10/ws-04 |
-
+M5: kod gotowy (2026-10-31) - kontrakty 5.1.0, /mcp z filtrem, HA dwóch instancji, ci/run.sh; dowód z runnera CI czeka; obraz mcp-gateway:m5-3e8a3ae
