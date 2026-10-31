@@ -66,6 +66,10 @@ class DevstackContextTest {
     private Throwable start(Map<String, Object> extra) {
         Map<String, Object> all = new java.util.HashMap<>(relaxed);
         all.putAll(extra);
+        return run(all);
+    }
+
+    private Throwable run(Map<String, Object> all) {
         try {
             // Command line arguments: they win over application.yml, whose placeholders need the variables of a deployment.
             String[] arguments = all.entrySet().stream().map(e -> "--" + e.getKey() + "=" + e.getValue()).toArray(String[]::new);
@@ -145,5 +149,27 @@ class DevstackContextTest {
         Throwable failure = start(Map.of("spring.profiles.active", "devstack", DevstackGuard.ACK_PROPERTY, "true"));
         assertThat(failure).isNotNull();
         assertThat(refusedByTheGuard(failure)).as(String.valueOf(failure)).isFalse();
+    }
+
+    /** In production mode (no profile, no relaxation) a signing key named dev- stops the start: the guard passes, the key loader refuses. */
+    @Test
+    void aDevKeyStopsAProductionStartAtTheKeyLoader() throws Exception {
+        Path keys = Files.createTempDirectory("prod-keys");
+        String a = new String(getClass().getClassLoader().getResourceAsStream(
+                "mcp-contracts/test-vectors/keys/test-gateway-jwt-a.NOT-FOR-PRODUCTION.private.jwk.json").readAllBytes());
+        Files.writeString(keys.resolve("keys.json"), "{\"keys\":[" + a.replace("test-gw-2026-10-a", "dev-gw-2026-10-a") + "]}");
+        Map<String, Object> production = new java.util.HashMap<>();
+        relaxed.keySet().stream().filter(k -> k.startsWith("MCP_") || k.startsWith("spring.")).forEach(k -> production.put(k, relaxed.get(k)));
+        production.putAll(DevstackGuardTest.production());
+        production.put("gateway.internal-jwt.keys-file", keys.resolve("keys.json").toString());
+        production.put("gateway.internal-jwt.active-kid", "dev-gw-2026-10-a");
+        production.put("gateway.oidc.jwks-uri", "https://127.0.0.1:9/certs");
+        Throwable failure = run(production);
+        assertThat(failure).isNotNull();
+        boolean refusedByLoader = false;
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            refusedByLoader |= cause.getMessage() != null && cause.getMessage().contains("dev- keys need dev mode");
+        }
+        assertThat(refusedByLoader).as(String.valueOf(failure)).isTrue();
     }
 }

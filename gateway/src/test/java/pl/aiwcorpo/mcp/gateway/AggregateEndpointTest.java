@@ -104,6 +104,9 @@ class AggregateEndpointTest extends GatewayTestBase {
         assertThat(rawStatus("POST", "/mcp?systems=%zz", token(), null)).as("a malformed escape is no missing filter").isEqualTo(400);
         assertThat(rawStatus("POST", "/mcp?access=read&systems=%", token(), null)).isEqualTo(400);
         assertThat(rawStatus("POST", "/s/mcp-jira/mcp?%zz", token(), null)).isEqualTo(400);
+        for (String odd : List.of("?=x", "?%ff=1", "?%00=1", "?&", "?=", "?systems=jira&", "?%ff", "?systems=%ff")) {
+            assertThat(rawStatus("POST", "/mcp" + odd, token(), null)).as(odd).isEqualTo(400);
+        }
         for (String query : List.of("system=jira", "systems=jira&systems=gitlab", "access=admin", "systems=",
                 "systems=jira%2Cgitlab", "systems=%7Ejira", "systems=jira+gitlab", "x".repeat(600))) {
             HttpResponse<String> response = list(token(), "/mcp?" + query);

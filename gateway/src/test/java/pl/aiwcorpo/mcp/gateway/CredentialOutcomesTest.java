@@ -99,4 +99,20 @@ class CredentialOutcomesTest extends GatewayTestBase {
         assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
         assertThat(credentialCache.get(new CredentialCache.Key(sub, "jira", List.of()))).isNull();
     }
+
+    @Test
+    void aTypeOutsideTheFourTypesOfTheContractIsNeverUsedOrCachedEither(CapturedOutput output) throws Exception {
+        String sub = UUID.randomUUID().toString();
+        env.broker.mode(BrokerStub.Mode.UNKNOWN_TYPE);
+
+        JsonNode error = toolError(callGetIssue(env.idp.token(sub, "unknown-type", GROUPS)));
+
+        assertThat(error.path("error").asString()).isEqualTo("internal_error");
+        assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
+        assertThat(credentialCache.get(new CredentialCache.Key(sub, "jira", List.of()))).isNull();
+        assertThat(output.getAll()).doesNotContain("service-token");
+        for (JsonNode event : events(output, sub, "credential_resolve")) {
+            assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", event)).isEmpty();
+        }
+    }
 }

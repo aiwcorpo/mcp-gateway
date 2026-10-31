@@ -32,7 +32,7 @@ public final class BrokerStub implements AutoCloseable {
     public record Received(String method, String path, String body, String requestId, String rejectReason, String tool) {
     }
 
-    public enum Mode { GRANT, REQUIRED, UNAVAILABLE, DROP, REJECT, BAD_BODY, EXCHANGE_DENIED, SYSTEM_NOT_CONFIGURED, EXCHANGED_WITHOUT_EXPIRY, OTHER_TYPE }
+    public enum Mode { GRANT, REQUIRED, UNAVAILABLE, DROP, REJECT, BAD_BODY, EXCHANGE_DENIED, SYSTEM_NOT_CONFIGURED, EXCHANGED_WITHOUT_EXPIRY, OTHER_TYPE, UNKNOWN_TYPE }
 
     private final HttpsServer server;
     private final InternalJwtVerifier verifier;
@@ -160,6 +160,8 @@ public final class BrokerStub implements AutoCloseable {
                         + "\",\"type\":\"token-exchange\",\"expiresAt\":null,\"cacheTtlSeconds\":30}");
                 case OTHER_TYPE -> send(exchange, 200, "{\"scheme\":\"Bearer\",\"value\":\"" + secret
                         + "\",\"type\":\"user-oauth\",\"expiresAt\":null,\"cacheTtlSeconds\":30}");
+                case UNKNOWN_TYPE -> send(exchange, 200, "{\"scheme\":\"Bearer\",\"value\":\"" + secret
+                        + "\",\"type\":\"service-token\",\"expiresAt\":null,\"cacheTtlSeconds\":30}");
                 case BAD_BODY -> send(exchange, 200, "{\"scheme\":\"Bearer\",\"type\":\"user-secret\",\"cacheTtlSeconds\":60}");
             }
         }
