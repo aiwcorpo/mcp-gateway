@@ -222,4 +222,17 @@ class PolicyServiceTest {
             restarted.destroy();
         }
     }
+
+    @Test
+    void aStateDirectoryBelongsToOneInstance() {
+        server.publishMain(TestBundles.main(TestBundles.revision(1), Map.of()));
+        PolicyService first = service(false, null, Duration.ofSeconds(5), Duration.ofSeconds(1)).start();
+        try {
+            assertThatThrownBy(() -> service(false, null, Duration.ofSeconds(5), Duration.ofSeconds(1)).start())
+                    .isInstanceOf(IllegalStateException.class).hasMessageContaining("used by another instance");
+        } finally {
+            first.destroy();
+        }
+        service(false, null, Duration.ofSeconds(5), Duration.ofSeconds(1)).start().destroy();
+    }
 }

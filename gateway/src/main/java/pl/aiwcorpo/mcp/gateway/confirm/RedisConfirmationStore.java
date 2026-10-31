@@ -58,9 +58,16 @@ public final class RedisConfirmationStore implements ConfirmationStore {
             return;
         }
         Long acknowledged = redis.execute((org.springframework.data.redis.core.RedisCallback<Long>) connection -> {
-            Object answer = connection.execute("WAIT", Integer.toString(waitReplicas).getBytes(java.nio.charset.StandardCharsets.US_ASCII),
-                    Long.toString(waitMillis).getBytes(java.nio.charset.StandardCharsets.US_ASCII));
-            return answer instanceof Long count ? count : 0L;
+            // The generic execute of Spring cannot read an integer reply; the Lettuce command can.
+            try {
+                return ((io.lettuce.core.api.async.BaseRedisAsyncCommands<?, ?>) connection.getNativeConnection())
+                        .waitForReplication(waitReplicas, waitMillis).get(waitMillis + 2000, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return 0L;
+            } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) {
+                return 0L;
+            }
         });
         if (acknowledged == null || acknowledged < waitReplicas) {
             throw new StoreUnavailableException("the change was not acknowledged by " + waitReplicas + " replicas");

@@ -128,12 +128,7 @@ public final class GatewayTestEnvironment {
                 false, null, gatewayKeys), Tls.fromPkcs12(wrongKeystore, pki.truststore(), TestPki.PASSWORD),
                 new InetSocketAddress("127.0.0.1", 0)).start();
 
-        String acl = String.join("\n",
-                "user default off resetkeys resetchannels -@all",
-                "user admin on >" + REDIS_ADMIN_PASSWORD + " ~* &* +@all",
-                "user gateway on >" + REDIS_GATEWAY_PASSWORD + " resetkeys ~gw:* resetchannels &credential.invalidated "
-                        + DATA_COMMANDS + " +subscribe +unsubscribe",
-                "");
+        String acl = redisAcl();
         redis = new GenericContainer<>("redis:8.8.4-alpine")
                 .withCopyToContainer(Transferable.of(acl), "/etc/redis-users.acl")
                 .withCommand("redis-server", "--aclfile", "/etc/redis-users.acl", "--appendonly", "no")
@@ -157,6 +152,23 @@ public final class GatewayTestEnvironment {
         ciJiraTls = Tls.fromPkcs12(ciJiraKeystore, pki.truststore(), TestPki.PASSWORD);
         sharedCiTls = otherComponentTls;
         offboardingTls = Tls.fromPkcs12(offboardingKeystore, pki.truststore(), TestPki.PASSWORD);
+    }
+
+    /** The ACL file of the Redis of mcp-platform-dev: the commands the gateway may use, and an admin for the tests. */
+    public static String redisAcl() {
+        return String.join("\n",
+                "user default off resetkeys resetchannels -@all",
+                "user admin on >" + REDIS_ADMIN_PASSWORD + " ~* &* +@all",
+                "user gateway on >" + REDIS_GATEWAY_PASSWORD + " resetkeys ~gw:* resetchannels &credential.invalidated "
+                        + DATA_COMMANDS + " +subscribe +unsubscribe",
+                "");
+    }
+
+    /** The properties {@link #register} gives a Spring context, as text, for a gateway started as a process of its own. */
+    public java.util.Map<String, String> properties() {
+        java.util.Map<String, String> all = new java.util.LinkedHashMap<>();
+        register((name, supplier) -> all.put(name, String.valueOf(supplier.get())));
+        return all;
     }
 
     public void register(DynamicPropertyRegistry registry) {
