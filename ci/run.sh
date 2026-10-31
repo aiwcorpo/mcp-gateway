@@ -40,7 +40,8 @@ tracked_sources() {
 # The two checks of the house style: characters that give away generated text, and phrases left by tools.
 step_hygiene() {
   local failed=0
-  if ! tracked_sources | xargs -0 perl -CSD -ne 'if (/[\x{00A0}\x{200B}\x{202F}\x{FEFF}\x{2018}\x{2019}\x{201C}\x{201D}\x{2026}]/) { print "$ARGV:$.: $_"; $bad = 1 } END { exit($bad ? 1 : 0) }'; then
+  # <<>> opens each file name literally (the two-argument open of <> would run a name such as "x |"), and -- ends the options.
+  if ! tracked_sources | xargs -0 perl -CSD -e 'while (<<>>) { if (/[\x{00A0}\x{200B}\x{202F}\x{FEFF}\x{2018}\x{2019}\x{201C}\x{201D}\x{2026}]/) { print "$ARGV:$.: $_"; $bad = 1 } } continue { close ARGV if eof } exit($bad ? 1 : 0)' --; then
     echo "ci/run.sh: non-ASCII quotes, spaces or ellipsis found (above)" >&2
     failed=1
   fi

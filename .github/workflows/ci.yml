@@ -1,4 +1,5 @@
-# Thin wrapper: all logic is in ci/run.sh. Repository secrets MCP_MAVEN_REPOSITORY_URL, MCP_MAVEN_REPOSITORY_USER and
+# Thin wrapper: all logic is in ci/run.sh. GitHub hands no secret to a pull request from a fork, and a pull request of the
+# repository itself should use a registry token that can only read. Repository secrets MCP_MAVEN_REPOSITORY_URL, MCP_MAVEN_REPOSITORY_USER and
 # MCP_MAVEN_REPOSITORY_PASSWORD point at the registry with the mcp-contracts artifacts.
 name: ci
 on:

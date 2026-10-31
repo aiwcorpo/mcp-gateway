@@ -34,3 +34,7 @@ check "two steps are refused" 2 env CI_MVNW="$work/fake-passes" "$work/ci/run.sh
 printf 'quote \xe2\x80\x99 here\n' >"$work/bad.md"
 git -C "$work" add bad.md
 check "hygiene finds a typographic quote" 1 env CI_MVNW="$work/fake-passes" "$work/ci/run.sh" hygiene
+printf 'ok\n' >"$work/touch-me |"
+printf 'x' >"$work/ran"
+git -C "$work" add "touch-me |" 2>/dev/null
+check "a file name with a pipe is read, not run" 0 env CI_MVNW="$work/fake-passes" bash -c "cd '$work' && git rm -q --cached bad.md && rm bad.md && ci/run.sh hygiene"

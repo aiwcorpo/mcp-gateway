@@ -34,6 +34,7 @@ public final class PolicyService implements DisposableBean {
 
     private final GatewayProperties.Policy config;
     private final PolicyStore store;
+    private final java.nio.channels.FileChannel stateLock;
     private final BundleFetcher fetcher;
     private final MeterRegistry meters;
     private final Map<Channel, String> etags = new EnumMap<>(Channel.class);
@@ -59,6 +60,7 @@ public final class PolicyService implements DisposableBean {
                 config.overridesKeyFile() == null ? config.mainKeyFile() : config.overridesKeyFile(), config)
                 .withDevstackProfile(developmentStack);
         PolicyStore.Persistence persistence = persistence(config);
+        this.stateLock = persistence == null ? null : lockStateDirectory(java.nio.file.Path.of(config.stateDir()));
         if (persistence == null) {
             if (!developmentStack) {
                 throw new IllegalStateException("gateway.policy.state-dir is required outside the devstack profile: without it a "
@@ -67,6 +69,32 @@ public final class PolicyService implements DisposableBean {
             log.warn("gateway.policy.state-dir is not set: the protection against an older bundle holds only while the process runs");
         }
         this.store = persistence == null ? new PolicyStore(main, overrides) : new PolicyStore(main, overrides, persistence);
+    }
+
+    /**
+     * The state directory belongs to one instance: it holds what that instance has seen, and two instances writing it would hide a
+     * rollback from each of them. A second process (or a second context) on the same directory does not start.
+     */
+    private static java.nio.channels.FileChannel lockStateDirectory(java.nio.file.Path directory) {
+        try {
+            java.nio.file.Files.createDirectories(directory);
+            java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(directory.resolve(".instance.lock"),
+                    java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE);
+            java.nio.channels.FileLock lock;
+            try {
+                lock = channel.tryLock();
+            } catch (java.nio.channels.OverlappingFileLockException e) {
+                lock = null;
+            }
+            if (lock == null) {
+                channel.close();
+                throw new IllegalStateException("gateway.policy.state-dir " + directory + " is used by another instance: every instance"
+                        + " needs a directory of its own (a volume per instance)");
+            }
+            return channel;
+        } catch (IOException e) {
+            throw new IllegalStateException("gateway.policy.state-dir " + directory + " cannot be locked", e);
+        }
     }
 
     /** A directory URL ends with a slash (files are resolved against it); an empty overrides URL means there are none. */
@@ -111,6 +139,15 @@ public final class PolicyService implements DisposableBean {
 
     /** Waits for the main bundle (and the overrides, when they are awaited) and then keeps both current. */
     public PolicyService start() {
+        try {
+            return startAndKeepCurrent();
+        } catch (RuntimeException failure) {
+            destroy();
+            throw failure;
+        }
+    }
+
+    private PolicyService startAndKeepCurrent() {
         long deadline = System.nanoTime() + config.startupTimeout().toNanos();
         while (store.current().isEmpty()) {
             sync(Channel.MAIN);
@@ -225,5 +262,12 @@ public final class PolicyService implements DisposableBean {
     @Override
     public void destroy() {
         scheduler.shutdownNow();
+        if (stateLock != null) {
+            try {
+                stateLock.close();
+            } catch (IOException e) {
+                log.warn("policy state lock not released: {}", e.getClass().getName());
+            }
+        }
     }
 }

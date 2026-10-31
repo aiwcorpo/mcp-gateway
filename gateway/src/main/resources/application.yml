@@ -130,6 +130,9 @@ gateway:
     username: ${MCP_REDIS_USER:gateway}
     password: ${MCP_REDIS_PASSWORD:}
     key-prefix: ${MCP_REDIS_KEY_PREFIX:gw:}
+    # Replicas that must acknowledge a change of the confirmation state before the gateway goes on (WAIT); 0 with a single Redis.
+    wait-replicas: ${MCP_REDIS_WAIT_REPLICAS:0}
+    wait-timeout: ${MCP_REDIS_WAIT_TIMEOUT:200ms}
   sessions:
     client-idle-timeout: 1h
     upstream-idle-timeout: 30m

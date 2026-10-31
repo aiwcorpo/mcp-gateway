@@ -116,7 +116,14 @@ public record GatewayProperties(
             @DefaultValue("gw:") String keyPrefix,
             @DefaultValue("credential.invalidated") String invalidationChannel,
             /* PING interval on the invalidation subscription (half-open connection detection). */
-            @DefaultValue("5s") Duration healthInterval) {
+            @DefaultValue("5s") Duration healthInterval,
+            /*
+             * Replicas that must have acknowledged a change of the confirmation state (WAIT) before the gateway goes on: a burned code or
+             * a pending operation lost in a failover would let a code be used twice. 0 = no wait (one Redis, development). With more than
+             * 0 a change that is not acknowledged within wait-timeout is answered as a store failure (fail-closed).
+             */
+            @DefaultValue("0") @Min(0) int waitReplicas,
+            @DefaultValue("200ms") Duration waitTimeout) {
     }
 
     public record Sessions(

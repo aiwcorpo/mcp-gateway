@@ -19,7 +19,7 @@ import io.micrometer.core.instrument.MeterRegistry;
  * image: a deployment block that carries both of them with the profile is carried as a whole, so this protects against a
  * setting that slips in alone, not against copying the whole block (the gauge and the WARN make it visible). The relaxations are: signing keys named {@code test-*} (internal JWT and policy bundles),
  * a bootstrap of the registry from the manifest a server serves itself, tools from the configuration instead of an approved
- * manifest, plain http for the public URL, the IdP and the policy bundles, and no state directory for the rollback protection.
+ * manifest, plain http for the public URL, the IdP and the policy bundles, and no state directory for the rollback protection, and keys or cursor keys that are not shared (generated per process).
  * The pattern is the one of the server starter (profile {@code devstack}, {@code aiwcorpo.mcp.platform.devstack.acknowledged}).
  */
 public final class DevstackGuard {
@@ -62,6 +62,17 @@ public final class DevstackGuard {
         }
         if (present(p.policy().overridesUrl()) && !https(p.policy().overridesUrl())) {
             used.add("gateway.policy.overrides-url is not https");
+        }
+        // Keys that every instance must share: a random one per process breaks a second instance (tokens for the servers that the
+        // other instance cannot sign for, cursors that the other instance refuses).
+        if (blank(p.internalJwt().keysFile())) {
+            used.add("gateway.internal-jwt.keys-file is empty (keys generated per process)");
+        }
+        if (blank(p.activity().cursorKey())) {
+            used.add("gateway.activity.cursor-key is empty (a key per process)");
+        }
+        if (blank(p.mcp().listCursorKey())) {
+            used.add("gateway.mcp.list-cursor-key is empty (a key per process)");
         }
         if (p.policy().stateDir() == null || p.policy().stateDir().isBlank()) {
             used.add("gateway.policy.state-dir is empty");
@@ -134,6 +145,10 @@ public final class DevstackGuard {
 
     private static boolean https(URI uri) {
         return uri != null && "https".equals(uri.getScheme());
+    }
+
+    private static boolean blank(String value) {
+        return value == null || value.isBlank();
     }
 
     private static boolean present(URI uri) {

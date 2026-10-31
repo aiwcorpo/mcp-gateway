@@ -37,7 +37,7 @@ public final class GatewayTestEnvironment {
             + "+exists +expire +pexpire +expireat +pexpireat +persist +ttl +pttl +incr +incrby +decr +decrby +hset +hsetnx "
             + "+hget +hmget +hdel +hgetall +hexists +hincrby +hlen +sadd +srem +scard +sismember +smembers +zadd +zrem +zcard "
             + "+zscore +zcount +zrange +zrangebyscore +zremrangebyscore +multi +exec +discard +watch +unwatch +eval +evalsha "
-            + "+ping +auth +hello +client|setname +client|setinfo +reset +quit";
+            + "+wait +ping +auth +hello +client|setname +client|setinfo +reset +quit";
 
     private static GatewayTestEnvironment instance;
 

@@ -204,6 +204,16 @@ public class McpEndpoint {
         return plain(HttpStatus.NO_CONTENT, requestId);
     }
 
+    /** Redis holds the sessions: when it does not answer nothing is guessed, the request is refused (fail-closed). */
+    @org.springframework.web.bind.annotation.ExceptionHandler(org.springframework.dao.DataAccessException.class)
+    public ResponseEntity<String> stateStoreUnavailable(org.springframework.dao.DataAccessException failure) {
+        log.error("session store unavailable: {}", failure.getClass().getName());
+        meters.counter("mcp.gateway.requests.store_unavailable").increment();
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).header(HttpHeaders.RETRY_AFTER, "5")
+                .header("X-Request-Id", UuidV7.next()).contentType(MediaType.APPLICATION_JSON)
+                .body("{\"error\":\"upstream_unavailable\",\"message\":\"The session store is temporarily unavailable. Try again in a few seconds.\"}");
+    }
+
     /** The filter of the query as the client wrote it, not decoded: a {@code %} is not part of its alphabet (CC-170). */
     private static EndpointFilter filterOf(HttpServletRequest request, Target target) {
         EndpointFilter filter = EndpointFilter.parse(request.getQueryString());

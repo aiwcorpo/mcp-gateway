@@ -33,11 +33,38 @@ public final class RedisConfirmationStore implements ConfirmationStore {
     private final StringRedisTemplate redis;
     private final JsonMapper json;
     private final String prefix;
+    private final int waitReplicas;
+    private final long waitMillis;
 
     public RedisConfirmationStore(StringRedisTemplate redis, JsonMapper json, String prefix) {
+        this(redis, json, prefix, 0, java.time.Duration.ZERO);
+    }
+
+    /** With {@code waitReplicas} above 0 every change waits (Redis WAIT) until that many replicas have it; else the store fails. */
+    public RedisConfirmationStore(StringRedisTemplate redis, JsonMapper json, String prefix, int waitReplicas, java.time.Duration waitTimeout) {
         this.redis = redis;
         this.json = json;
         this.prefix = prefix;
+        this.waitReplicas = waitReplicas;
+        this.waitMillis = Math.max(1, waitTimeout.toMillis());
+    }
+
+    /**
+     * A burned code or a pending operation that only the master knows is lost when the master is: the change counts only when enough
+     * replicas confirm it. The write has happened either way, so a failure here makes the caller refuse, never go on.
+     */
+    private void replicated() throws StoreUnavailableException {
+        if (waitReplicas <= 0) {
+            return;
+        }
+        Long acknowledged = redis.execute((org.springframework.data.redis.core.RedisCallback<Long>) connection -> {
+            Object answer = connection.execute("WAIT", Integer.toString(waitReplicas).getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+                    Long.toString(waitMillis).getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            return answer instanceof Long count ? count : 0L;
+        });
+        if (acknowledged == null || acknowledged < waitReplicas) {
+            throw new StoreUnavailableException("the change was not acknowledged by " + waitReplicas + " replicas");
+        }
     }
 
     @Override
@@ -62,7 +89,11 @@ public final class RedisConfirmationStore implements ConfirmationStore {
             long lifetime = Math.max(1000, keepUntilEpochMillis - System.currentTimeMillis()) + KEEP_MARGIN_MILLIS;
             Long done = redis.execute(COMPARE_AND_SET, List.of(userKey(sub)), expected.raw() == null ? "" : expected.raw(),
                     written, Long.toString(lifetime));
-            return done != null && done == 1L;
+            if (done != null && done == 1L) {
+                replicated();
+                return true;
+            }
+            return false;
         } catch (DataAccessException | JacksonException e) {
             throw new StoreUnavailableException(e);
         }
@@ -72,7 +103,9 @@ public final class RedisConfirmationStore implements ConfirmationStore {
     public long epochStartedAt(long nowEpochMillis) throws StoreUnavailableException {
         try {
             String key = prefix + "conf:epoch";
-            redis.opsForValue().setIfAbsent(key, Long.toString(nowEpochMillis));
+            if (Boolean.TRUE.equals(redis.opsForValue().setIfAbsent(key, Long.toString(nowEpochMillis)))) {
+                replicated();
+            }
             String value = redis.opsForValue().get(key);
             if (value == null) {
                 throw new StoreUnavailableException("epoch marker vanished");
@@ -96,6 +129,7 @@ public final class RedisConfirmationStore implements ConfirmationStore {
     public void markBurnedInEpoch(String sub, long epoch, long ttlMillis) throws StoreUnavailableException {
         try {
             redis.opsForValue().set(burnKey(sub, epoch), "1", java.time.Duration.ofMillis(ttlMillis));
+            replicated();
         } catch (DataAccessException e) {
             throw new StoreUnavailableException(e);
         }

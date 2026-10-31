@@ -341,7 +341,8 @@ public class GatewayConfiguration {
 
     @Bean
     ConfirmationStore confirmationStore(StringRedisTemplate redis, JsonMapper gatewayJson, GatewayProperties properties) {
-        return new RedisConfirmationStore(redis, gatewayJson, properties.redis().keyPrefix());
+        return new RedisConfirmationStore(redis, gatewayJson, properties.redis().keyPrefix(), properties.redis().waitReplicas(),
+                properties.redis().waitTimeout());
     }
 
     @Bean
