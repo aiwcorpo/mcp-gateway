@@ -5,10 +5,10 @@ tokenem z IdP (C1), pobiera z brokera poświadczenie użytkownika do systemu (C4
 i przekazuje wywołanie do serwera MCP po mTLS z nagłówkami C3. Każde wywołanie narzędzia zostawia zdarzenia
 audytu C8 z jednym `requestId`.
 
-Stan: kamień M4 (przypinanie definicji w rejestrze, offboarding, limity zapytań, typ poświadczenia w Cedar, tryb dev tylko ze
+Stan: kamień M5 (jeden adres `/mcp` z filtrem w query zamiast zapisanych linków, HA dwóch instancji, CI w `ci/run.sh`; sekcja "Co dochodzi w M5") na M4 (przypinanie definicji w rejestrze, offboarding, limity zapytań, typ poświadczenia w Cedar, tryb dev tylko ze
 stosem dev) na M3 (potwierdzenia TOTP akcji DESTRUCTIVE, Cedar z podpisanych paczek, `/activity/calls`), M2 (wirtualne serwery,
 API C5 dla BFF, jedna domena) i M1 (OAuth RS, broker, C2/C3, audyt). Co działa, czego nie ma i odstępstwa: [STATUS.md](STATUS.md).
-Kontrakty: `mcp-contracts` 4.1.0.
+Kontrakty: `mcp-contracts` 5.1.0.
 
 ## Moduły
 
@@ -70,20 +70,7 @@ actuatora.
 
 ## Co dochodzi w M2
 
-- **Wirtualne serwery (link, C5):** `POST/GET/DELETE /admin/v1/virtual-servers` i endpoint MCP
-  `<publicBaseUrl>/v/<slug>/mcp` (obie ery protokołu, sesje legacy jak na `/s/`). Link to nazwa i lista narzędzi
-  `<system>__<narzędzie>`; zapis w PostgreSQL (tabela `virtual_servers`, Flyway `V1`), slug unikalny globalnie
-  (`409 slug_taken` także dla cudzego sluga). Link tylko zawęża (niezmiennik 5):
-  - tworzenie: każde narzędzie musi być znane, włączone i dozwolone dla twórcy, inaczej `403 access_denied` i nic się
-    nie zapisuje; `resourceDefaults` niepuste -> `400 resource_defaults_unsupported` (sprawdzane przed resztą ciała,
-    nie-obiekt -> `invalid_request`), puste lub brak -> przyjęte i nigdy nie zwracane (CC-085);
-  - użycie: link ma tylko właściciel; cudzy lub nieistniejący slug daje to samo `404` (także `DELETE` sesji), slug
-    spoza wzorca `VirtualServerSlug` nie trafia do bazy; `tools/list` pokazuje tylko narzędzia linku, które
-    użytkownik może teraz wywołać; `tools/call` spoza linku -> `not_found_or_denied`, narzędzie linku bez uprawnienia ->
-    `access_denied` (decyzja z bieżącego tokenu, nie z chwili utworzenia linku); link do kilku serwerów łączy ich
-    listy (padnięty serwer jest pomijany, chyba że padły wszystkie);
-  - claimy C2: każde żądanie przez link niesie `vs` = slug i `vsc` = `{}` (zawężanie zasobów uśpione); audyt C8 ma
-    `virtualServer`.
+- **Wirtualne serwery (linki, C5):** zastąpione w M5 przez filtr w adresie (sekcja "Co dochodzi w M5"); `/v/<slug>/mcp` odpowiada 404, tabela i API linków nie istnieją.
 - **API C5 dla BFF** (port wewnętrzny TLS, `/admin/v1/*`, nigdy na porcie publicznym): mTLS z certyfikatem o CN
   `mcp-portal-bff` (`gateway.admin.allowed-client-cns`) i token użytkownika z `aud=mcp-gateway-admin`; "bieżący
   użytkownik" to `sub` tego tokenu. Brak ważnego certyfikatu -> 401, certyfikat innego komponentu -> 403, token dla
@@ -103,12 +90,12 @@ actuatora.
   odpowiedzi 409 jest sprawdzany, ale nie przekazywany klientowi.
 - **Jedna domena (CC-089):** adres publiczny (`MCP_PUBLIC_URL`, wymagany) jest jedynym źródłem `resource_metadata`,
   `resource` w RFC 9728, `url` linków i `connectUrl`; nagłówki `Host`, `X-Forwarded-*` i `Forwarded` nie mają wpływu.
-  Metadane RFC 9728 leżą pod `/.well-known/oauth-protected-resource` i `.../s/<serverId>/mcp`, `.../v/<slug>/mcp`
+  Metadane RFC 9728 leżą pod `/.well-known/oauth-protected-resource` i `.../mcp`, `.../s/<serverId>/mcp`
   (inne ścieżki pod tym prefiksem: 404). Na każdej odpowiedzi portu publicznego, błędy i błędy kontenera
   (nieprawidłowe żądanie HTTP) też, są `X-Content-Type-Options: nosniff` i `Content-Security-Policy: default-src
   'none'; sandbox`; nigdy `Set-Cookie`; `Cookie` klienta jest ukrywany przed aplikacją (do serwera i brokera i tak
   idą nagłówki budowane od zera); odpowiedzi to `application/json` także przy `Accept: text/html`. Reverse proxy
-  (ws-01) dokłada te same nagłówki i usuwa `Cookie` na `/s/`, `/v/` i `/.well-known/oauth-protected-resource*`.
+  (ws-01) dokłada te same nagłówki i usuwa `Cookie` na `/mcp`, `/s/` i `/.well-known/oauth-protected-resource*`.
 - **Serwery:** konfiguracja wszystkich pięciu systemów (`application.yml`): adres, polityka poświadczeń, `enabled`,
   przełącznik `disabled` narzędzia i minimalne ryzyko. Narzędzia pochodzą od M3 z zatwierdzonego manifestu (niżej).
 
@@ -129,7 +116,7 @@ actuatora.
   przez `PolicyService` (`latest.json` z ETag, bez przekierowań, do 16 MiB; główna co 30 s, `overrides` co 5 s) i ładowanych
   przez `PolicyStore` (podpis, schemat, rewizja rosnąca, stan na dysku `MCP_POLICY_STATE_DIR`). Bez paczki głównej gateway
   nie startuje; po restarcie z aktywnymi `overrides` czeka na nie `MCP_POLICY_*` do końca okresu karencji. Do Cedar idą
-  grupy z tokenu, zasoby z `resourceRefs` (kontekst `refs`) i link (`virtualServer`, `vsScopes`); `prv` w JWT to rewizja
+  grupy z tokenu, zasoby z `resourceRefs` (kontekst `refs`); `prv` w JWT to rewizja
   paczki głównej.
 - **Rejestr.** Tryb `required` (domyślny, `MCP_REGISTRY_MODE`): serwer ma tylko narzędzia z zatwierdzonego manifestu C6; zasady
   zatwierdzania, przypinania definicji i certyfikatu potoku: sekcja "Co dochodzi w M4". Obniżone ryzyko, także po usunięciu i
@@ -156,7 +143,7 @@ sprawdza. Stan użytkownika ma limit 20 śladów zastąpionych operacji.
 **Proces na hoście** (`scripts/run-dev-host.sh`) używa własnego schematu `host_gateway` w bazie stosu (`MCP_DB_SCHEMA`), żeby nie
 pisać do tabel gateway'a z compose.
 
-**Tokeny klientów tylko dla C5.** Na `/s/` i `/v/` token z `azp` z listy `gateway.oidc.c5-only-clients` (domyślnie
+**Tokeny klientów tylko dla C5.** Na `/mcp` i `/s/` token z `azp` z listy `gateway.oidc.c5-only-clients` (domyślnie
 `mcp-portal-bff`) jest odrzucany 401 `invalid_claims` niezależnie od `aud`: dopuszczenie portalu w polityce dla katalogu i
 linków nie otwiera wywołań narzędzi jego tokenem.
 
@@ -201,10 +188,10 @@ Przebieg na żywo: `scripts/m3-demo.sh` (po uruchomieniu skryptów z sekcji niż
   CC-168). Rejestracja wymaga, by manifest przyjmował każdy typ ze zbioru systemu (domyślna konfiguracja Jiry ma więc tylko
   `user-secret`, jak manifest serwera). `exchange_denied` to `tool_call` z `decision: allow` i `outcome: denied` (CC-165). Token wymieniony (`token-exchange`) bez
   `expiresAt` jest odrzucany.
-- **Offboarding.** `POST /admin/v1/users/{sub}/purge` (certyfikat `mcp-offboarding`, bez tokenu) usuwa linki, oczekujące potwierdzenia
+- **Offboarding.** `POST /admin/v1/users/{sub}/purge` (certyfikat `mcp-offboarding`, bez tokenu) usuwa oczekujące potwierdzenia
   i ślady, sesje MCP w Redisie (indeks `gw:session:of:<sha256(sub)>`, bo konto Redis gateway'a nie ma `SCAN`) i cache poświadczeń
   instancji; zwraca 204 także dla nieznanego `sub`; zdarzenie `admin_change`/`user_purged` jest zawsze jedno, plus
-  `virtual_server_change` na link. Aktywność zostaje do końca retencji. Awaria bazy albo Redisu to 503 (powtórz wywołanie).
+  Aktywność zostaje do końca retencji. Awaria bazy albo Redisu to 503 (powtórz wywołanie).
 - **Limity.** Liczniki w Redisie (okno od pierwszego żądania): użytkownik, (użytkownik, klient), (użytkownik, narzędzie), niższy limit
   dla DESTRUCTIVE i limity poszczególnych narzędzi. Żądanie odrzucone nie zużywa pozostałych liczników. `tools/call` ponad limit to C10
   `rate_limited` z `retryAfterSeconds` >= 1, inne żądania to 429 z `Retry-After`, bez `WWW-Authenticate` i bez `X-RateLimit-*`.
@@ -227,6 +214,51 @@ na M4 unieważniamy je wszystkie: przed startem obrazu M4 usuń klucze `gw:sessi
 (`redis-cli --scan --pattern 'gw:session:*' | xargs -r redis-cli DEL`); klienci robią wtedy `initialize` od nowa (404 sesji to ich
 sygnał). Pozostały stan Redisa (`gw:conf:*`, `gw:rl:*`) zostaje. Migracja Flyway V5 przenosi manifesty z M3 do `registry_tools`
 jako zatwierdzone.
+
+## Co dochodzi w M5
+
+Kontrakty 5.1.0 (CC-169 ... CC-188). Wejście do platformy to jeden adres `<publicBaseUrl>/mcp` i, jak dotąd, `/s/<serverId>/mcp`.
+
+- **`/mcp`:** `tools/list` to wszystkie narzędzia, które użytkownik może teraz wywołać: zatwierdzone, włączone, obsługiwane przez serwer z zatwierdzoną
+  definicją, z decyzją Cedar na poziomie narzędzia (`mayCall`). Kolejność: system według `ServerId`, potem nazwa narzędzia, bajtowo. System bez połączenia
+  konta zachowuje narzędzia (wywołanie daje `credential_required`); serwer, którego odczyt nie udał się w `MCP_TOOLS_LIST_TIMEOUT` (równolegle, 3 s),
+  jest pominięty na tej liście i nic więcej się o nim nie wnioskuje. Strona ma 100 narzędzi, dalej `nextCursor` (HMAC związany z `sub` i filtrem, 15 minut,
+  zły kursor to zawsze `-32602` i powód `invalid_cursor`). `initialize` zwraca `listChanged: false`, `GET` to `405` z `Allow: POST, DELETE`.
+- **Filtr w query:** `systems`, `tools`, `access=read|write`, `exclude`, parsowany z surowego `getQueryString()` klasą `EndpointFilter` z `mcp-manifest`
+  (nie z mapy parametrów kontenera: `%zz`, `?=x`, `?%ff=1` to `400 invalid_filter`, nigdy brak filtra). `400` po sprawdzeniu tokenu, zdarzenie
+  `policy_decision` z powodem `invalid_filter` bez pola `filter`. Zdarzenia `tool_call`, `policy_decision`, `confirmation`, `credential_resolve` mają `filter`.
+- **Kolejność `tools/call` (CC-178):** nazwa znana i `mayCall` (inaczej `not_found_or_denied`, powód `not_granted`, także dla zakazu Cedar na narzędziu),
+  filtr i trasa (`not_found_or_denied`, `filter_scope`), potem `tool_disabled` (także narzędzie czekające na pierwsze zatwierdzenie), `upstream_unavailable`,
+  `credential_required`, dopiero potem decyzja Cedar z argumentami, bramka potwierdzenia i serwer. Skutek: poświadczenie jest pobierane przed
+  potwierdzeniem `DESTRUCTIVE` (nie jest używane), a narzędzie bez uprawnienia nie ma już `access_denied` z `requiredEntitlements` (to zostaje dla odmowy z argumentami).
+- **Sesje (CC-172, CC-184):** sesja w Redisie niesie trasę i znormalizowany filtr z `initialize`. Kolejność: token, składnia query (`400`), `sub` sesji (cudza lub nieznana
+  to `404` bez audytu), trasa i filtr (`404`, `filter_mismatch`). Dotyczy też `DELETE` i żądań z `Mcp-Session-Id` razem z `_meta`. Sesje bez trasy (z 4.x) są nieznane (CC-188).
+- **Linki usunięte:** tabela `virtual_servers` (Flyway `V7`), API C5, limit, `vs`/`vsc` w JWT, część "linki" w `purge`. `/v/...` to `404 not_found_or_denied` bez
+  audytu i bez względu na token (filtr serwletowy przed łańcuchem bezpieczeństwa); metadane `/.well-known/oauth-protected-resource/v/...` też `404`.
+- **OAuth (V2):** zasób to `<publicBaseUrl>/mcp` bez query, `resource_metadata` bez query, dokument ignoruje query.
+- **Aktywność (CC-188):** powód `link_scope` ze starych zdarzeń czytany jest jako `denied_filter_scope`, tak samo wynik `denied_link_scope`; dane nie są przepisywane.
+
+### HA: dwie instancje
+
+Stan wspólny leży w Redisie i PostgreSQL: sesje klientów i ich wiązanie z trasą i filtrem, potwierdzenia TOTP (porównaj-i-zapisz), limity, rejestr narzędzi (druga
+instancja adoptuje zmianę co kilka sekund). Poza tym instancje potrzebują tego samego:
+
+| Co | Jak | Bez tego |
+| --- | --- | --- |
+| klucze C2 | jeden plik JWKS (`MCP_INTERNAL_JWT_KEYS_FILE`, `MCP_INTERNAL_JWT_ACTIVE_KID`) | serwery nie zweryfikują tokenu z drugiej instancji |
+| klucz kursora `/activity/calls` i `tools/list` | `MCP_ACTIVITY_CURSOR_KEY`, `MCP_LIST_CURSOR_KEY` | kursor z jednej instancji jest odrzucany na drugiej |
+| `/app/state` | wolumen na instancję (blokada pliku `.instance.lock`: drugi proces na tym samym katalogu nie wstaje) | ochrona przed cofnięciem paczki polityk byłaby wspólna i błędna |
+| `WAIT` | `MCP_REDIS_WAIT_REPLICAS=1` (+ `+wait` w ACL) przy Redisie z repliką | po awarii mastera spalony kod albo oczekująca operacja mogą zniknąć |
+
+Poza profilem `devstack` gateway nie wstaje z kluczami generowanymi na proces (trzy powyższe zmienne są wymagane). `/admin/v1/policy/status` zgłasza rewizję instancji,
+która odpowiedziała; BFF za load balancerem widzi jedną instancję naraz. Utrata Redisa: sesje, limity i potwierdzenia odmawiają (`503` albo `upstream_unavailable`), żadna
+odpowiedź nie jest zgadywana. Cache poświadczeń i sesje do serwerów są w pamięci instancji (czyszczone zdarzeniem `credential.invalidated` i TTL <= 60 s).
+
+### Przejście z M4 na M5 (dla ws-01)
+
+Obraz `mcp-gateway:m5-<sha>`; wymagane nowe zmienne poza dev: `MCP_LIST_CURSOR_KEY` (i dotychczasowe `MCP_ACTIVITY_CURSOR_KEY`, `MCP_INTERNAL_JWT_KEYS_FILE`). `MCP_TOOLS_LIST_TIMEOUT`
+opcjonalnie. Sesje MCP sprzed aktualizacji są nieznane (klient inicjuje nową), stan potwierdzeń w Redisie zachowuje format (pole `virtualServer` rekordu jest ignorowane przy odczycie),
+migracja usuwa tabelę linków. ACL Redisa: dodać `+wait`. Wejść razem ze starterem i serwerami na kontraktach 5.x (serwery odrzucają token z `vs`).
 
 ## Profil `devstack`: jedyne miejsce na relaksacje dev
 
@@ -263,19 +295,21 @@ Zmienne środowiska (nazwy z `mcp-platform-dev`, usługa `mcp-gateway` profilu `
 | `MCP_OIDC_ISSUER`, `MCP_OIDC_JWKS_URI`, `MCP_OIDC_AUDIENCE` | C1: oczekiwany `iss`, JWKS IdP, audience (domyślnie `mcp-gateway`) |
 | `MCP_OIDC_AUTHORIZATION_SERVER` | serwer autoryzacji w RFC 9728; domyślnie `MCP_OIDC_ISSUER` |
 | `MCP_OIDC_TOKEN_URI`, `MCP_OIDC_CLIENT_ID`, `MCP_OIDC_CLIENT_SECRET` | token exchange dla systemów `token-exchange` |
-| `MCP_PUBLIC_URL` | wymagany: publiczny origin portalu i gateway'a (`https://...`, `http://` tylko z `MCP_ALLOW_PLAIN_HTTP`), bez ścieżki; źródło `resource_metadata`, `url` linków i `connectUrl` |
-| `MCP_DB_URL`, `MCP_DB_USER`, `MCP_DB_PASSWORD` | PostgreSQL (baza `gateway`): linki; Flyway zakłada tabelę przy starcie, bez bazy gateway nie wstaje |
+| `MCP_PUBLIC_URL` | wymagany: publiczny origin portalu i gateway'a (`https://...`, `http://` tylko z `MCP_ALLOW_PLAIN_HTTP`), bez ścieżki; źródło `resource_metadata` i `connectUrl` |
+| `MCP_DB_URL`, `MCP_DB_USER`, `MCP_DB_PASSWORD` | PostgreSQL (baza `gateway`): rejestr narzędzi i aktywność; Flyway migruje przy starcie (`V7` usuwa tabelę linków), bez bazy gateway nie wstaje |
 | `MCP_ADMIN_AUDIENCE`, `MCP_ADMIN_AUTHORIZED_PARTY` | C5: `aud` tokenu BFF (domyślnie `mcp-gateway-admin`, token z `aud` `mcp-gateway` jest odrzucany, a token MCP z `aud` admina też) i wymagane `azp` (domyślnie `mcp-portal-bff`) |
 | `MCP_ADMIN_CLIENT_CNS`, `MCP_ADMIN_OFFBOARDING_CLIENT_CNS` | C5: CN certyfikatów klienta dla operacji BFF (domyślnie `mcp-portal-bff`) i dla `purge` (domyślnie `mcp-offboarding`); CN potoku rejestru nie jest konfiguracją: `mcp-registry-ci-<serverId>` równe `serverId` ze ścieżki (CC-161). Przydział operacji jest w kodzie wg `x-allowed-client-cn`, operacja spoza kontraktu to 403 dla każdego CN |
 | `MCP_REGISTRY_DEFINITION_CHECK_TTL` | jak długo odczyt `tools/list` serwera jest ważny (domyślnie 30 s, najwyżej 60 s; większa wartość zatrzymuje start) |
 | `MCP_RATE_LIMIT_ENABLED`, `_WINDOW`, `_PER_USER`, `_PER_CLIENT`, `_PER_TOOL`, `_DESTRUCTIVE_PER_TOOL`, `_AUDIT_INTERVAL` | limity zapytań w oknie (domyślnie 1 min: 600 na użytkownika, 300 na parę użytkownik-klient, 120 na parę użytkownik-narzędzie, 10 na narzędzie DESTRUCTIVE); limit pojedynczego narzędzia: `gateway.rate-limit.tools.<system>__<narzędzie>` w `application.yml` |
 | `MCP_ACTIVITY_RETENTION` | jak długo tabela aktywności trzyma zdarzenia (domyślnie `30d`, CC-134) |
-| `MCP_VIRTUAL_SERVERS_MAX_PER_USER` | limit linków na użytkownika (domyślnie 50); nadmiar to 409 `virtual_server_limit_reached` (zdarzenie audytu z powodem `virtual_server_limit`) |
+| `MCP_TOOLS_LIST_TIMEOUT` | milisekundy, które ma jeden serwer na odczyt swojego `tools/list` przy liście klienta (domyślnie `3000`, wartość niedodatnia zatrzymuje start; CC-180) |
+| `MCP_LIST_CURSOR_KEY` | klucz HMAC kursora `tools/list` (min. 16 bajtów), ten sam na każdej instancji |
+| `MCP_REDIS_WAIT_REPLICAS`, `MCP_REDIS_WAIT_TIMEOUT` | ile replik musi potwierdzić zmianę stanu potwierdzeń (Redis `WAIT`, ACL gateway'a musi mieć `+wait`) i jak długo czekać; `0` = bez czekania (jeden Redis) |
 | `MCP_METRICS_CLIENT_CNS` | CN certyfikatów klienta dla `/actuator/prometheus` (puste = nikt) |
 | `MCP_SERVER_<SYSTEM>_MCP_URL`, `_ENABLED`, `_VERSION` | adres (`https`), wyłącznik i wersja serwera dla JIRA, CONFLUENCE, GITLAB, SERVICEDESK, OPENSEARCH; adresy domyślne `https://mcp-<system>.internal:8443/mcp`, dla Jiry `MCP_SERVER_JIRA_URL` + `/mcp` |
 | `MCP_INTERNAL_PORT` | port wewnętrzny TLS, domyślnie `8443` |
 | `MCP_INTERNAL_JWT_ISSUER` | `iss` C2, domyślnie `https://mcp-gateway.internal` |
-| `MCP_INTERNAL_JWT_KEYS_FILE`, `MCP_INTERNAL_JWT_ACTIVE_KID` | prywatny JWKS (P-256) i aktywny `kid`; puste = klucze generowane |
+| `MCP_INTERNAL_JWT_KEYS_FILE`, `MCP_INTERNAL_JWT_ACTIVE_KID` | prywatny JWKS (P-256, każdy klucz z `kid`) i aktywny `kid`; wspólny dla wszystkich instancji; puste = klucze generowane na proces, tylko w profilu `devstack` |
 | `MCP_TLS_KEYSTORE`, `MCP_TLS_TRUSTSTORE`, `MCP_TLS_STORE_PASSWORD` | PKCS12 gateway'a (CN `mcp-gateway`, serverAuth+clientAuth) i CA |
 | `MCP_BROKER_URL`, `MCP_BROKER_TLS_NAME` | broker i nazwa w jego certyfikacie (CC-035) |
 | `MCP_REDIS_HOST`, `MCP_REDIS_PORT`, `MCP_REDIS_USER`, `MCP_REDIS_PASSWORD`, `MCP_REDIS_KEY_PREFIX` | Redis (ACL `gateway`, `gw:*`, `credential.invalidated`) |
@@ -286,7 +320,7 @@ Zmienne środowiska (nazwy z `mcp-platform-dev`, usługa `mcp-gateway` profilu `
 | `MCP_POLICY_STATE_DIR`, `MCP_POLICY_MINIMUM_MAIN_REVISION`, `MCP_POLICY_MINIMUM_OVERRIDES_REVISION` | ochrona przed cofnięciem po restarcie (CC-066): katalog stanu jednej instancji (w obrazie `/app/state`), wymagany poza dev (bez `MCP_POLICY_ALLOW_TEST_KEYS`), i rewizje minimalne |
 | `MCP_POLICY_MAIN_INTERVAL`, `MCP_POLICY_OVERRIDES_INTERVAL`, `MCP_POLICY_STARTUP_TIMEOUT` | 30 s, 5 s, 2 min do rezygnacji ze startu bez paczki |
 | `MCP_REGISTRY_MODE`, `MCP_REGISTRY_BOOTSTRAP` | `required` (domyślnie) albo `static`; pobranie pierwszego manifestu od serwera bez zatwierdzenia (domyślnie NIE; tylko dev, patrz wyżej). Przełącznik `manifest` per serwer w `application.yml` |
-| `MCP_ACTIVITY_CURSOR_KEY` | klucz HMAC kursora `/activity/calls` (min. 16 bajtów); puste = losowy na proces |
+| `MCP_ACTIVITY_CURSOR_KEY` | klucz HMAC kursora `/activity/calls` (min. 16 bajtów); wspólny dla instancji; puste = losowy na proces, tylko w profilu `devstack` |
 | `MCP_ALLOWED_ORIGINS` | dozwolone `Origin` (lista); żądanie (POST, GET, DELETE) z innym `Origin` -> 403, bez `Origin` przechodzi |
 | `MCP_ALLOW_PLAIN_HTTP` | tylko dev: `http` dla endpointu tokenów IdP (token exchange); bez flagi token exchange jest wyłączony, broker i serwery zawsze `https` |
 
@@ -325,13 +359,16 @@ docker build -t mcp-gateway-test-server:dev -f test-server/Dockerfile .
 | `CredentialCacheTest`, `CredentialServiceTest` | TTL, `expiresAt`, unieważnienie (sub, system), wyścig resolve/unieważnienie, pomijanie cache bez subskrypcji, typ poświadczenia, token exchange |
 | `StreamableHttpClientTest` | limit bajtów odpowiedzi (SSE bez znaku nowej linii, JSON), limit czasu na milczący strumień SSE, wybór odpowiedzi z SSE po `id` |
 | `GroupToolAuthorizerTest` | trzy poziomy ryzyka: `-read`, `-write`, DESTRUCTIVE zawsze odmowa |
-| `AdminApiTest` | C5 przez mTLS: certyfikat BFF, innego komponentu, obcego CA, serwera (serverAuth) i brak; token dla złego `aud`; JWKS nadal pobierany przez klientów z dowolnym certyfikatem; katalog z polityki (odpowiedź zgodna ze schematem `Catalog`); tworzenie, lista, usuwanie linku; 409 `slug_taken`; cudzy link nie do usunięcia; 403 dla narzędzia ponad uprawnienia (nic nie zapisane); 21 błędnych ciał -> 400; kolejność kontroli `resourceDefaults` |
+| `AdminApiTest` | C5 przez mTLS: certyfikat BFF, innego komponentu, obcego CA, serwera (serverAuth) i brak; token dla złego `aud`; JWKS nadal pobierany przez klientów z dowolnym certyfikatem; katalog z polityki (odpowiedź zgodna ze schematem `Catalog`); API linków nie istnieje (403 dla każdego CN) |
 | `ClientTokenAuditTest` | zdarzenie `authentication` z gateway'a dla każdego powodu odrzucenia tokenu C1, tylko pola ze schematu, treść tokenu ani claimy nie trafiają do zdarzenia ani logu, awaria JWKS -> 401 i zdarzenie `jwks_unavailable` (przez HTTP), `typ` inny niż `JWT` -> 401, warianty zapisu ścieżki MCP nie omijają audytu, szum (`/`, `/favicon.ico`, `OPTIONS`) bez zdarzeń |
 | `MissingTokenEventLimiterTest` | limit zdarzeń `missing_token` na sekundę, nadmiar liczony w metryce |
 | `AuditVectorsTest` | wszystkie wektory `audit-events` 2.2.5 oceniane schematem C8 zgodnie z `expected.valid` |
-| `VirtualServerMcpTest` | `/v/<slug>/mcp`: lista tylko z narzędzi linku (kilka serwerów, padnięty serwer pominięty), `vs` i puste `vsc` w JWT do serwera i w audycie, narzędzie spoza linku -> `not_found_or_denied`, utracone uprawnienie -> `access_denied` bez resolve i bez wywołania serwera, cudzy i nieistniejący slug -> identyczne 404 (POST, DELETE, obie ery), slugi spoza wzorca, usunięcie linku działa od razu, `connectUrl` z adresu publicznego |
+| `AggregateEndpointTest` | `/mcp` i `/s/<serverId>/mcp` przez HTTP: lista kilku systemów w stałej kolejności, filtr zawęża i niczego nie przyznaje, wywołanie poza filtrem to `not_found_or_denied` z `filter_scope` w audycie, zły filtr (w tym `%zz`, `?=x`, `?%ff=1`) to 400 po sprawdzeniu tokenu i bez gubienia filtra, sesja związana z trasą i filtrem (także `DELETE`, `_meta`, cudza sesja), `GET` 405, `/v/` 404 bez względu na token, metadane `/mcp` ignorują query, wolny serwer pominięty, tabela linków usunięta |
+| `EndpointVectorsTest` | wektory `endpoint-filter/` (parse, route, apply, call, call-state, session, session-order) i `endpoint-aggregate/` (list, availability, page, cursor, routing) na klasach, których używa gateway |
+| `HighAvailabilityTest` | dwie instancje jako dwa procesy na jednym Redisie i PostgreSQL: potwierdzenie TOTP zaczęte na A kończy się na B i kod działa raz, sesja, filtr i kursor ważne na obu, Redis wstrzymany -> odmowa (503, `upstream_unavailable`), zabicie instancji w trakcie 240 wywołań kosztuje tylko ponowienie |
+| `ReplicatedStoreTest` | `WAIT`: zmiana stanu potwierdzeń potwierdzona przez replikę, odmowa gdy żadna nie potwierdza |
 | `PublicEdgeTest`, `PublicEdgeFilterTest` | nosniff, CSP, brak `Set-Cookie` i JSON na ponad 20 odpowiedziach (gniazdo surowe: błędy aplikacji i kontenera, `Accept: text/html`), `Cookie` klienta nie dociera do serwera ani brokera, metadane RFC 9728 na adresie publicznym mimo fałszywego `Host`/`X-Forwarded-*`, metadane tylko dla kształtów endpointów MCP, wyzwanie bez znaków z żądania |
-| `ClientCertificateVerifierTest`, `PublicUrlsTest`, `ResourceMetadataTest`, `ServerRegistryTest`, `VirtualServerServiceTest` | łańcuch, daty i cel certyfikatu klienta; origin publiczny; kształty ścieżek metadanych; rozwiązywanie nazw narzędzi i walidacja konfiguracji; walidacja ciała linku, brak zapytań do bazy dla złych slugów, tylko właściciel |
+| `ClientCertificateVerifierTest`, `PublicUrlsTest`, `ResourceMetadataTest`, `ServerRegistryTest` | łańcuch, daty i cel certyfikatu klienta; origin publiczny; kształty ścieżek metadanych; rozwiązywanie nazw narzędzi i walidacja konfiguracji |
 | `GatewayIntegrationTest` | prawdziwy gateway z IdP, brokerem i serwerem testowym po mTLS: 401 + RFC 9728, sesje i ich właściciel, obie ery protokołu, nagłówki klienta nie docierają do serwera, `credential_required`, `upstream_unavailable` (503 i zerwane połączenie), unieważnienie <= 1 s, TTL, SAN serwera, JWKS tylko na porcie wewnętrznym, audyt zgodny ze schematem C8, brak sekretów w logach; DESTRUCTIVE i UPDATE bez `-write`, poświadczenie spoza ASCII (bez wartości w logu), odpowiedzi brokera spoza C4, wstrzymanie kontenera Redis (cache pomijany, powrót po subskrypcji), tokeny C1 za długie i z `sub` `system:`, limit 1 MiB, `Origin` |
 
 ## Uruchomienie lokalne w `mcp-platform-dev` (ws-01)
@@ -371,11 +408,28 @@ Obraz `mcp-gateway:dev` (glibc, bo `cedar-java` nie ma bibliotek dla musl) pasuj
 `m2`). Serwer testowy może zastąpić `mcp-jira` przez `MCP_JIRA_IMAGE=mcp-gateway-test-server:dev`. Tego wariantu
 w M2 nie uruchamiałem (STATUS.md).
 
+## CI (`ci/run.sh`, M5-5)
+
+Cała logika jest w `ci/run.sh` (`make ci` wywołuje `verify`): `verify` (kontrola tekstu, `mvnw clean verify` obu modułów, błąd przy zerze
+uruchomionych testów), `hygiene`, `image` (obraz `mcp-gateway:m5-<sha>` z czystego drzewa). Błąd kroku to kod wyjścia skryptu, nieznany lub
+pusty krok to błąd (2); `ci/self-test.sh` sprawdza to atrapą `mvnw`, która kończy się błędem. `ci/Dockerfile` daje obraz do uruchomienia
+bez JDK. Artefakty kontraktów na czystym runnerze: `MCP_MAVEN_REPOSITORY_URL`, `_USER`, `_PASSWORD` (`.ci/settings.xml`). Testy startują
+kontenery (PostgreSQL, Redis), więc potrzebny jest dostęp do Dockera.
+
+Nakładki `.gitlab-ci.yml`, `Jenkinsfile`, `.github/workflows/ci.yml` tylko wołają ten skrypt. Granica zaufania: kod zmiany (MR, PR) może zmienić
+każdy plik repozytorium, także skrypt i `.ci/settings.xml`, więc plik w gałęzi nie jest w stanie sam egzekwować granicy; egzekwuje ją
+system CI. GitLab: zmienne zapisu `MCP_MAVEN_REPOSITORY_USER/PASSWORD` są chronione (tylko gałęzie chronione), zadanie MR dostaje token tylko do odczytu
+(`MCP_MAVEN_RO_*`), cache MR jest osobny i tylko do odczytu, a runner MR nie ma gniazda Dockera hosta. Jenkins: poświadczenia i agent z gniazdem
+Dockera (etykieta `docker-trusted`) tylko w zadaniu z `main`; zmiana dostaje hygiene i self-test bez gniazda (pełny przebieg po scaleniu);
+Jenkinsfile z gałęzi też jest kodem zmiany, więc obowiązuje to tylko, gdy Jenkins bierze Jenkinsfile z gałęzi domyślnej dla zadań z `main`
+(multibranch z zaufanym źródłem). GitHub: sekrety w Environment `ci-main`, dostępnym tylko dla `main`; PR ma zadanie bez sekretów. Reszta
+izolacji runnerów to M6.
+
 ## Struktura
 
 ```
 pl.aiwcorpo.mcp.gateway
-├── admin/     C5: AdminController (katalog, linki), mTLS: ClientCertificateVerifier i filtr CN
+├── admin/     C5: AdminController (katalog), mTLS: ClientCertificateVerifier i filtr CN
 ├── auth/      C1: GatewayUser, 401 z resource_metadata, PublicUrls, adresy RFC 9728
 ├── authz/     ToolAuthorizer: CedarToolAuthorizer (ocena `call` z paczki)
 ├── policy/    PolicyService, BundleFetcher: paczki polityk C7
@@ -383,7 +437,6 @@ pl.aiwcorpo.mcp.gateway
 ├── activity/  /activity/calls: ActivityStore, ActivityAggregator, ActivityCursor
 ├── registry/  zatwierdzone manifesty C6, DefinitionCheck, RegistryStore
 ├── edge/      jedna domena: PublicEdgeFilter, WellKnownGuard, błędy tylko JSON
-├── virtual/   linki: VirtualServerStore (PostgreSQL), VirtualServerService
 ├── audit/     zdarzenia C8 na loggerze AUDIT
 ├── broker/    C4: BrokerClient, cache, credential.invalidated, token exchange, kontrola /v1/systems
 ├── config/    właściwości, beany, Spring Security, drugi connector Tomcat
@@ -394,7 +447,7 @@ pl.aiwcorpo.mcp.gateway
 └── upstream/  klient Streamable HTTP do serwerów, sesje per użytkownik
 ```
 
-Zostaje na po M4: HA (klucze C2 i klucz kursora wspólne dla instancji, `WAIT` przy stanie potwierdzeń), testy obciążeniowe.
+Zostaje na po M5: `list_changed` i strumień `GET` (M6), testy obciążeniowe (`mcp-load-tests`).
 
 ## Audyt odrzuconych tokenów: ryzyko zalewu
 

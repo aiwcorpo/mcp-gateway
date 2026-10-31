@@ -24,4 +24,18 @@ class ConfirmationStateSizeTest {
         assertThat(state.calls().stream().filter(c -> c.supersededBy() == null)).extracting(PendingCall::confirmationId)
                 .containsExactly("cnf_299");
     }
+
+    @Test
+    void stateWrittenByTheFourPointXGatewayIsReadAndKeepsItsOperation() {
+        // The record of M4 had "virtualServer" where it now has "filter"; both instances of a rolling update read what the other wrote.
+        String old = "{\"calls\":[{\"confirmationId\":\"cnf_old\",\"serverId\":\"mcp-jira\",\"tool\":\"delete_issue\","
+                + "\"risk\":\"DESTRUCTIVE\",\"argsSha256\":\"sha256:1\",\"createdAt\":1000,\"attemptsLeft\":3,\"previewViewedAt\":null,"
+                + "\"ended\":null,\"burned\":false,\"supersededBy\":null,\"cancelledAt\":null,\"client\":\"claude-code\","
+                + "\"virtualServer\":\"team-a\",\"display\":{\"qualifiedTool\":\"jira__delete_issue\",\"system\":\"jira\","
+                + "\"resource\":null,\"arguments\":[],\"description\":\"x\"}}]}";
+        UserConfirmations read = tools.jackson.databind.json.JsonMapper.builder().build().readValue(old, UserConfirmations.class);
+        assertThat(read.find("cnf_old")).isPresent();
+        assertThat(read.find("cnf_old").orElseThrow().filter()).isNull();
+        assertThat(read.find("cnf_old").orElseThrow().sameOperation("mcp-jira", "delete_issue", "sha256:1")).isTrue();
+    }
 }

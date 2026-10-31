@@ -140,6 +140,8 @@ class HighAvailabilityTest {
         p.put("gateway.servers.mcp-jira.manifest", "required");
         p.put("gateway.internal-jwt.keys-file", jwks.toString());
         p.put("gateway.internal-jwt.active-kid", "ha-key-a");
+        // The suite shares the machine with other tests; a list of 123 tools must not be skipped for a slow read.
+        p.put("gateway.mcp.tools-list-timeout", "5000");
         p.put("gateway.activity.cursor-key", "ha-activity-cursor-key-shared");
         p.put("gateway.mcp.list-cursor-key", "ha-list-cursor-key-shared");
         p.put("gateway.policy.state-dir", Files.createDirectories(dir.resolve("state-" + instance)).toString());

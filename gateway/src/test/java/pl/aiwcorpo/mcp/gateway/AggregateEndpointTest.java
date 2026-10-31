@@ -261,4 +261,9 @@ class AggregateEndpointTest extends GatewayTestBase {
         assertThat(response.statusCode()).isEqualTo(gone.path("expected").path("status").asInt());
         assertThat(JSON.readTree(response.body())).isEqualTo(gone.path("expected").path("body"));
     }
+
+    @Test
+    void theMigrationDroppedTheTableOfSavedLinks() {
+        assertThat(jdbc.sql("SELECT to_regclass('public.virtual_servers')").query(String.class).optional()).isEmpty();
+    }
 }

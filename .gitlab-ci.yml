@@ -21,6 +21,13 @@ variables:
 
 verify-merge-request:
   stage: verify
+  # An isolated runner without the Docker socket of the host (a Docker-in-Docker service gives the tests their containers), and a
+  # cache of its own that the job only reads: code of a merge request cannot poison the .m2 that the pipeline of main uses.
+  tags: [isolated-no-docker-socket]
+  cache:
+    key: maven-merge-request
+    policy: pull
+    paths: [.m2/repository]
   variables:
     MCP_MAVEN_REPOSITORY_USER: $MCP_MAVEN_RO_USER
     MCP_MAVEN_REPOSITORY_PASSWORD: $MCP_MAVEN_RO_PASSWORD
