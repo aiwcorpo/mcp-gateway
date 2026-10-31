@@ -96,7 +96,8 @@ class ConfirmationFlowTest extends GatewayTestBase {
                 + pending.path("confirmationId").asString());
         assertThat(pending.path("description").asString()).startsWith("jira__delete_issue (jira): issueKey=\"ABC-1\"");
         assertThat(deletesAtTheServer()).isZero();
-        assertThat(resolveCount()).as("no credential is fetched for an unconfirmed call").isEqualTo(resolves);
+        assertThat(resolveCount()).as("the account is checked before the confirmation gate (CC-178); the credential is not used")
+                .isEqualTo(resolves + 1);
         assertThat(JSON.readTree(first.body()).path("result").path("isError").asBoolean()).isTrue();
 
         // The same first call again returns the same record (no new pending call, the TTL does not move).
@@ -219,8 +220,7 @@ class ConfirmationFlowTest extends GatewayTestBase {
         HttpResponse<String> response = sendModern(env.idp.token(p.sub(), p.username(), List.of("mcp-jira-read", "mcp-jira-write")),
                 "tools/call", "jira__delete_issue", "{\"name\":\"jira__delete_issue\",\"arguments\":{\"issueKey\":\"ABC-7\"}}");
         JsonNode error = error(response);
-        assertThat(error.path("error").asString()).isEqualTo("access_denied");
-        assertThat(error.path("requiredEntitlements").get(0).asString()).isEqualTo("mcp-jira-destructive");
+        assertThat(error.path("error").asString()).isEqualTo("not_found_or_denied");
         assertThat(env.broker.received().stream().filter(r -> r.path().startsWith("/v1/authenticator"))).isEmpty();
     }
 

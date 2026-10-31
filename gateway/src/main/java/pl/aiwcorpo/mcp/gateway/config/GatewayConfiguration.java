@@ -54,20 +54,20 @@ import pl.aiwcorpo.mcp.gateway.broker.SystemsCheck;
 import pl.aiwcorpo.mcp.gateway.broker.TokenExchangeClient;
 import pl.aiwcorpo.mcp.gateway.edge.JsonErrorReportValveCustomizer;
 import pl.aiwcorpo.mcp.gateway.edge.PublicEdgeFilter;
+import pl.aiwcorpo.mcp.gateway.edge.RemovedRouteFilter;
 import pl.aiwcorpo.mcp.gateway.edge.WellKnownGuard;
 import pl.aiwcorpo.mcp.gateway.jwt.InternalPortFilter;
 import pl.aiwcorpo.mcp.gateway.jwt.InternalTokenIssuer;
 import pl.aiwcorpo.mcp.gateway.jwt.SigningKeys;
 import pl.aiwcorpo.mcp.gateway.mcp.ClientSessionStore;
 import pl.aiwcorpo.mcp.gateway.mcp.McpGatewayService;
+import pl.aiwcorpo.mcp.gateway.mcp.ToolsListCursor;
 import pl.aiwcorpo.mcp.gateway.mcp.ToolErrors;
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
 import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
 import pl.aiwcorpo.mcp.gateway.tls.InternalTls;
 import pl.aiwcorpo.mcp.gateway.upstream.StreamableHttpClient;
 import pl.aiwcorpo.mcp.gateway.upstream.UpstreamSessions;
-import pl.aiwcorpo.mcp.gateway.virtual.VirtualServerService;
-import pl.aiwcorpo.mcp.gateway.virtual.VirtualServerStore;
 import tools.jackson.databind.json.JsonMapper;
 
 @Configuration
@@ -140,22 +140,16 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    VirtualServerStore virtualServerStore(JdbcClient jdbc, JsonMapper gatewayJson, PlatformTransactionManager transactions) {
-        return new VirtualServerStore(jdbc, gatewayJson, transactions);
+    FilterRegistrationBean<RemovedRouteFilter> removedRouteFilter() {
+        FilterRegistrationBean<RemovedRouteFilter> registration = new FilterRegistrationBean<>(new RemovedRouteFilter());
+        registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 3);
+        return registration;
     }
 
     @Bean
-    VirtualServerService virtualServerService(VirtualServerStore store, ServerRegistry registry, ToolAuthorizer authorizer,
-                                              GatewayProperties properties) {
-        return new VirtualServerService(store, registry, authorizer, properties.virtualServers().maxPerUser());
-    }
-
-    @Bean
-    AdminController adminController(ServerRegistry registry, ToolAuthorizer authorizer, VirtualServerService virtualServers,
-                                    PublicUrls urls, AuditLog audit, JsonMapper gatewayJson, GatewayProperties properties,
-                                    DefinitionGuard definitionGuard) {
-        return new AdminController(registry, authorizer, virtualServers, urls, audit, gatewayJson, properties.componentId(),
-                definitionGuard);
+    AdminController adminController(ServerRegistry registry, ToolAuthorizer authorizer, JsonMapper gatewayJson,
+                                    GatewayProperties properties, DefinitionGuard definitionGuard) {
+        return new AdminController(registry, authorizer, gatewayJson, properties.componentId(), definitionGuard);
     }
 
     /** Created before anything that uses a relaxed setting: the start is refused here, not after a bundle was pulled over http. */
@@ -327,6 +321,14 @@ public class GatewayConfiguration {
         return key;
     }
 
+    /** Key of the tools/list cursor MAC: shared by all instances (HA); the dev stack may leave it empty and get one per process. */
+    @Bean
+    ToolsListCursor toolsListCursor(GatewayProperties properties, JsonMapper gatewayJson) {
+        String configured = properties.mcp().listCursorKey();
+        byte[] key = configured == null || configured.isBlank() ? randomKey() : configured.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        return new ToolsListCursor(key, gatewayJson);
+    }
+
     @Bean
     ActivityController activityController(ActivityService activity, ActivityCursor cursors, Clock clock, JsonMapper gatewayJson) {
         return new ActivityController(activity, cursors, clock, gatewayJson);
@@ -355,10 +357,10 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    pl.aiwcorpo.mcp.gateway.offboarding.UserPurge userPurge(VirtualServerStore links, ConfirmationService confirmations,
+    pl.aiwcorpo.mcp.gateway.offboarding.UserPurge userPurge(ConfirmationService confirmations,
                                                             ClientSessionStore sessions, UpstreamSessions upstream,
                                                             CredentialCache credentials, AuditLog audit, GatewayProperties properties) {
-        return new pl.aiwcorpo.mcp.gateway.offboarding.UserPurge(links, confirmations, sessions, upstream, credentials, audit,
+        return new pl.aiwcorpo.mcp.gateway.offboarding.UserPurge(confirmations, sessions, upstream, credentials, audit,
                 properties.componentId());
     }
 
@@ -379,9 +381,11 @@ public class GatewayConfiguration {
                                         GatewayProperties properties, ConfirmationService confirmations,
                                         RegistryService registryService, DefinitionGuard definitionGuard,
                                         pl.aiwcorpo.mcp.gateway.ratelimit.RateLimiter rateLimiter,
-                                        pl.aiwcorpo.mcp.gateway.ratelimit.RateLimitAuditThrottle rateLimitAudit) {
+                                        pl.aiwcorpo.mcp.gateway.ratelimit.RateLimitAuditThrottle rateLimitAudit,
+                                        ToolsListCursor listCursor, Clock clock) {
         return new McpGatewayService(registry, urls, upstream, credentials, authorizer, audit, errors, gatewayJson, meters,
-                properties.componentId(), confirmations, registryService, definitionGuard, rateLimiter, rateLimitAudit);
+                properties.componentId(), confirmations, registryService, definitionGuard, rateLimiter, rateLimitAudit, listCursor,
+                properties.mcp().toolsListTimeout(), clock);
     }
 
     @Bean

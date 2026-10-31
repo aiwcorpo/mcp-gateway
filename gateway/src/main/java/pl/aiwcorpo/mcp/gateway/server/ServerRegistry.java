@@ -34,6 +34,8 @@ public final class ServerRegistry {
 
     private final Map<String, GatewayProperties.Server> config;
     private volatile Map<String, McpServer> servers;
+    /** Tools that have only a pending entry (never approved): known to the registry, answered with tool_disabled (CC-178). */
+    private volatile Map<String, Map<String, ToolDefinition>> unapproved = Map.of();
 
     public ServerRegistry(Map<String, GatewayProperties.Server> config, String defaultMode) {
         if (!Set.of(MODE_REQUIRED, MODE_STATIC).contains(defaultMode)) {
@@ -101,9 +103,11 @@ public final class ServerRegistry {
         Map<String, Integer> minimum = new LinkedHashMap<>(configuredMinimumRisks(serverId));
         approvedFloors.forEach((name, risk) -> minimum.merge(name, risk, Math::max));
         Map<String, ToolDefinition> tools = new LinkedHashMap<>();
+        Map<String, ToolDefinition> waiting = new LinkedHashMap<>();
         registered.forEach((name, registeredTool) -> {
             RegisteredTool.Approved approved = registeredTool.approved();
             if (approved == null) {
+                waiting.put(name, waitingTool(name, registeredTool.pending().entry()));
                 return;
             }
             JsonNode entry = approved.entry();
@@ -122,28 +126,50 @@ public final class ServerRegistry {
                     definition.path("description").asString(""), switches != null && switches.disabled(), List.copyOf(refs),
                     approved.hash(), definition, approved.credentialJson()));
         });
+        Map<String, Map<String, ToolDefinition>> nextUnapproved = new LinkedHashMap<>(unapproved);
+        nextUnapproved.put(serverId, Map.copyOf(waiting));
+        this.unapproved = Map.copyOf(nextUnapproved);
         Map<String, McpServer> next = new LinkedHashMap<>(servers);
         next.put(serverId, new McpServer(current.serverId(), current.system(), current.internalUrl(), version,
                 config.get(serverId).enabled() && manifestAccepted, current.credential(), Map.copyOf(tools), true));
         this.servers = Map.copyOf(next);
     }
 
+    private static ToolDefinition waitingTool(String name, JsonNode entry) {
+        java.util.List<pl.aiwcorpo.mcp.cedar.entities.ResourceRef> refs = new java.util.ArrayList<>();
+        entry.path("resourceRefs").forEach(ref -> refs.add(
+                new pl.aiwcorpo.mcp.cedar.entities.ResourceRef(ref.path("argument").asString(), ref.path("type").asString())));
+        return new ToolDefinition(name, Risk.valueOf(entry.path("risk").asString()), entry.path("action").asString(),
+                entry.path("definition").path("title").asString(null), entry.path("definition").path("description").asString(""), true,
+                List.copyOf(refs));
+    }
+
     /** A tool as the client names it ({@code <system>__<tool>}) together with its server. */
     public record Resolved(McpServer server, ToolDefinition tool) {
     }
 
-    /** Empty for a name outside the configuration; the server's own tool list is the only source. */
+    /**
+     * Like {@link #resolve} but a tool that waits for its first approval is found too, as a disabled tool: for the call, which
+     * answers tool_disabled to a user who may call it (CC-178). Such a tool is in no list and in no catalog.
+     */
+    public Optional<Resolved> resolveForCall(String qualifiedName) {
+        Optional<Resolved> approved = resolve(qualifiedName);
+        if (approved.isPresent()) {
+            return approved;
+        }
+        return route(qualifiedName).flatMap(route -> find(route.serverId()).flatMap(server ->
+                Optional.ofNullable(unapproved.getOrDefault(route.serverId(), Map.of()).get(route.tool()))
+                        .map(tool -> new Resolved(server, tool))));
+    }
+
+    /** Empty for a name outside the configuration; the approved manifest (or the static configuration) is the only source. */
     public Optional<Resolved> resolve(String qualifiedName) {
-        if (qualifiedName == null) {
-            return Optional.empty();
-        }
-        int separator = qualifiedName.indexOf("__");
-        if (separator <= 0) {
-            return Optional.empty();
-        }
-        return find("mcp-" + qualifiedName.substring(0, separator))
-                .flatMap(server -> server.tool(qualifiedName.substring(separator + 2))
-                        .map(tool -> new Resolved(server, tool)));
+        return route(qualifiedName).flatMap(route -> find(route.serverId())
+                .flatMap(server -> server.tool(route.tool()).map(tool -> new Resolved(server, tool))));
+    }
+
+    private Optional<ToolRoute> route(String qualifiedName) {
+        return ToolRoute.of(qualifiedName, servers.values().stream().map(McpServer::system).toList());
     }
 
     private static McpServer build(String serverId, GatewayProperties.Server server) {

@@ -210,6 +210,7 @@ public final class GatewayTestEnvironment {
         registry.add("gateway.registry.bootstrap-from-server", () -> "true");
         registry.add("gateway.registry.bootstrap-retry", () -> "500ms");
         registry.add("gateway.registry.definition-check-ttl", () -> "1s");
+        registry.add("gateway.mcp.tools-list-timeout", () -> "700");
         registry.add("gateway.servers.mcp-gitlab.manifest", () -> "required");
         registry.add("gateway.servers.mcp-gitlab.system", () -> "gitlab");
         registry.add("gateway.servers.mcp-gitlab.internal-url", () -> "https://127.0.0.1:" + gitlab.port() + "/mcp");

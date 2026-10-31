@@ -36,7 +36,7 @@ public record GatewayProperties(
         @Valid @NotNull Sessions sessions,
         @Valid @NotNull Upstream upstream,
         @Valid @NotNull Admin admin,
-        @Valid @NotNull VirtualServers virtualServers,
+        @DefaultValue @Valid Mcp mcp,
         @Valid @NotNull Metrics metrics,
         @DefaultValue @Valid Audit audit,
         @DefaultValue @Valid Confirmations confirmations,
@@ -141,9 +141,18 @@ public record GatewayProperties(
             @DefaultValue("mcp-offboarding") @NotEmpty List<String> offboardingClientCns) {
     }
 
-    public record VirtualServers(
-            /* Links one user may own; creating more is refused. */
-            @DefaultValue("50") @Min(1) int maxPerUser) {
+    /** The client side of the aggregate endpoint (CC-180, CC-181). */
+    public record Mcp(
+            /* How long one server has to answer the read of its tools/list for a client's list; a server that does not is skipped. */
+            @DefaultValue("3000ms") Duration toolsListTimeout,
+            /* Key of the HMAC on the cursor of tools/list, at least 16 bytes; every instance must have the same one (HA). */
+            String listCursorKey) {
+
+        public Mcp {
+            if (toolsListTimeout == null || toolsListTimeout.isNegative() || toolsListTimeout.isZero()) {
+                throw new IllegalArgumentException("gateway.mcp.tools-list-timeout (MCP_TOOLS_LIST_TIMEOUT, milliseconds) must be positive");
+            }
+        }
     }
 
     /** Confirmations of DESTRUCTIVE calls (C11); TTL, attempts and the validity of a code are fixed by the contract. */

@@ -58,11 +58,10 @@ class OffboardingTest extends GatewayTestBase {
     }
 
     @Test
-    void aUserWhoLeftLosesLinksSessionsPendingConfirmationsAndCachedCredentials(CapturedOutput output) throws Exception {
+    void aUserWhoLeftLosesSessionsPendingConfirmationsAndCachedCredentials(CapturedOutput output) throws Exception {
         String sub = UUID.randomUUID().toString();
         String token = env.idp.token(sub, "leaver", GROUPS);
         env.broker.enroll(sub, SECRET);
-        assertThat(createLink(sub, "leaver", GROUPS, "leaver-link", "Leaver", List.of("jira__get_issue")).statusCode()).isEqualTo(201);
         String session = initialize(token, "2025-11-25");
         assertThat(callGetIssue(token).statusCode()).isEqualTo(200);
         CredentialCache.Key cached = new CredentialCache.Key(sub, "jira", List.of());
@@ -79,8 +78,6 @@ class OffboardingTest extends GatewayTestBase {
 
         assertThat(response.statusCode()).isEqualTo(204);
         assertThat(response.body()).isEmpty();
-        assertThat(JSON.readTree(admin("GET", "/admin/v1/virtual-servers", sub, "leaver", GROUPS, null).body()).size()).as("links").isZero();
-        assertThat(send(token, "/v/leaver-link/mcp", initializeBody(), java.util.Map.of()).statusCode()).as("the link is gone").isEqualTo(404);
         assertThat(sendRpc(token, session, "2025-11-25", "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\"}", java.util.Map.of())
                 .statusCode()).as("the MCP session").isEqualTo(404);
         assertThat(exists(stateKey)).as("the pending confirmation and its traces").isZero();
@@ -93,10 +90,6 @@ class OffboardingTest extends GatewayTestBase {
         assertThat(summary.path("outcome").asString()).isEqualTo("ok");
         assertThat(summary.path("sub").asString()).isEqualTo(sub);
         assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", summary)).isEmpty();
-        JsonNode linkEvent = output.getOut().lines().filter(l -> l.contains("\"event\":\"virtual_server_change\"") && l.contains(sub)
-                && l.contains("user_purged")).map(l -> JSON.readTree(l)).findFirst().orElseThrow();
-        assertThat(linkEvent.path("virtualServer").asString()).isEqualTo("leaver-link");
-        assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", linkEvent)).isEmpty();
     }
 
     @Test
@@ -110,20 +103,17 @@ class OffboardingTest extends GatewayTestBase {
             assertThat(e.path("reason").asString()).isEqualTo("user_purged");
             assertThat(e.path("outcome").asString()).isEqualTo("ok");
         });
-        assertThat(output.getOut().lines().filter(l -> l.contains("virtual_server_change") && l.contains(sub))).isEmpty();
     }
 
     @Test
     void aPurgeDoesNotTouchAnotherUser() throws Exception {
         String leaver = UUID.randomUUID().toString();
         String stays = UUID.randomUUID().toString();
-        assertThat(createLink(stays, "stays", GROUPS, "stays-link", "Stays", List.of("jira__get_issue")).statusCode()).isEqualTo(201);
         String token = env.idp.token(stays, "stays", GROUPS);
         String session = initialize(token, "2025-11-25");
 
         assertThat(purge(leaver).statusCode()).isEqualTo(204);
 
-        assertThat(JSON.readTree(admin("GET", "/admin/v1/virtual-servers", stays, "stays", GROUPS, null).body()).size()).isEqualTo(1);
         assertThat(sendRpc(token, session, "2025-11-25", "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\"}", java.util.Map.of())
                 .statusCode()).isEqualTo(200);
     }
@@ -140,6 +130,6 @@ class OffboardingTest extends GatewayTestBase {
         assertThat(admin(env.offboardingTls, "GET", purgePath(sub), null, null).statusCode()).as("not a GET").isNotEqualTo(204);
         assertThat(admin(env.offboardingTls, "POST", purgePath(sub) + "/more", null, null).statusCode()).isEqualTo(403);
         assertThat(admin(env.offboardingTls, "POST", "/admin/v1/users/" + "x".repeat(256) + "/purge", null, null).statusCode()).isEqualTo(400);
-        assertThat(admin(env.offboardingTls, "POST", "/admin/v1/virtual-servers", null, "{}").statusCode()).as("the certificate opens nothing else").isEqualTo(403);
+        assertThat(admin(env.offboardingTls, "POST", "/admin/v1/catalog", null, "{}").statusCode()).as("the certificate opens nothing else").isEqualTo(403);
     }
 }

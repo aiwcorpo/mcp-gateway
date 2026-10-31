@@ -36,6 +36,12 @@ class PublicEdgeTest extends GatewayTestBase {
         replies.add(raw("POST /s/mcp-jira/mcp", Map.of("Authorization", "Bearer garbage"), initializeBody()));
         replies.add(raw("POST /s/mcp-nothing/mcp", Map.of("Authorization", "Bearer " + token), initializeBody()));
         replies.add(raw("POST /v/no-such-link/mcp", Map.of("Authorization", "Bearer " + token), initializeBody()));
+        replies.add(raw("POST /mcp", Map.of("Authorization", "Bearer " + token), initializeBody()));
+        replies.add(raw("POST /mcp?systems=jira&access=read", Map.of("Authorization", "Bearer " + token), initializeBody()));
+        replies.add(raw("POST /mcp?system=jira", Map.of("Authorization", "Bearer " + token), initializeBody()));
+        replies.add(raw("GET /mcp", Map.of("Authorization", "Bearer " + token), null));
+        replies.add(raw("GET /.well-known/oauth-protected-resource/mcp", Map.of(), null));
+        replies.add(raw("GET /.well-known/oauth-protected-resource/v/team-a-dev/mcp", Map.of(), null));
         replies.add(raw("GET /s/mcp-jira/mcp", Map.of("Authorization", "Bearer " + token), null));
         replies.add(raw("DELETE /s/mcp-jira/mcp", Map.of("Authorization", "Bearer " + token), null));
         replies.add(raw("POST /s/mcp-jira/mcp", Map.of("Authorization", "Bearer " + token, "Origin", "https://evil.test"), initializeBody()));
@@ -119,7 +125,7 @@ class PublicEdgeTest extends GatewayTestBase {
         Reply withCookieOnly = raw("POST /s/mcp-jira/mcp", Map.of("Cookie", "__Host-session=portal-session-value"), initializeBody());
         assertThat(withCookieOnly.status).isEqualTo(401);
         assertThat(withCookieOnly.header("set-cookie")).isNull();
-        Reply adminPathWithCookie = raw("GET /admin/v1/virtual-servers", Map.of("Cookie", "JSESSIONID=x"), null);
+        Reply adminPathWithCookie = raw("GET /admin/v1/catalog", Map.of("Cookie", "JSESSIONID=x"), null);
         assertThat(adminPathWithCookie.status).isEqualTo(404);
     }
 
@@ -127,7 +133,7 @@ class PublicEdgeTest extends GatewayTestBase {
 
     @Test
     void metadataDocumentsUseThePublicOriginNeverTheHost() throws Exception {
-        for (String path : List.of("/s/mcp-jira/mcp", "/v/some-link/mcp", "/s/mcp-gitlab/mcp")) {
+        for (String path : List.of("/s/mcp-jira/mcp", "/mcp", "/s/mcp-gitlab/mcp")) {
             Reply forged = rawText("GET /.well-known/oauth-protected-resource" + path + " HTTP/1.1\r\nHost: evil.test:6666\r\n"
                     + "X-Forwarded-Host: evil.test\r\nX-Forwarded-Proto: http\r\nX-Forwarded-Port: 6666\r\nForwarded: host=evil.test\r\n"
                     + "Connection: close\r\n\r\n");
@@ -146,7 +152,8 @@ class PublicEdgeTest extends GatewayTestBase {
     @Test
     void metadataExistsOnlyForShapesOfMcpEndpoints() throws Exception {
         for (String path : List.of("/.well-known/oauth-protected-resource/elsewhere", "/.well-known/oauth-protected-resource/s/mcp-jira",
-                "/.well-known/oauth-protected-resource/s/mcp-jira/mcp/extra", "/.well-known/oauth-protected-resource/v/Bad_Slug/mcp",
+                "/.well-known/oauth-protected-resource/s/mcp-jira/mcp/extra", "/.well-known/oauth-protected-resource/v/team-a-dev/mcp", "/.well-known/oauth-protected-resource/f/systems=jira/mcp",
+                "/.well-known/oauth-protected-resource/mcp/extra",
                 "/.well-known/oauth-protected-resource/admin/v1/catalog", "/.well-known/oauth-protected-resource/s/../v/x/mcp",
                 "/.well-known/oauth-protected-resourcex", "/%2ewell-known/oauth-protected-resource/elsewhere",
                 "/.well-known//oauth-protected-resource/elsewhere")) {
@@ -158,12 +165,13 @@ class PublicEdgeTest extends GatewayTestBase {
 
     @Test
     void challengeNamesTheEndpointThatWasCalledOnThePublicOrigin() throws Exception {
-        Reply virtual = rawText("POST /v/team-a-dev/mcp HTTP/1.1\r\nHost: evil.test\r\nX-Forwarded-Host: evil.test\r\n"
+        Reply aggregate = rawText("POST /mcp?systems=jira HTTP/1.1\r\nHost: evil.test\r\nX-Forwarded-Host: evil.test\r\n"
                 + "Content-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
-        assertThat(virtual.status).isEqualTo(401);
-        assertThat(virtual.header("www-authenticate")).isEqualTo("Bearer resource_metadata=\"" + METADATA + "/v/team-a-dev/mcp\"");
+        assertThat(aggregate.status).isEqualTo(401);
+        assertThat(aggregate.header("www-authenticate")).as("the filter is not part of the resource (V2)")
+                .isEqualTo("Bearer resource_metadata=\"" + METADATA + "/mcp\"");
 
-        for (String path : List.of("/s/mcp-jira/mcp;x=%22y", "/s/mcp-jira/mcp%22", "/v/team-a-dev/mcp/extra", "/anything")) {
+        for (String path : List.of("/s/mcp-jira/mcp;x=%22y", "/s/mcp-jira/mcp%22", "/mcp/extra", "/anything")) {
             Reply odd = raw("POST " + path, Map.of(), "{}");
             // The firewall may refuse a path parameter before authentication is asked; both ends are fine.
             assertThat(odd.status).as(path).isIn(400, 401);

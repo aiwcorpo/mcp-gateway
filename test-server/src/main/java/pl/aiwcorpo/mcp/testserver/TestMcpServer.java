@@ -172,11 +172,14 @@ public final class TestMcpServer implements AutoCloseable {
         descriptionOverrides = Map.of();
         hiddenTools = java.util.Set.of();
         toolListFails = false;
+        toolListDelayMillis = 0;
         reportedVersion = "0.1.0";
     }
 
     private volatile java.util.Set<String> hiddenTools = java.util.Set.of();
     private volatile boolean toolListFails;
+    private volatile long toolListDelayMillis;
+    private volatile int extraTools;
     private volatile String reportedVersion = "0.1.0";
 
     /** From now on {@code tools/list} leaves this tool out: a server that dropped it. */
@@ -189,6 +192,16 @@ public final class TestMcpServer implements AutoCloseable {
     /** {@code tools/list} answers 503 while this is on: a server that cannot be read. */
     public void failToolList(boolean value) {
         toolListFails = value;
+    }
+
+    /** {@code tools/list} answers after this many milliseconds: a server that is slow. */
+    public void slowToolList(long millis) {
+        toolListDelayMillis = millis;
+    }
+
+    /** Serves {@code count} more READ_ONLY tools named {@code bulk_tool_NNN}, in the list and in the manifest: a long list to page. */
+    public void extraTools(int count) {
+        extraTools = count;
     }
 
     /** The {@code serverInfo.version} of the next {@code initialize} (a value the server controls). */
@@ -336,6 +349,13 @@ public final class TestMcpServer implements AutoCloseable {
                 send(exchange, 200, "application/json", response(id, JSON.createObjectNode()));
             }
             case "tools/list" -> {
+                if (toolListDelayMillis > 0) {
+                    try {
+                        Thread.sleep(toolListDelayMillis);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
                 if (toolListFails) {
                     record(exchange, headers, body, method, null, 503, null, sub, sessionId);
                     send(exchange, 503, null, null);
@@ -456,7 +476,7 @@ public final class TestMcpServer implements AutoCloseable {
         }
     }
 
-    private static ArrayNode toolDefinitions(Map<String, String> overrides) {
+    private ArrayNode toolDefinitions(Map<String, String> overrides) {
         ArrayNode tools = JSON.createArrayNode();
         tools.add(tool("get_issue", "Get issue", overrides.getOrDefault("get_issue", "Returns the key and summary of one Jira issue."),
                 "issueKey", "Issue key, e.g. ABC-123.", true));
@@ -464,6 +484,10 @@ public final class TestMcpServer implements AutoCloseable {
                 "project", "Project key, e.g. ABC.", true));
         tools.add(tool("delete_issue", "Delete issue", overrides.getOrDefault("delete_issue", "Deletes one Jira issue."),
                 "issueKey", "Issue key, e.g. ABC-123.", false));
+        for (int i = 1; i <= extraTools; i++) {
+            tools.add(tool(String.format("bulk_tool_%03d", i), "Bulk tool", "One of many tools that only fill a long list.",
+                    "issueKey", "Issue key, e.g. ABC-123.", true));
+        }
         return tools;
     }
 

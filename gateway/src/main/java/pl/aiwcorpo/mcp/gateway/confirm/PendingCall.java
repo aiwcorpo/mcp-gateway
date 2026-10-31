@@ -13,7 +13,7 @@ import java.util.List;
  */
 public record PendingCall(String confirmationId, String serverId, String tool, String risk, String argsSha256,
                           long createdAt, int attemptsLeft, Long previewViewedAt, String ended, boolean burned,
-                          String supersededBy, Long cancelledAt, String client, String virtualServer, Display display) {
+                          String supersededBy, Long cancelledAt, String client, String filter, Display display) {
 
     public static final String CONFIRMED = "confirmed";
     public static final String EXHAUSTED = "exhausted";
@@ -43,31 +43,31 @@ public record PendingCall(String confirmationId, String serverId, String tool, S
 
     PendingCall withAttemptsLeft(int value) {
         return new PendingCall(confirmationId, serverId, tool, risk, argsSha256, createdAt, value, previewViewedAt, ended,
-                burned, supersededBy, cancelledAt, client, virtualServer, display);
+                burned, supersededBy, cancelledAt, client, filter, display);
     }
 
     PendingCall withPreviewViewedAt(long value) {
         return new PendingCall(confirmationId, serverId, tool, risk, argsSha256, createdAt, attemptsLeft, value, ended,
-                burned, supersededBy, cancelledAt, client, virtualServer, display);
+                burned, supersededBy, cancelledAt, client, filter, display);
     }
 
     PendingCall withEnded(String value) {
         return new PendingCall(confirmationId, serverId, tool, risk, argsSha256, createdAt, attemptsLeft, previewViewedAt,
-                value, burned, supersededBy, cancelledAt, client, virtualServer, display);
+                value, burned, supersededBy, cancelledAt, client, filter, display);
     }
 
     PendingCall withBurned() {
         return new PendingCall(confirmationId, serverId, tool, risk, argsSha256, createdAt, attemptsLeft, previewViewedAt,
-                ended, true, supersededBy, cancelledAt, client, virtualServer, display);
+                ended, true, supersededBy, cancelledAt, client, filter, display);
     }
 
     PendingCall withSupersededBy(String id) {
         return new PendingCall(confirmationId, serverId, tool, risk, argsSha256, createdAt, attemptsLeft, previewViewedAt,
-                ended, burned, id, cancelledAt, client, virtualServer, display);
+                ended, burned, id, cancelledAt, client, filter, display);
     }
 
     PendingCall withCancelled(long at) {
         return new PendingCall(confirmationId, serverId, tool, risk, argsSha256, createdAt, attemptsLeft, previewViewedAt,
-                CANCELLED, burned, supersededBy, at, client, virtualServer, display);
+                CANCELLED, burned, supersededBy, at, client, filter, display);
     }
 }

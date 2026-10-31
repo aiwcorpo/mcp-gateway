@@ -32,8 +32,8 @@ public final class PublicUrls {
         return base + "/s/" + serverId + "/mcp";
     }
 
-    public String virtualServerUrl(String slug) {
-        return base + "/v/" + slug + "/mcp";
+    public String aggregateUrl() {
+        return base + "/mcp";
     }
 
     /** Portal page where the user connects the account in {@code system} (C10 credential_required). */

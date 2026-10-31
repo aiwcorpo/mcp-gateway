@@ -28,7 +28,9 @@ public final class ActivityAggregator {
     private static final Set<String> WAITING_REASONS = Set.of("code_burned", "authenticator_disabled", "authenticator_not_registered",
             "upstream_unavailable");
     private static final Map<String, String> DENIED_RESULTS = Map.ofEntries(
-            Map.entry("not_granted", "denied_not_granted"), Map.entry("link_scope", "denied_link_scope"),
+            Map.entry("not_granted", "denied_not_granted"), Map.entry("filter_scope", "denied_filter_scope"),
+            // Events written before the saved links went away (CC-188); the data stays as it is, the reading maps it.
+            Map.entry("link_scope", "denied_filter_scope"),
             Map.entry("policy_forbid", "denied_policy"), Map.entry("tool_disabled", "tool_disabled"),
             Map.entry("definition_changed", "tool_disabled"), Map.entry("tool_not_served", "tool_disabled"),
             Map.entry("credential_required", "credential_required"), Map.entry("rate_limited", "rate_limited"),
@@ -72,7 +74,7 @@ public final class ActivityAggregator {
         row.put("requestId", first.path("requestId").asString());
         row.put("ts", first.path("ts").asString());
         copy(first, row, "client");
-        copy(first, row, "virtualServer");
+        copy(first, row, "filter");
         Optional<JsonNode> withTool = events.stream().filter(e -> e.has("tool") && e.has("server")).findFirst();
         if (withTool.isEmpty()) {
             return null;
@@ -123,7 +125,8 @@ public final class ActivityAggregator {
             result = DENIED_RESULTS.getOrDefault(reason == null ? "" : reason, "error");
             errorCode = last.path("errorCode").asString(null);
         }
-        row.put("result", result);
+        // A result written by a 4.x gateway is read as the one that replaced it (CC-188); the stored events stay as they are.
+        row.put("result", "denied_link_scope".equals(result) ? "denied_filter_scope" : result);
         if (errorCode == null) {
             row.putNull("errorCode");
         } else {

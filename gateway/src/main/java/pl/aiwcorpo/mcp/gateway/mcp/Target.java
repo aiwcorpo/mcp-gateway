@@ -1,26 +1,36 @@
 package pl.aiwcorpo.mcp.gateway.mcp;
 
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
-import pl.aiwcorpo.mcp.gateway.virtual.VirtualServer;
 
-/** What the client addressed: one full server ({@code /s/<serverId>/mcp}) or one of its links ({@code /v/<slug>/mcp}). */
-public record Target(McpServer server, VirtualServer link) {
+/** What the client addressed: the aggregate endpoint {@code /mcp} (no server) or one system's {@code /s/<serverId>/mcp}. */
+public record Target(McpServer server) {
+
+    public static final String AGGREGATE_ROUTE = "/mcp";
+
+    public static Target aggregate() {
+        return new Target(null);
+    }
 
     public static Target of(McpServer server) {
-        return new Target(server, null);
+        return new Target(server);
     }
 
-    public static Target of(VirtualServer link) {
-        return new Target(null, link);
+    public boolean aggregateEndpoint() {
+        return server == null;
     }
 
-    /** Slug for {@code vs} (C2) and {@code virtualServer} (C8); null for a full server. */
-    public String virtualSlug() {
-        return link == null ? null : link.slug();
+    /** The path a session is bound to (CC-184). */
+    public String route() {
+        return server == null ? AGGREGATE_ROUTE : "/s/" + server.serverId() + "/mcp";
     }
 
-    /** Name in serverInfo and in metrics: the server id or {@code vs/<slug>}. */
+    /** System of the route without {@code mcp-}, or null on {@code /mcp}: the only value {@code systems} may take there (CC-169). */
+    public String routeSystem() {
+        return server == null ? null : server.system();
+    }
+
+    /** Part of the key of the conversation with the servers: a session reused on another route would be another conversation. */
     public String label() {
-        return link == null ? server.serverId() : "vs/" + link.slug();
+        return server == null ? "mcp" : server.serverId();
     }
 }

@@ -80,7 +80,7 @@ class AdminAuthenticationAuditTest extends GatewayTestBase {
         double before = suppressed("client_certificate_rejected");
         int events = 0;
         for (int i = 0; i < 12; i++) {
-            HttpResponse<String> response = admin(env.noClientCertificateTls, "GET", "/admin/v1/virtual-servers", null, null);
+            HttpResponse<String> response = admin(env.noClientCertificateTls, "GET", "/admin/v1/catalog", null, null);
             assertThat(response.statusCode()).isEqualTo(401);
             events += auditEvents(output, response.headers().firstValue("X-Request-Id").orElseThrow()).size();
         }

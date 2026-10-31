@@ -108,8 +108,11 @@ gateway:
     per-tool: ${MCP_RATE_LIMIT_PER_TOOL:120}
     destructive-per-tool: ${MCP_RATE_LIMIT_DESTRUCTIVE_PER_TOOL:10}
     audit-interval: ${MCP_RATE_LIMIT_AUDIT_INTERVAL:10s}
-  virtual-servers:
-    max-per-user: ${MCP_VIRTUAL_SERVERS_MAX_PER_USER:50}
+  mcp:
+    # Milliseconds one server has for the read of its tools/list when a client lists tools (CC-180); a slower server is skipped.
+    tools-list-timeout: ${MCP_TOOLS_LIST_TIMEOUT:3000}
+    # HMAC key of the tools/list cursor (CC-181); the same on every instance, empty only in the dev stack (random per process).
+    list-cursor-key: ${MCP_LIST_CURSOR_KEY:}
   metrics:
     allowed-client-cns: ${MCP_METRICS_CLIENT_CNS:}
   tls:

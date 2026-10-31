@@ -31,7 +31,7 @@ class GatewayAuthenticationVectorsTest {
     @TestFactory
     List<DynamicTest> everyVector() {
         List<Vectors.Vector> vectors = Vectors.of("gateway-authentication");
-        assertThat(vectors).hasSize(16);
+        assertThat(vectors).hasSize(18);
         return vectors.stream().map(v -> DynamicTest.dynamicTest(v.name(), () -> check(v.document()))).toList();
     }
 
@@ -42,7 +42,12 @@ class GatewayAuthenticationVectorsTest {
                 new ResourceMetadata(new PublicUrls(URI.create(base), false)),
                 new AuthenticationAudit(new AuditLog(), "mcp-gateway", new AuthenticationEventLimiter(1000, java.time.Duration.ofMinutes(1), System::nanoTime,
                         new SimpleMeterRegistry())));
-        MockHttpServletRequest request = new MockHttpServletRequest("POST", input.path("resourcePath").asString() + "/mcp");
+        // Older vectors name the route of a system (/s/mcp-jira); the aggregate endpoint is named by its whole path (/mcp).
+        String resourcePath = input.path("resourcePath").asString();
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", resourcePath.startsWith("/s/") ? resourcePath + "/mcp" : resourcePath);
+        if (input.has("requestQuery")) {
+            request.setQueryString(input.path("requestQuery").asString());
+        }
         MockHttpServletResponse response = new MockHttpServletResponse();
 
         if ("rate_limit_store_unavailable".equals(input.path("reason").asString())) {
@@ -65,7 +70,7 @@ class GatewayAuthenticationVectorsTest {
         assertThat(response.getStatus()).isEqualTo(expected.path("status").asInt());
         expected.path("headers").properties().forEach(header -> {
             String value = header.getValue().asString();
-            if ("WWW-Authenticate".equals(header.getKey())) {
+            if ("WWW-Authenticate".equals(header.getKey()) && resourcePath.startsWith("/s/")) {
                 // The vectors name the route (/s/mcp-jira); the protected resource of RFC 9728 is its MCP endpoint.
                 value = value.substring(0, value.length() - 1) + "/mcp\"";
             }

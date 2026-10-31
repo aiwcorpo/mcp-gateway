@@ -373,8 +373,9 @@ class GatewayIntegrationTest extends GatewayTestBase {
         assertThat(JSON.readTree(list.body()).path("result").path("tools").size()).isZero();
         HttpResponse<String> call = sendModern(mallory, "tools/call", "jira__get_issue",
                 "{\"name\":\"jira__get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
-        assertThat(toolError(call).path("error").asString()).isEqualTo("access_denied");
-        assertThat(toolError(call).path("requiredEntitlements").get(0).asString()).isEqualTo("mcp-jira-read");
+        assertThat(toolError(call).path("error").asString()).as("a tool the user may not call is a tool that does not exist (CC-178)")
+                .isEqualTo("not_found_or_denied");
+        assertThat(toolError(call).has("requiredEntitlements")).isFalse();
         assertThat(env.broker.received()).noneMatch(r -> r.path().equals("/v1/credentials/resolve"));
         assertThat(env.jira.requests()).isEmpty();
         String rid = call.headers().firstValue("X-Request-Id").orElseThrow();
@@ -473,8 +474,8 @@ class GatewayIntegrationTest extends GatewayTestBase {
     @Test
     void serverCertificateMustNameTheServer() throws Exception {
         HttpResponse<String> list = sendModern(aliceToken(), "/s/mcp-confluence/mcp", "tools/list", null, "{}");
-        JsonNode error = JSON.readTree(list.body()).path("error");
-        assertThat(error.path("code").asInt()).isEqualTo(-32603);
+        assertThat(list.statusCode()).isEqualTo(200);
+        assertThat(JSON.readTree(list.body()).path("result").path("tools").size()).as("a server that cannot be read is left out (CC-180)").isZero();
         assertThat(env.wrongName.requests()).isEmpty();
     }
 
@@ -494,7 +495,7 @@ class GatewayIntegrationTest extends GatewayTestBase {
         assertThat(sendModern(withoutGroup, "tools/list", null, "{}").body()).doesNotContain("jira__delete_issue");
         HttpResponse<String> refused = sendModern(withoutGroup, "tools/call", "jira__delete_issue",
                 "{\"name\":\"jira__delete_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
-        assertThat(toolError(refused).path("error").asString()).isEqualTo("access_denied");
+        assertThat(toolError(refused).path("error").asString()).isEqualTo("not_found_or_denied");
 
         String token = env.idp.token("de570000-0000-4000-8000-000000000010", "dora",
                 List.of("mcp-jira-read", "mcp-jira-write", "mcp-jira-destructive"));
@@ -505,7 +506,7 @@ class GatewayIntegrationTest extends GatewayTestBase {
         assertThat(error.path("error").asString()).isEqualTo("confirmation_required");
         assertThat(error.path("registerUrl").asString()).as("Dora has no authenticator").endsWith("/authenticator");
         assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
-        assertThat(resolveCount()).isZero();
+        assertThat(resolveCount()).as("the account is checked before the confirmation gate (CC-178), and the credential is not used").isEqualTo(1);
     }
 
     @Test
@@ -514,8 +515,7 @@ class GatewayIntegrationTest extends GatewayTestBase {
         HttpResponse<String> call = sendModern(token, "tools/call", "jira__add_comment",
                 "{\"name\":\"jira__add_comment\",\"arguments\":{\"issueKey\":\"ABC-1\",\"body\":\"x\"}}");
         JsonNode error = toolError(call);
-        assertThat(error.path("error").asString()).isEqualTo("access_denied");
-        assertThat(error.path("requiredEntitlements").get(0).asString()).isEqualTo("mcp-jira-write");
+        assertThat(error.path("error").asString()).isEqualTo("not_found_or_denied");
         assertThat(resolveCount()).isZero();
         assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
     }

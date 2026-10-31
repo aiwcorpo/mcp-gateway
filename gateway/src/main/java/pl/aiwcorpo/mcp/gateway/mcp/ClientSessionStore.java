@@ -15,7 +15,7 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * Legacy client sessions in Redis ({@code <prefix>session:<id>}, idle TTL), so any gateway instance can serve
  * them. The id is 192 random bits; it identifies, the bearer token authenticates, and a session is only valid
- * together with a token of the same {@code sub}.
+ * together with a token of the same {@code sub}. It also holds the route and the canonical endpoint filter of its {@code initialize}.
  */
 public class ClientSessionStore {
 
@@ -40,17 +40,17 @@ public class ClientSessionStore {
         this.idleTimeout = idleTimeout;
     }
 
-    public ClientSession create(String sub, String client, String protocolVersion) {
+    public ClientSession create(String sub, String client, String protocolVersion, String route, String filter) {
         byte[] bytes = new byte[24];
         RANDOM.nextBytes(bytes);
         String id = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
         String value = json.writeValueAsString(Map.of("sub", sub, "client", client == null ? "" : client,
-                "protocolVersion", protocolVersion));
+                "protocolVersion", protocolVersion, "route", route, "filter", filter));
         // The index lets an offboarding find the sessions of a user (the gateway's Redis account has no SCAN); one script writes
         // both, so a purge cannot fall between the session and its index entry.
         redis.execute(CREATE, java.util.List.of(prefix + id, indexKey(sub)), value, id, Long.toString(idleTimeout.toMillis()),
                 Long.toString(idleTimeout.plusMinutes(1).toMillis()));
-        return new ClientSession(id, sub, client, protocolVersion);
+        return new ClientSession(id, sub, client, protocolVersion, route, filter);
     }
 
     /** The session, with its idle TTL extended; empty when unknown, expired or malformed. */
@@ -64,11 +64,16 @@ public class ClientSessionStore {
         }
         try {
             JsonNode node = json.readTree(value);
+            // A session written before the aggregate endpoint has no route and no filter; it is not honoured, the client initializes anew (CC-188).
+            if (!node.path("route").isString() || !node.path("filter").isString()) {
+                return Optional.empty();
+            }
             String sub = node.path("sub").asString();
             // A session that outlives its first index entry (it is used) stays findable by an offboarding.
             redis.opsForSet().add(indexKey(sub), id);
             redis.expire(indexKey(sub), idleTimeout.plusMinutes(1));
-            return Optional.of(new ClientSession(id, sub, node.path("client").asString(), node.path("protocolVersion").asString()));
+            return Optional.of(new ClientSession(id, sub, node.path("client").asString(), node.path("protocolVersion").asString(),
+                    node.path("route").asString(), node.path("filter").asString()));
         } catch (JacksonException e) {
             return Optional.empty();
         }

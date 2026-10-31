@@ -99,9 +99,9 @@ public final class AuditEvent {
         return put("server", serverId);
     }
 
-    /** Slug of the link the call came through; the caller only passes slugs that matched the C5 pattern. */
-    public AuditEvent virtualServer(String slug) {
-        return put("virtualServer", slug);
+    /** Canonical endpoint filter of the request (CC-174); null or empty when the request had none or it did not parse. */
+    public AuditEvent filter(String canonicalFilter) {
+        return put("filter", canonicalFilter);
     }
 
     public AuditEvent tool(String name) {
@@ -120,7 +120,7 @@ public final class AuditEvent {
         return put("reason", reason);
     }
 
-    /** Reason alone, for events that have no allow or deny decision (admin_change, credential_resolve, virtual_server_change). */
+    /** Reason alone, for events that have no allow or deny decision (admin_change, credential_resolve). */
     public AuditEvent reason(String reason) {
         return put("reason", reason);
     }

@@ -198,7 +198,8 @@ class RegistryTest extends GatewayTestBase {
         assertThat(events(output, "admin_change", "definition_submitted")).anyMatch(e -> hash.equals(e.path("definitionHash").asString())
                 && "add_comment".equals(e.path("tool").asString()) && "mcp-gitlab".equals(e.path("server").asString()));
         assertThat(listedTools()).as("a pending tool is not offered").doesNotContain("gitlab__add_comment");
-        assertThat(callGitlab("gitlab__add_comment", "{\"project\":\"ABC\"}").path("error").asString()).isEqualTo("not_found_or_denied");
+        assertThat(callGitlab("gitlab__add_comment", "{\"project\":\"ABC\"}").path("error").asString())
+                .as("a tool that waits for its first approval answers tool_disabled to a user who may call it (CC-178)").isEqualTo("tool_disabled");
 
         HttpResponse<String> pending = asAdmin("GET", "/admin/v1/registry/servers/mcp-gitlab/tools/add_comment/pending", null);
         assertThat(pending.statusCode()).isEqualTo(200);
@@ -340,7 +341,7 @@ class RegistryTest extends GatewayTestBase {
             assertThat(env.gitlab.requests()).as("no tool call reached the server").noneMatch(r -> "tools/call".equals(r.rpcMethod()));
             assertThat(events(output, "policy_decision", "upstream_unavailable")).as("the decision is audited too").anyMatch(e ->
                     "deny".equals(e.path("decision").asString()) && "get_issue".equals(e.path("tool").asString()));
-            assertThat(listedTools()).as("the last reading still decides the list").contains("gitlab__get_issue", "gitlab__search_issues");
+            assertThat(listedTools()).as("a server that cannot be read is left out of the list (CC-180)").doesNotContain("gitlab__get_issue", "gitlab__search_issues");
             assertThat(registryEntry("get_issue").path("status").asString()).as("nothing was recorded against the tool").isEqualTo("approved");
         } finally {
             env.gitlab.failToolList(false);

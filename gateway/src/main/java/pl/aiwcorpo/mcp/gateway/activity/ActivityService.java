@@ -19,8 +19,9 @@ public final class ActivityService {
     public static final Duration DEFAULT_RETENTION = Duration.ofDays(30);
     private static final int BATCH = 100;
     private static final int MAX_BATCHES = 50;
-    private static final Set<String> DENIED = Set.of("denied_not_granted", "denied_link_scope", "denied_policy", "tool_disabled",
-            "step_up_required", "rate_limited");
+    /** {@code denied_link_scope} is the result of 4.x rows; it is read as the {@code denied_filter_scope} that replaced it (CC-188). */
+    private static final Set<String> DENIED = Set.of("denied_not_granted", "denied_filter_scope", "denied_link_scope", "denied_policy",
+            "tool_disabled", "step_up_required", "rate_limited");
     private static final Set<String> FAILED = Set.of("error", "credential_required");
 
     /** What the caller asked for; the user is always the caller's own sub. */

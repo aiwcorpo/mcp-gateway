@@ -60,14 +60,14 @@ public class UpstreamSessions {
      * for tools/call; {@code credential} only when the tool needs one.
      */
     public JsonNode call(McpServer server, String conversationKey, GatewayUser user, String requestId, ObjectNode message,
-                         String tool, Credential credential, String virtualServer) throws UpstreamException {
+                         String tool, Credential credential) throws UpstreamException {
         sweep();
         StreamableHttpClient client = client(server);
         String key = key(server, conversationKey);
         for (int attempt = 0; attempt < 2; attempt++) {
-            Session session = ensure(server, client, key, user, requestId, virtualServer);
+            Session session = ensure(server, client, key, user, requestId);
             UpstreamResponse response = client.post(new UpstreamRequest(
-                    tokens.forUser(server.serverId(), user, tool, requestId, virtualServer), requestId, session.sessionId(),
+                    tokens.forUser(server.serverId(), user, tool, requestId), requestId, session.sessionId(),
                     session.protocolVersion(), credential, json.writeValueAsString(message)), message.get("id"));
             if (response.status() == 404 && session.sessionId() != null && attempt == 0) {
                 sessions.remove(key, session);
@@ -85,7 +85,7 @@ public class UpstreamSessions {
     }
 
     /** Ends the server sessions whose conversation key starts with the prefix (client DELETE of a legacy session). */
-    public void close(String conversationPrefix, GatewayUser user, String requestId, String virtualServer) {
+    public void close(String conversationPrefix, GatewayUser user, String requestId) {
         sessions.entrySet().removeIf(entry -> {
             if (!entry.getKey().substring(entry.getKey().indexOf('|') + 1).startsWith(conversationPrefix) || !entry.getValue().sub().equals(user.sub())) {
                 return false;
@@ -94,7 +94,7 @@ public class UpstreamSessions {
             StreamableHttpClient client = clients.get(serverId);
             Session session = entry.getValue();
             if (client != null && session.sessionId() != null) {
-                client.delete(new UpstreamRequest(tokens.forUser(serverId, user, null, requestId, virtualServer), requestId,
+                client.delete(new UpstreamRequest(tokens.forUser(serverId, user, null, requestId), requestId,
                         session.sessionId(), session.protocolVersion(), null, null));
             }
             return true;
@@ -115,8 +115,7 @@ public class UpstreamSessions {
         return sessions.size();
     }
 
-    private Session ensure(McpServer server, StreamableHttpClient client, String key, GatewayUser user, String requestId,
-                           String virtualServer) throws UpstreamException {
+    private Session ensure(McpServer server, StreamableHttpClient client, String key, GatewayUser user, String requestId) throws UpstreamException {
         Session existing = sessions.get(key);
         if (existing != null) {
             verifyOwner(existing, user);
@@ -130,7 +129,7 @@ public class UpstreamSessions {
                     verifyOwner(existing, user);
                     return existing;
                 }
-                Session created = initialize(server, client, user, requestId, virtualServer);
+                Session created = initialize(server, client, user, requestId);
                 sessions.put(key, created);
                 return created;
             }
@@ -139,8 +138,7 @@ public class UpstreamSessions {
         }
     }
 
-    private Session initialize(McpServer server, StreamableHttpClient client, GatewayUser user, String requestId,
-                               String virtualServer) throws UpstreamException {
+    private Session initialize(McpServer server, StreamableHttpClient client, GatewayUser user, String requestId) throws UpstreamException {
         ObjectNode init = json.createObjectNode();
         init.put("jsonrpc", "2.0");
         init.put("id", "gw-init-" + UuidV7.next());
@@ -149,7 +147,7 @@ public class UpstreamSessions {
         params.putObject("capabilities");
         params.putObject("clientInfo").put("name", clientName).put("version", clientVersion);
         init.put("method", "initialize");
-        UpstreamResponse response = client.post(new UpstreamRequest(tokens.forUser(server.serverId(), user, null, requestId, virtualServer),
+        UpstreamResponse response = client.post(new UpstreamRequest(tokens.forUser(server.serverId(), user, null, requestId),
                 requestId, null, null, null, json.writeValueAsString(init)), init.get("id"));
         check(response, server);
         JsonNode result = response.message() == null ? null : response.message().get("result");
@@ -164,7 +162,7 @@ public class UpstreamSessions {
         ObjectNode initialized = json.createObjectNode();
         initialized.put("jsonrpc", "2.0");
         initialized.put("method", "notifications/initialized");
-        UpstreamResponse ack = client.post(new UpstreamRequest(tokens.forUser(server.serverId(), user, null, requestId, virtualServer),
+        UpstreamResponse ack = client.post(new UpstreamRequest(tokens.forUser(server.serverId(), user, null, requestId),
                 requestId, response.sessionId(), version, null, json.writeValueAsString(initialized)), null);
         if (ack.status() != 202 && ack.status() != 200) {
             throw new UpstreamException(UpstreamException.Kind.PROTOCOL, "notifications/initialized answered " + ack.status());

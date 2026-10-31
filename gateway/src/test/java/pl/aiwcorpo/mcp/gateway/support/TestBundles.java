@@ -25,8 +25,7 @@ public final class TestBundles {
     public record Bundle(String revision, byte[] archive, byte[] signature) {
     }
 
-    private static final String[] EXAMPLE_POLICIES = {"call-tool", "read", "update", "forbid-restricted", "virtual-server",
-        "credential-type"};
+    private static final String[] EXAMPLE_POLICIES = {"call-tool", "read", "update", "forbid-restricted", "credential-type"};
 
     private TestBundles() {
     }

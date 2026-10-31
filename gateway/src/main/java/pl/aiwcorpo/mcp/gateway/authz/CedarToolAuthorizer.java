@@ -15,7 +15,6 @@ import pl.aiwcorpo.mcp.cedar.entities.Caller;
 import pl.aiwcorpo.mcp.cedar.entities.CedarRequest;
 import pl.aiwcorpo.mcp.cedar.entities.EntityBuilderException;
 import pl.aiwcorpo.mcp.cedar.entities.ToolDescriptor;
-import pl.aiwcorpo.mcp.cedar.entities.VirtualServerScope;
 import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
 import pl.aiwcorpo.mcp.gateway.policy.PolicyService;
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
@@ -26,7 +25,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 /**
  * {@code Action::"call"} on the {@code Tool} from the signed bundle (C7), with the caller's groups, the resources of the
- * arguments named by {@code resourceRefs} (context {@code refs}) and the link (context {@code virtualServer}, {@code vsScopes}).
+ * arguments named by {@code resourceRefs} (context {@code refs}).
  * The groups only become members of {@code UserGroup} entities; what they allow is in the bundle. No bundle in force, an
  * evaluation error or an argument that does not fit a reference is a deny.
  */
@@ -48,22 +47,28 @@ public final class CedarToolAuthorizer implements ToolAuthorizer {
     }
 
     @Override
-    public ToolDecision decide(GatewayUser user, McpServer server, ToolDefinition tool, JsonNode arguments, String virtualSlug) {
+    public ToolDecision decide(GatewayUser user, McpServer server, ToolDefinition tool, JsonNode arguments) {
         if (!server.enabled() || tool.disabled()) {
             return ToolDecision.deny("tool_disabled", List.of());
         }
+        return evaluate(user, server, tool, arguments).decision();
+    }
+
+    @Override
+    public boolean mayCall(GatewayUser user, McpServer server, ToolDefinition tool) {
+        return evaluate(user, server, tool, null).decision().allowed();
+    }
+
+    private Evaluation evaluate(GatewayUser user, McpServer server, ToolDefinition tool, JsonNode arguments) {
         Caller caller = Caller.of(user.sub(), user.username(), user.mcpGroups(), user.client());
-        if (virtualSlug != null) {
-            caller = caller.withVirtualServer(VirtualServerScope.withoutNarrowing(virtualSlug));
-        }
         ToolDescriptor descriptor = new ToolDescriptor(server.serverId(), server.system(), tool.name(), tool.risk().name(),
                 tool.action(), tool.resourceRefs());
         Map<String, ?> values = arguments == null || !arguments.isObject() ? Map.of() : json.convertValue(arguments, Map.class);
-        return evaluate(caller, descriptor, values, requiredEntitlements(server, tool), server.credential().type()).decision();
+        return evaluate(caller, descriptor, values, requiredEntitlements(server, tool), server.credential().type());
     }
 
     /**
-     * The Cedar {@code call} for a caller as the token and the link describe it. Deny on anything that goes wrong.
+     * The Cedar {@code call} for a caller as the token describes it. Deny on anything that goes wrong.
      *
      * @param credentialType the type of the system from the gateway configuration, put into {@code context.credentialType} before every
      *                       decision (CC-136), not the type the broker answers with; null for a system that needs no credential

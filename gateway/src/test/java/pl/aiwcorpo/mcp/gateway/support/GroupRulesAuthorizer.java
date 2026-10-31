@@ -13,12 +13,17 @@ import tools.jackson.databind.JsonNode;
 public final class GroupRulesAuthorizer implements ToolAuthorizer {
 
     @Override
-    public ToolDecision decide(GatewayUser user, McpServer server, ToolDefinition tool, JsonNode arguments, String virtualSlug) {
+    public ToolDecision decide(GatewayUser user, McpServer server, ToolDefinition tool, JsonNode arguments) {
         if (!server.enabled() || tool.disabled()) {
             return ToolDecision.deny("tool_disabled", List.of());
         }
         String required = requiredEntitlements(server, tool).getFirst();
         return user.hasGroup(required) ? ToolDecision.allow() : ToolDecision.deny("not_granted", List.of(required));
+    }
+
+    @Override
+    public boolean mayCall(GatewayUser user, McpServer server, ToolDefinition tool) {
+        return user.hasGroup(requiredEntitlements(server, tool).getFirst());
     }
 
     @Override

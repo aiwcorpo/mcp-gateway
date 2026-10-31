@@ -1,11 +1,19 @@
 package pl.aiwcorpo.mcp.gateway.mcp;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,6 +44,7 @@ import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
 import pl.aiwcorpo.mcp.gateway.server.ToolDefinition;
 import pl.aiwcorpo.mcp.gateway.upstream.UpstreamException;
 import pl.aiwcorpo.mcp.gateway.upstream.UpstreamSessions;
+import pl.aiwcorpo.mcp.manifest.EndpointFilter;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ArrayNode;
@@ -68,12 +77,17 @@ public class McpGatewayService {
     private final DefinitionGuard definitionGuard;
     private final RateLimiter rateLimiter;
     private final RateLimitAuditThrottle rateLimitAudit;
+    private final ToolsListCursor listCursor;
+    private final Duration toolsListTimeout;
+    private final Clock clock;
+    private final ExecutorService listReaders = Executors.newVirtualThreadPerTaskExecutor();
 
     public McpGatewayService(ServerRegistry registry, PublicUrls urls, UpstreamSessions upstream,
                              CredentialService credentials, ToolAuthorizer authorizer, AuditLog audit, ToolErrors errors,
                              JsonMapper json, MeterRegistry meters, String componentId, ConfirmationService confirmations,
                              RegistryService registryService, DefinitionGuard definitionGuard, RateLimiter rateLimiter,
-                             RateLimitAuditThrottle rateLimitAudit) {
+                             RateLimitAuditThrottle rateLimitAudit, ToolsListCursor listCursor, Duration toolsListTimeout,
+                             Clock clock) {
         this.registry = registry;
         this.urls = urls;
         this.upstream = upstream;
@@ -89,72 +103,139 @@ public class McpGatewayService {
         this.definitionGuard = definitionGuard;
         this.rateLimiter = rateLimiter;
         this.rateLimitAudit = rateLimitAudit;
+        this.listCursor = listCursor;
+        this.toolsListTimeout = toolsListTimeout;
+        this.clock = clock;
     }
 
     /**
      * The limits of the user and of the user's client for a request that is not a tool call (initialize, tools/list, ...). Empty means
      * go on; a refusal is audited as a policy decision (at most one event per user and reason in an interval) and becomes HTTP 429.
      */
-    public Optional<RateLimiter.Limited> limitRequest(GatewayUser user, Target target, String requestId, String clientRequestId) {
+    public Optional<RateLimiter.Limited> limitRequest(GatewayUser user, EndpointFilter filter, String requestId, String clientRequestId) {
         Optional<RateLimiter.Limited> limited = rateLimiter.check(user.sub(), user.client(), null, null);
         limited.ifPresent(l -> {
             meters.counter("mcp.gateway.requests.limited").increment();
             if (rateLimitAudit.due(user.sub(), l.reason())) {
                 audit.emit(AuditEvent.of("policy_decision", requestId, componentId).clientRequestId(clientRequestId).user(user)
-                        .virtualServer(target.virtualSlug()).decision("deny", l.reason()).policyRevision(authorizer.policyRevision())
+                        .filter(filter.isEmpty() ? null : filter.canonical()).decision("deny", l.reason()).policyRevision(authorizer.policyRevision())
                         .outcome(l.unavailable() ? "error" : "denied", l.unavailable() ? "upstream_unavailable" : "rate_limited"));
             }
         });
         return limited;
     }
 
-    public ObjectNode listTools(CallContext ctx) throws RpcFailure {
-        List<McpServer> servers = serversOf(ctx);
-        ObjectNode result = json.createObjectNode();
-        ArrayNode out = result.putArray("tools");
-        int failed = 0;
-        RpcFailure lastFailure = null;
-        for (McpServer server : servers) {
-            try {
-                listFrom(ctx, server, out);
-            } catch (RpcFailure failure) {
-                failed++;
-                lastFailure = failure;
-                log.warn("tools/list rid={}: {} left out of the list", ctx.requestId(), server.serverId());
+    /**
+     * A request the endpoint refused before it reached a method: a filter that does not parse ({@code invalid_filter}, no filter field
+     * because nothing could be normalized), a session used on another route or with another filter ({@code filter_mismatch}) or a cursor
+     * that is not ours ({@code invalid_cursor}). One policy_decision (C8); the client learns the reason from the HTTP answer only.
+     */
+    public void auditRefusedRequest(GatewayUser user, String requestId, String clientRequestId, String reason, String outcome,
+                                    String canonicalFilter) {
+        audit.emit(AuditEvent.of("policy_decision", requestId, componentId).clientRequestId(clientRequestId).user(user)
+                .filter(canonicalFilter).decision("deny", reason).policyRevision(authorizer.policyRevision()).outcome(outcome));
+    }
+
+    /**
+     * The tools the user may call now through the endpoint, one page (CC-169, CC-181). The servers are read in parallel, each within
+     * {@code toolsListTimeout}; a server that does not answer in time or cannot be read is left out of this list and nothing else is
+     * concluded about it (CC-180).
+     */
+    public ObjectNode listTools(CallContext ctx, JsonNode cursorParam) throws RpcFailure {
+        String after = null;
+        if (cursorParam != null && !cursorParam.isMissingNode()) {
+            Optional<String> opened = cursorParam.isString()
+                    ? listCursor.open(ctx.user().sub(), ctx.filter().canonical(), cursorParam.asString(), clock.instant().getEpochSecond())
+                    : Optional.empty();
+            if (opened.isEmpty()) {
+                auditRefusedRequest(ctx.user(), ctx.requestId(), ctx.clientRequestId(), "invalid_cursor", "error", ctx.auditFilter());
+                throw new RpcFailure(-32602, "Invalid cursor", 400);
+            }
+            after = opened.get();
+        }
+        List<ToolsPage.Entry<ObjectNode>> entries = new ArrayList<>();
+        Map<McpServer, Future<List<ToolsPage.Entry<ObjectNode>>>> reads = new LinkedHashMap<>();
+        for (McpServer server : serversOf(ctx)) {
+            if (touches(ctx.filter(), server)) {
+                reads.put(server, listReaders.submit(() -> listFrom(ctx, server)));
             }
         }
-        // One failing server of a link must not hide the tools of the others, but a list that is empty only
-        // because everything failed is an error, not an empty list.
-        if (failed > 0 && failed == servers.size()) {
-            throw lastFailure;
+        long deadline = System.nanoTime() + toolsListTimeout.toNanos();
+        for (Map.Entry<McpServer, Future<List<ToolsPage.Entry<ObjectNode>>>> read : reads.entrySet()) {
+            long started = System.nanoTime();
+            try {
+                entries.addAll(read.getValue().get(Math.max(0, deadline - started), TimeUnit.NANOSECONDS));
+            } catch (TimeoutException e) {
+                read.getValue().cancel(true);
+                skipped(ctx, read.getKey(), "timeout");
+            } catch (ExecutionException e) {
+                skipped(ctx, read.getKey(), e.getCause() instanceof RpcFailure ? "unreadable" : "error");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                read.getValue().cancel(true);
+                throw new RpcFailure(-32603, "The request was interrupted.", 502);
+            }
         }
+        ToolsPage.Page<ObjectNode> page = ToolsPage.of(entries, after, ToolsPage.SIZE);
+        ObjectNode result = json.createObjectNode();
+        ArrayNode out = result.putArray("tools");
+        page.entries().forEach(entry -> out.add(entry.value()));
+        page.nextAfter().ifPresent(name -> result.put("nextCursor",
+                listCursor.issue(ctx.user().sub(), ctx.filter().canonical(), name, clock.instant().getEpochSecond())));
         return result;
     }
 
-    private void listFrom(CallContext ctx, McpServer server, ArrayNode out) throws RpcFailure {
-        boolean anyVisible = server.tools().values().stream().anyMatch(t -> visible(ctx, server, t));
-        if (!anyVisible) {
-            return;
+    private void skipped(CallContext ctx, McpServer server, String reason) {
+        meters.counter("mcp.gateway.tools.list.skipped", "server", server.serverId(), "reason", reason).increment();
+        log.warn("tools/list rid={}: {} left out of the list ({})", ctx.requestId(), server.serverId(), reason);
+    }
+
+    /** Whether the filter can leave anything of this server; a server it excludes as a whole is not read. */
+    private static boolean touches(EndpointFilter filter, McpServer server) {
+        return filter.systems().map(systems -> systems.contains(server.system())).orElse(true)
+                && !filter.exclude().map(excluded -> excluded.contains(server.system())).orElse(false);
+    }
+
+    private List<ToolsPage.Entry<ObjectNode>> listFrom(CallContext ctx, McpServer server) throws RpcFailure {
+        List<ToolsPage.Entry<ObjectNode>> out = new ArrayList<>();
+        List<ToolDefinition> inScope = server.tools().values().stream().filter(t -> throughEndpoint(ctx, server, t)).toList();
+        // A server none of whose tools the user may list is not read at all.
+        if (inScope.stream().noneMatch(t -> candidate(ctx, server, t, true, true).allowedByPolicy())) {
+            return out;
         }
         if (!server.approvalRequired()) {
+            Map<String, JsonNode> served = new LinkedHashMap<>();
             for (JsonNode tool : readTools(ctx, server)) {
                 String name = tool.path("name").asString(null);
-                Optional<ToolDefinition> definition = name == null ? Optional.empty() : server.tool(name);
-                if (definition.isPresent() && visible(ctx, server, definition.get())) {
-                    out.add(listed(server, definition.get(), tool));
+                if (name != null) {
+                    served.putIfAbsent(name, tool);
                 }
             }
-            return;
+            for (ToolDefinition definition : inScope) {
+                if (served.containsKey(definition.name())
+                        && ListedTools.listed(candidate(ctx, server, definition, true, true))) {
+                    out.add(new ToolsPage.Entry<>(server.qualifiedName(definition), listed(server, definition, served.get(definition.name()))));
+                }
+            }
+            return out;
         }
         // The list the client sees is built from the approved definitions; the server's own list only decides which of them
         // may be shown now (CC-133).
-        DefinitionGuard.Reading reading = definitions(ctx, server, false);
-        server.tools().values().stream().sorted(java.util.Comparator.comparing(ToolDefinition::name)).forEach(definition -> {
-            if (visible(ctx, server, definition)
-                    && reading.verdicts().getOrDefault(definition.name(), Verdict.NOT_SERVED) == Verdict.INTACT) {
-                out.add(listed(server, definition, definition.definition()));
+        DefinitionGuard.Reading reading = definitions(ctx, server);
+        for (ToolDefinition definition : inScope) {
+            Verdict verdict = reading.verdicts().getOrDefault(definition.name(), Verdict.NOT_SERVED);
+            if (ListedTools.listed(candidate(ctx, server, definition, verdict != Verdict.NOT_SERVED, verdict == Verdict.INTACT))) {
+                out.add(new ToolsPage.Entry<>(server.qualifiedName(definition), listed(server, definition, definition.definition())));
             }
-        });
+        }
+        return out;
+    }
+
+    private ListedTools.Candidate candidate(CallContext ctx, McpServer server, ToolDefinition tool, boolean served,
+                                            boolean definitionMatches) {
+        boolean enabled = server.enabled() && !tool.disabled();
+        return new ListedTools.Candidate(server.qualifiedName(tool), tool.risk().name(), true, enabled, served, definitionMatches,
+                enabled && authorizer.mayCall(ctx.user(), server, tool));
     }
 
     private ObjectNode listed(McpServer server, ToolDefinition definition, JsonNode source) {
@@ -198,11 +279,11 @@ public class McpGatewayService {
     }
 
     /**
-     * The tool list of the server as of the last read that is not older than the TTL, or a new read. A read that fails is no proof
-     * of a change or of a missing tool: for the list the last reading, whatever its age, still decides; a call ({@code needFresh})
-     * is refused instead, so that nothing reaches a server whose definitions cannot be checked.
+     * The tool list of the server as of the last read that is not older than the TTL, or a new read. A read that fails is no proof of
+     * a change or of a missing tool, and it is no list either: the caller leaves the server out of a list and refuses a call, so that
+     * nothing is shown or reaches a server whose definitions cannot be checked (CC-180).
      */
-    private DefinitionGuard.Reading definitions(CallContext ctx, McpServer server, boolean needFresh) throws RpcFailure {
+    private DefinitionGuard.Reading definitions(CallContext ctx, McpServer server) throws RpcFailure {
         Optional<DefinitionGuard.Reading> fresh = definitionGuard.fresh(server.serverId());
         if (fresh.isPresent()) {
             return fresh.get();
@@ -211,16 +292,7 @@ public class McpGatewayService {
         // changing under the read is refused (fail-closed) rather than served from a stale verdict.
         for (int attempt = 0; attempt < 3; attempt++) {
             long generation = definitionGuard.generation(server.serverId());
-            List<JsonNode> tools;
-            try {
-                tools = readTools(ctx, server);
-            } catch (RpcFailure failure) {
-                Optional<DefinitionGuard.Reading> last = definitionGuard.last(server.serverId());
-                if (!needFresh && last.isPresent()) {
-                    return last.get();
-                }
-                throw failure;
-            }
+            List<JsonNode> tools = readTools(ctx, server);
             Map<String, JsonNode> live = new LinkedHashMap<>();
             for (JsonNode tool : tools) {
                 String name = tool.path("name").asString(null);
@@ -246,15 +318,6 @@ public class McpGatewayService {
         throw new RpcFailure(-32603, "upstream_unavailable: the definitions of the server keep changing.", 502);
     }
 
-    /** Why an approved tool of an approved-manifest server may not be used now, from a reading not older than the TTL. */
-    private Optional<Verdict> blocked(CallContext ctx, McpServer server, ToolDefinition tool) throws RpcFailure {
-        if (!server.approvalRequired()) {
-            return Optional.empty();
-        }
-        Verdict verdict = definitions(ctx, server, true).verdicts().getOrDefault(tool.name(), Verdict.NOT_SERVED);
-        return verdict == Verdict.INTACT ? Optional.empty() : Optional.of(verdict);
-    }
-
     /** The code field is added to the schema the client sees; it is not part of the tool's own schema or its hash (C11). */
     private void addConfirmationCode(ObjectNode tool) {
         withConfirmationCode(tool);
@@ -275,30 +338,34 @@ public class McpGatewayService {
                 + "it only after the call answered confirmation_required, then repeat the call with the same arguments.");
     }
 
-    /** The servers behind the endpoint: the one addressed, or those that own the tools of the link. */
+    /** The servers behind the endpoint: all of them in the order of the list (by ServerId), or the one addressed. */
     private List<McpServer> serversOf(CallContext ctx) {
         Target target = ctx.target();
-        if (target.link() == null) {
+        if (!target.aggregateEndpoint()) {
             return List.of(target.server());
         }
-        Map<String, McpServer> servers = new LinkedHashMap<>();
-        for (String name : target.link().tools()) {
-            registry.resolve(name).ifPresent(resolved -> servers.putIfAbsent(resolved.server().serverId(), resolved.server()));
-        }
-        return new ArrayList<>(servers.values());
+        return registry.all().stream().sorted(java.util.Comparator.comparing(McpServer::serverId)).toList();
     }
 
-    /** In scope of the endpoint (the link names the tool) and allowed for the caller now. */
-    private boolean visible(CallContext ctx, McpServer server, ToolDefinition tool) {
-        return inScope(ctx, server, tool) && authorizer.decide(ctx.user(), server, tool).allowed();
-    }
-
-    private static boolean inScope(CallContext ctx, McpServer server, ToolDefinition tool) {
+    /** Neither the route nor the filter of the request leaves the tool out. */
+    private static boolean throughEndpoint(CallContext ctx, McpServer server, ToolDefinition tool) {
         Target target = ctx.target();
-        return target.link() == null ? server.serverId().equals(target.server().serverId())
-                : target.link().allows(server.qualifiedName(tool));
+        return (target.aggregateEndpoint() || server.serverId().equals(target.server().serverId()))
+                && ctx.filter().allows(server.qualifiedName(tool), tool.risk().name());
     }
 
+    /** What the checks of the call learned on the way, kept for the events. */
+    private static final class CallState {
+        Verdict definition;
+        Resolution resolution;
+    }
+
+    /**
+     * The call, in the order of CC-178: the tool is known and Cedar allows it at the level of the tool (mayCall), the endpoint leaves
+     * it visible, it is enabled, its server answers and presents the approved definition, the account is connected; only then the
+     * decision of Cedar with the arguments, the confirmation gate and the server. What the endpoint cuts says nothing of the state of
+     * the tool, of its server or of the account.
+     */
     public ObjectNode callTool(CallContext ctx, JsonNode params) throws RpcFailure {
         long started = System.nanoTime();
         String clientName = params.path("name").asString(null);
@@ -308,30 +375,37 @@ public class McpGatewayService {
             throw new RpcFailure(-32602, "tools/call needs a string name and object arguments.", 400);
         }
         int argsLength = json.writeValueAsString(arguments).getBytes(StandardCharsets.UTF_8).length;
-        Optional<ServerRegistry.Resolved> resolved = registry.resolve(clientName)
-                .filter(r -> inScope(ctx, r.server(), r.tool()));
+        Optional<ServerRegistry.Resolved> resolved = registry.resolveForCall(clientName);
         Optional<RateLimiter.Limited> limited = rateLimiter.check(ctx.user().sub(), ctx.user().client(),
                 resolved.map(r -> r.server().qualifiedName(r.tool())).orElse(null), resolved.map(r -> r.tool().risk()).orElse(null));
         if (limited.isPresent()) {
             return rateLimitedCall(ctx, resolved, limited.get(), started, argsLength);
         }
+        McpServer addressed = ctx.target().server();
         if (resolved.isEmpty()) {
-            // Outside the configuration or outside the link: the same answer, the link hides what it does not name
-            // (C10: tool_disabled is only for a tool an administrator switched off).
-            McpServer addressed = ctx.target().server();
-            Optional<ServerRegistry.Resolved> known = registry.resolve(clientName);
-            if (known.isPresent()) {
-                // A real tool the link does not name: the activity shows it as outside the link.
-                decisionEvent(ctx, known.get().server(), known.get().tool(), "deny", "link_scope", "not_found_or_denied");
-            } else {
-                decisionEvent(ctx, addressed, null, "deny", "not_found_or_denied", "not_found_or_denied");
-            }
-            return finish(ctx, addressed, null, null, started, argsLength, "deny", "not_found_or_denied", null,
+            decisionEvent(ctx, addressed, null, "deny", "not_granted", "not_found_or_denied");
+            return finish(ctx, addressed, null, null, started, argsLength, "deny", "not_granted", null,
                     errors.error("not_found_or_denied", ToolErrors.NOT_FOUND_OR_DENIED_MESSAGE));
         }
         McpServer server = resolved.get().server();
         ToolDefinition tool = resolved.get().tool();
-        ToolDecision decision = authorizer.decide(ctx.user(), server, tool, arguments, ctx.target().virtualSlug());
+        CallState state = new CallState();
+        CallOrder.Verdict verdict = CallOrder.decide(authorizer.mayCall(ctx.user(), server, tool), throughEndpoint(ctx, server, tool),
+                () -> server.enabled() && !tool.disabled(),
+                () -> readDefinitions(ctx, server, tool, state),
+                () -> state.definition == null || state.definition == Verdict.INTACT,
+                () -> resolveCredential(ctx, server, tool, state));
+        if (!verdict.passes()) {
+            return refuse(ctx, server, tool, verdict, state, started, argsLength);
+        }
+        if (state.resolution != null) {
+            ObjectNode failure = credentialFailure(ctx, server, tool, state.resolution, started, argsLength);
+            if (failure != null) {
+                return failure;
+            }
+        }
+        Credential credential = state.resolution instanceof Resolution.Granted granted ? granted.credential() : null;
+        ToolDecision decision = authorizer.decide(ctx.user(), server, tool, arguments);
         if (!decision.allowed()) {
             String code = switch (decision.reason()) {
                 case "tool_disabled" -> "tool_disabled";
@@ -353,20 +427,6 @@ public class McpGatewayService {
             };
             return finish(ctx, server, tool, null, started, argsLength, "deny", decision.reason(), null, error);
         }
-        try {
-            Optional<Verdict> blocked = blocked(ctx, server, tool);
-            if (blocked.isPresent()) {
-                String reason = blocked.get().reason();
-                decisionEvent(ctx, server, tool, "deny", reason, "tool_disabled");
-                return finish(ctx, server, tool, null, started, argsLength, "deny", reason, null,
-                        errors.error("tool_disabled", "This tool is not available."));
-            }
-        } catch (RpcFailure failure) {
-            // The definitions could not be checked: the call is refused before the server, and the decision says so (invariant 10).
-            decisionEvent(ctx, server, tool, "deny", "upstream_unavailable", "upstream_unavailable");
-            return finish(ctx, server, tool, null, started, argsLength, "deny", "upstream_unavailable", null,
-                    errors.error("upstream_unavailable", "The MCP server is unavailable. Try again later."));
-        }
         decisionEvent(ctx, server, tool, "allow", null, null);
 
         String callKey = null;
@@ -379,55 +439,13 @@ public class McpGatewayService {
             arguments = confirmed.arguments();
         }
 
-        Credential credential = null;
-        if (server.credential().required()) {
-            Resolution resolution = credentials.resolve(ctx.user(), server.system(), server.credential(), tool.name(),
-                    ctx.requestId());
-            switch (resolution) {
-                case Resolution.Granted granted -> credential = granted.credential();
-                case Resolution.Required required -> {
-                    return finish(callKey, ctx, server, tool, null, started, argsLength, "allow", "credential_required", null,
-                            errors.error("credential_required", "Connect your " + server.system() + " account in the portal.",
-                                    Map.of("system", required.system(), "connectUrl", urls.connectUrl(required.system()))));
-                }
-                case Resolution.Unavailable unavailable -> {
-                    return finish(callKey, ctx, server, tool, null, started, argsLength, "allow", null, null,
-                            errors.error("upstream_unavailable", "The credential service is unavailable. Try again later."));
-                }
-                case Resolution.Denied denied -> {
-                    // The IdP refused the exchange: the user may not use this system. The answer names no group (CC-157). The gateway
-                    // let the call through, the IdP refused: tool_call allow with outcome denied (CC-165).
-                    resolveEvent(ctx, server, tool, denied.reason(), "denied", "access_denied", null);
-                    return finishDenied(callKey, ctx, server, tool, started, argsLength, denied.reason(),
-                            errors.error("access_denied", "You are not allowed to use this tool."));
-                }
-                case Resolution.TypeMismatch mismatch -> {
-                    log.error("credential for rid={}: the broker returned the type {} which the configuration of {} does not allow",
-                            ctx.requestId(), mismatch.returnedType(), server.system());
-                    resolveEvent(ctx, server, tool, "credential_type_mismatch", "error", "internal_error", mismatch.returnedType());
-                    return finish(callKey, ctx, server, tool, null, started, argsLength, "allow", null, null,
-                            errors.error("internal_error", "The call could not be completed."));
-                }
-                case Resolution.Failed failed -> {
-                    log.error("credential for rid={} failed: {}", ctx.requestId(), failed.reason());
-                    if ("system_not_configured".equals(failed.reason())) {
-                        // A defect of the installation, not of the request: the client sees internal_error, the audit says why (CC-158).
-                        resolveEvent(ctx, server, tool, "system_not_configured", "error", "internal_error", null);
-                    }
-                    return finish(callKey, ctx, server, tool, null, started, argsLength, "allow", null, null,
-                            errors.error("internal_error", "The call could not be completed."));
-                }
-            }
-        }
-
         ObjectNode request = request("tools/call");
         ObjectNode upstreamParams = request.putObject("params");
         upstreamParams.put("name", tool.name());
         upstreamParams.set("arguments", arguments);
         JsonNode response;
         try {
-            response = upstream.call(server, ctx.conversationKey(), ctx.user(), ctx.requestId(), request, tool.name(), credential,
-                    ctx.target().virtualSlug());
+            response = upstream.call(server, ctx.conversationKey(), ctx.user(), ctx.requestId(), request, tool.name(), credential);
         } catch (UpstreamException e) {
             log.warn("tools/call rid={} to {} failed: {} {}", ctx.requestId(), server.serverId(), e.kind(), e.getMessage());
             String code = e.kind() == UpstreamException.Kind.UNAVAILABLE ? "upstream_unavailable" : "internal_error";
@@ -452,6 +470,101 @@ public class McpGatewayService {
                     errors.error("internal_error", "The call could not be completed."));
         }
         return finish(callKey, ctx, server, tool, credential, started, argsLength, "allow", null, null, (ObjectNode) result);
+    }
+
+    /** Reads the definitions of a server that has an approved manifest; false when they cannot be read (the server is not available). */
+    private boolean readDefinitions(CallContext ctx, McpServer server, ToolDefinition tool, CallState state) {
+        if (!server.approvalRequired()) {
+            return true;
+        }
+        try {
+            state.definition = definitions(ctx, server).verdicts().getOrDefault(tool.name(), Verdict.NOT_SERVED);
+            return true;
+        } catch (RpcFailure failure) {
+            return false;
+        }
+    }
+
+    /**
+     * Asks the broker for the credential the tool needs; false only when the account has no connection to the system. Any other
+     * answer is kept in {@code state} and judged by {@link #credentialFailure}: it is no state of the account.
+     */
+    private boolean resolveCredential(CallContext ctx, McpServer server, ToolDefinition tool, CallState state) {
+        if (!server.credential().required()) {
+            return true;
+        }
+        state.resolution = credentials.resolve(ctx.user(), server.system(), server.credential(), tool.name(), ctx.requestId());
+        return !(state.resolution instanceof Resolution.Required);
+    }
+
+    /** The answer for a call that stopped before the decision with arguments, with the events it leaves. */
+    private ObjectNode refuse(CallContext ctx, McpServer server, ToolDefinition tool, CallOrder.Verdict verdict, CallState state,
+                              long started, int argsLength) {
+        String reason = verdict.auditReason();
+        if ("tool_disabled".equals(reason) && state.definition != null && state.definition != Verdict.INTACT) {
+            reason = state.definition.reason();
+        }
+        if ("credential_required".equals(reason)) {
+            decisionEvent(ctx, server, tool, "allow", null, null);
+            Resolution.Required required = (Resolution.Required) state.resolution;
+            return finish(null, ctx, server, tool, null, started, argsLength, "allow", "credential_required", null,
+                    errors.error("credential_required", "Connect your " + server.system() + " account in the portal.",
+                            Map.of("system", required.system(), "connectUrl", urls.connectUrl(required.system()))));
+        }
+        ObjectNode error = switch (verdict.errorCode()) {
+            case "tool_disabled" -> errors.error("tool_disabled", "This tool is not available.");
+            case "upstream_unavailable" -> errors.error("upstream_unavailable", "The MCP server is unavailable. Try again later.");
+            default -> errors.error("not_found_or_denied", ToolErrors.NOT_FOUND_OR_DENIED_MESSAGE);
+        };
+        decisionEvent(ctx, server, tool, "deny", reason, verdict.errorCode());
+        return finish(ctx, server, tool, null, started, argsLength, "deny", reason, null, error);
+    }
+
+    /**
+     * What the broker answered other than a credential or a missing connection: null when it gave a credential. These calls were let
+     * through at the level of the tool, so the decision event says allow and the tool_call event carries the outcome.
+     */
+    private ObjectNode credentialFailure(CallContext ctx, McpServer server, ToolDefinition tool, Resolution resolution, long started,
+                                         int argsLength) {
+        switch (resolution) {
+            case Resolution.Granted granted -> {
+                return null;
+            }
+            case Resolution.Required required -> {
+                return null;
+            }
+            case Resolution.Unavailable unavailable -> {
+                decisionEvent(ctx, server, tool, "allow", null, null);
+                return finish(null, ctx, server, tool, null, started, argsLength, "allow", null, null,
+                        errors.error("upstream_unavailable", "The credential service is unavailable. Try again later."));
+            }
+            case Resolution.Denied denied -> {
+                // The IdP refused the exchange: the user may not use this system. The answer names no group (CC-157). The gateway
+                // let the call through, the IdP refused: tool_call allow with outcome denied (CC-165).
+                decisionEvent(ctx, server, tool, "allow", null, null);
+                resolveEvent(ctx, server, tool, denied.reason(), "denied", "access_denied", null);
+                return finishDenied(null, ctx, server, tool, started, argsLength, denied.reason(),
+                        errors.error("access_denied", "You are not allowed to use this tool."));
+            }
+            case Resolution.TypeMismatch mismatch -> {
+                log.error("credential for rid={}: the broker returned the type {} which the configuration of {} does not allow",
+                        ctx.requestId(), mismatch.returnedType(), server.system());
+                decisionEvent(ctx, server, tool, "allow", null, null);
+                resolveEvent(ctx, server, tool, "credential_type_mismatch", "error", "internal_error", mismatch.returnedType());
+                return finish(null, ctx, server, tool, null, started, argsLength, "allow", null, null,
+                        errors.error("internal_error", "The call could not be completed."));
+            }
+            case Resolution.Failed failed -> {
+                log.error("credential for rid={} failed: {}", ctx.requestId(), failed.reason());
+                decisionEvent(ctx, server, tool, "allow", null, null);
+                if ("system_not_configured".equals(failed.reason())) {
+                    // A defect of the installation, not of the request: the client sees internal_error, the audit says why (CC-158).
+                    resolveEvent(ctx, server, tool, "system_not_configured", "error", "internal_error", null);
+                }
+                return finish(null, ctx, server, tool, null, started, argsLength, "allow", null, null,
+                        errors.error("internal_error", "The call could not be completed."));
+            }
+        }
     }
 
     /** The call is refused before anything else happens: no policy, no broker, no server (CC-156). */
@@ -501,7 +614,7 @@ public class McpGatewayService {
         PendingCall.Display display = OperationDescription.of(json, server.qualifiedName(tool), server.system(), withoutCode,
                 tool.resourceRefs());
         ConfirmationService.CallInfo info = new ConfirmationService.CallInfo(ctx.user(), ctx.requestId(), ctx.clientRequestId(),
-                ctx.target().virtualSlug(), server.serverId(), tool.name(), operation, display);
+                ctx.auditFilter(), server.serverId(), tool.name(), operation, display);
         if (code == null) {
             return new Confirmed(firstCall(at, started, info), null, null);
         }
@@ -571,8 +684,7 @@ public class McpGatewayService {
     private JsonNode callUpstream(CallContext ctx, McpServer server, ObjectNode request, String tool, Credential credential)
             throws RpcFailure {
         try {
-            return upstream.call(server, ctx.conversationKey(), ctx.user(), ctx.requestId(), request, tool, credential,
-                    ctx.target().virtualSlug());
+            return upstream.call(server, ctx.conversationKey(), ctx.user(), ctx.requestId(), request, tool, credential);
         } catch (UpstreamException e) {
             log.warn("{} rid={} to {} failed: {} {}", request.path("method").asString(), ctx.requestId(),
                     server.serverId(), e.kind(), e.getMessage());
@@ -672,7 +784,7 @@ public class McpGatewayService {
 
     private void count(McpServer server, ToolDefinition tool, String outcome, String errorCode, long latencyNanos) {
         String toolTag = tool == null ? "unknown" : tool.name();
-        String serverTag = server == null ? "virtual" : server.serverId();
+        String serverTag = server == null ? "none" : server.serverId();
         meters.counter("mcp.gateway.tool.calls", List.of(
                 io.micrometer.core.instrument.Tag.of("server", serverTag),
                 io.micrometer.core.instrument.Tag.of("tool", toolTag),
@@ -686,7 +798,7 @@ public class McpGatewayService {
         return AuditEvent.of(event, ctx.requestId(), componentId)
                 .clientRequestId(ctx.clientRequestId())
                 .user(ctx.user())
-                .virtualServer(ctx.target().virtualSlug())
+                .filter(ctx.auditFilter())
                 .server(server == null ? null : server.serverId())
                 .tool(tool == null ? null : tool.name());
     }

@@ -8,7 +8,6 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -24,7 +23,6 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import pl.aiwcorpo.mcp.cedar.entities.Caller;
 import pl.aiwcorpo.mcp.cedar.entities.ResourceRef;
 import pl.aiwcorpo.mcp.cedar.entities.ToolDescriptor;
-import pl.aiwcorpo.mcp.cedar.entities.VirtualServerScope;
 import pl.aiwcorpo.mcp.gateway.config.GatewayProperties;
 import pl.aiwcorpo.mcp.gateway.policy.BundleFetcher;
 import pl.aiwcorpo.mcp.gateway.policy.PolicyService;
@@ -96,15 +94,6 @@ class CedarDecisionVectorsTest {
                 List<String> groups = new ArrayList<>();
                 c.path("grp").forEach(g -> groups.add(g.asString()));
                 Caller caller = Caller.of(c.path("sub").asString(), c.path("usr").asString(), groups, c.path("azp").asString());
-                if (c.has("vs")) {
-                    Map<String, List<String>> vsc = new LinkedHashMap<>();
-                    c.path("vsc").properties().forEach(e -> {
-                        List<String> ids = new ArrayList<>();
-                        e.getValue().forEach(id -> ids.add(id.asString()));
-                        vsc.put(e.getKey(), ids);
-                    });
-                    caller = caller.withVirtualServer(VirtualServerScope.fromClaims(c.path("vs").asString(), vsc));
-                }
                 // The gateway puts the type of the system from its configuration into every decision (CC-136).
                 String credentialType = input.path("credentialType").asString(CONFIGURED_TYPES.get(tool.path("system").asString()));
                 CedarToolAuthorizer.Evaluation result = authorizer.evaluate(caller, descriptor,

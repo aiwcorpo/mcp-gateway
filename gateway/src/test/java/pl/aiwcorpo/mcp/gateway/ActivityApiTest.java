@@ -86,7 +86,7 @@ class ActivityApiTest extends GatewayTestBase {
         assertThat(rows.get(0).path("resource").path("id").asString()).isEqualTo("ABC-3");
         assertThat(rows.get(1).path("wrongCodeCount").asInt()).isEqualTo(1);
         assertThat(rows.get(1).path("errorCode").isNull()).isTrue();
-        assertThat(rows.get(2).path("errorCode").asString()).isEqualTo("access_denied");
+        assertThat(rows.get(2).path("errorCode").asString()).isEqualTo("not_found_or_denied");
         assertThat(rows.get(3).path("client").asString()).isEqualTo("claude-code");
         assertThat(rows.stream().map(r -> r.path("requestId").asString()).distinct().count()).isEqualTo(4);
         assertThat(response.headers().firstValue("X-Next-Cursor")).isEmpty();

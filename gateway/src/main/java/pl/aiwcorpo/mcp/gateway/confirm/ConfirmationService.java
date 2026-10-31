@@ -30,7 +30,7 @@ public final class ConfirmationService {
     private static final int MAX_ATTEMPTS_OF_A_STEP = 12;
 
     /** Who calls and what for: everything an event and a record of the pending call need. */
-    public record CallInfo(GatewayUser user, String requestId, String clientRequestId, String virtualServer,
+    public record CallInfo(GatewayUser user, String requestId, String clientRequestId, String filter,
                            String serverId, String toolName, Operation operation, PendingCall.Display display) {
     }
 
@@ -160,7 +160,7 @@ public final class ConfirmationService {
                         }
                         PendingCall created = new PendingCall(ids.get(), info.serverId(), info.toolName(), info.operation().risk(),
                                 info.operation().argsSha256(), now, ConfirmationRules.MAX_ATTEMPTS, null, null, false, null, null,
-                                info.user().client(), info.virtualServer(), info.display());
+                                info.user().client(), info.filter(), info.display());
                         UserConfirmations next = ConfirmationRules.applyCreate(state, created, create);
                         if (store.commit(sub, read, next, next.lastRelevantAt(ConfirmationRules.TTL_MILLIS,
                                 ConfirmationRules.CODE_VALIDITY_MILLIS) + 1000)) {
@@ -371,7 +371,7 @@ public final class ConfirmationService {
     private void event(CallInfo info, PendingCall subject, String decision, String reason, String outcome, String errorCode) {
         PendingCall about = subject;
         AuditEvent event = AuditEvent.of("confirmation", info.requestId(), componentId)
-                .clientRequestId(info.clientRequestId()).user(info.user()).virtualServer(info.virtualServer())
+                .clientRequestId(info.clientRequestId()).user(info.user()).filter(info.filter())
                 .server(info.serverId()).tool(info.toolName()).risk(info.operation().risk())
                 .resource(about != null && about.display() != null ? about.display().resource() : info.display().resource())
                 .decision(decision, reason).callKey(about == null ? info.requestId() : about.confirmationId());
@@ -384,7 +384,7 @@ public final class ConfirmationService {
     private void event(GatewayUser owner, String requestId, PendingCall call, String decision, String reason, String outcome,
                        String errorCode) {
         AuditEvent event = AuditEvent.of("confirmation", requestId, componentId).userWithoutClient(owner)
-                .client(call.client()).virtualServer(call.virtualServer()).server(call.serverId()).tool(call.tool())
+                .client(call.client()).filter(call.filter()).server(call.serverId()).tool(call.tool())
                 .risk(call.risk()).resource(call.display() == null ? null : call.display().resource())
                 .decision(decision, reason).outcome(outcome, errorCode).callKey(call.confirmationId());
         audit.emit(event);

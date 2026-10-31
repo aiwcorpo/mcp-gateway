@@ -92,7 +92,6 @@ public abstract class GatewayTestBase {
         env.jira.clearRequests();
         env.wrongName.clearRequests();
         credentialCache.clear();
-        jdbc.sql("DELETE FROM virtual_servers").update();
         await().atMost(Duration.ofSeconds(10)).until(invalidations::live);
     }
 
@@ -249,17 +248,5 @@ public abstract class GatewayTestBase {
     protected HttpResponse<String> admin(String method, String path, String sub, String username, List<String> groups,
                                          String body) throws Exception {
         return admin(env.bffTls, method, path, env.idp.token(sub, username, groups, "mcp-gateway-admin", "mcp-portal-bff"), body);
-    }
-
-    protected HttpResponse<String> createLink(String sub, String username, List<String> groups, String slug, String name,
-                                              List<String> tools) throws Exception {
-        String toolsJson = JSON.writeValueAsString(tools);
-        return admin("POST", "/admin/v1/virtual-servers", sub, username, groups,
-                "{\"slug\":\"" + slug + "\",\"displayName\":\"" + name + "\",\"tools\":" + toolsJson + "}");
-    }
-
-    protected HttpResponse<String> sendVirtual(String token, String slug, String method, String name, String params)
-            throws Exception {
-        return sendModern(token, "/v/" + slug + "/mcp", method, name, params);
     }
 }

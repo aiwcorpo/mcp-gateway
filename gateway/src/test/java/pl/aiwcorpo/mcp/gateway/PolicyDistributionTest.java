@@ -67,7 +67,7 @@ class PolicyDistributionTest extends GatewayTestBase {
         String revision = publishMain(Map.of("no-get-issue.cedar", NO_GET_ISSUE));
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
             JsonNode error = toolError(getIssue());
-            assertThat(error.path("error").asString()).isEqualTo("access_denied");
+            assertThat(error.path("error").asString()).as("a forbid on the tool leaves it out of mayCall (CC-178)").isEqualTo("not_found_or_denied");
             assertThat(error.has("requiredEntitlements")).as("a forbid names no entitlement").isFalse();
         });
         assertThat(sendModern(aliceToken(), "tools/list", null, "{}").body()).doesNotContain("jira__get_issue");
@@ -81,7 +81,7 @@ class PolicyDistributionTest extends GatewayTestBase {
         assertThat(policies.revision()).as("a bundle of the wrong key does not replace the one in force").isNotNull();
         env.policies.publishMain(TestBundles.tampered(TestBundles.main(TestBundles.revision(NEXT.getAndIncrement()), Map.of())));
         await().atMost(Duration.ofSeconds(5)).until(() -> rejections() > rejected);
-        assertThat(toolError(getIssue()).path("error").asString()).as("the forbid of the bundle in force still holds").isEqualTo("access_denied");
+        assertThat(toolError(getIssue()).path("error").asString()).as("the forbid of the bundle in force still holds").isEqualTo("not_found_or_denied");
     }
 
     private double rejections() {
@@ -112,7 +112,7 @@ class PolicyDistributionTest extends GatewayTestBase {
         env.policies.publishOverrides(TestBundles.overrides(overridesRevision, Map.of("emergency.cedar", NO_GET_ISSUE)));
         try {
             await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
-                    assertThat(toolError(getIssue()).path("error").asString()).isEqualTo("access_denied"));
+                    assertThat(toolError(getIssue()).path("error").asString()).isEqualTo("not_found_or_denied"));
         } finally {
             env.policies.publishOverrides(TestBundles.overrides(TestBundles.revision(NEXT.getAndIncrement()),
                     Map.of("emergency.cedar", "@id(\"test-nothing\") forbid (principal, action == Action::\"call\", resource is Tool)"

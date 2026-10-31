@@ -41,7 +41,6 @@ class DevstackGuardTest {
         m.put("gateway.admin.audience", "mcp-gateway-admin");
         m.put("gateway.sessions.client-idle-timeout", "1h");
         m.put("gateway.upstream.timeout", "30s");
-        m.put("gateway.virtual-servers.max-per-user", "50");
         m.put("gateway.metrics.allowed-client-cns[0]", "mcp-prometheus");
         m.put("gateway.servers.mcp-jira.system", "jira");
         m.put("gateway.servers.mcp-jira.internal-url", "https://mcp-jira.internal:8443/mcp");

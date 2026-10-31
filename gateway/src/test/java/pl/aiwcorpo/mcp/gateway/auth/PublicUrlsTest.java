@@ -13,7 +13,7 @@ class PublicUrlsTest {
     void buildsEndpointsAndPortalLinksFromTheConfiguredOrigin() {
         PublicUrls urls = new PublicUrls(URI.create("https://mcp.aiwcorpo.pl/"), false);
         assertThat(urls.serverUrl("mcp-jira")).isEqualTo("https://mcp.aiwcorpo.pl/s/mcp-jira/mcp");
-        assertThat(urls.virtualServerUrl("team-a-dev")).isEqualTo("https://mcp.aiwcorpo.pl/v/team-a-dev/mcp");
+        assertThat(urls.aggregateUrl()).isEqualTo("https://mcp.aiwcorpo.pl/mcp");
         assertThat(urls.connectUrl("jira")).isEqualTo("https://mcp.aiwcorpo.pl/connections?system=jira");
     }
 
