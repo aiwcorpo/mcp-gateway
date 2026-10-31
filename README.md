@@ -226,11 +226,11 @@ Kontrakty 5.1.0 (CC-169 ... CC-188). Wejście do platformy to jeden adres `<publ
   zły kursor to zawsze `-32602` i powód `invalid_cursor`). `initialize` zwraca `listChanged: false`, `GET` to `405` z `Allow: POST, DELETE`.
 - **Filtr w query:** `systems`, `tools`, `access=read|write`, `exclude`, parsowany z surowego `getQueryString()` klasą `EndpointFilter` z `mcp-manifest`
   (nie z mapy parametrów kontenera: `%zz`, `?=x`, `?%ff=1` to `400 invalid_filter`, nigdy brak filtra). `400` po sprawdzeniu tokenu, zdarzenie
-  `policy_decision` z powodem `invalid_filter` bez pola `filter`. Zdarzenia `tool_call`, `policy_decision`, `confirmation`, `credential_resolve` mają `filter`.
+  `policy_decision` z powodem `invalid_filter` bez pola `filter`. Zdarzenia `tool_call`, `policy_decision`, `confirmation`, `credential_resolve` mają `filter`. Odmowy żądania (`invalid_filter`, `filter_mismatch`, `invalid_cursor`, zły `tools/call`) są zapisywane najwyżej raz na użytkownika i powód w odstępie `MCP_RATE_LIMIT_AUDIT_INTERVAL`, reszta tylko w liczniku `mcp_audit_rate_limited_suppressed_total`.
 - **Kolejność `tools/call` (CC-178):** nazwa znana i `mayCall` (inaczej `not_found_or_denied`, powód `not_granted`, także dla zakazu Cedar na narzędziu),
-  filtr i trasa (`not_found_or_denied`, `filter_scope`), potem `tool_disabled` (także narzędzie czekające na pierwsze zatwierdzenie), `upstream_unavailable`,
+  (decyzja polityki, która nie mogła zapaść, `policy_unavailable` albo `policy_error`, to `upstream_unavailable` albo `internal_error` z prawdziwym powodem w audycie, nie `not_found_or_denied`; limit narzędzia liczy się dopiero po `mayCall`, więc narzędzie bez prawa i nieistniejące odpowiadają tak samo), filtr i trasa (`not_found_or_denied`, `filter_scope`), potem `tool_disabled` (także narzędzie czekające na pierwsze zatwierdzenie), `upstream_unavailable`,
   `credential_required`, dopiero potem decyzja Cedar z argumentami, bramka potwierdzenia i serwer. Skutek: poświadczenie jest pobierane przed
-  potwierdzeniem `DESTRUCTIVE` (nie jest używane), a narzędzie bez uprawnienia nie ma już `access_denied` z `requiredEntitlements` (to zostaje dla odmowy z argumentami).
+  potwierdzeniem `DESTRUCTIVE` (nie jest używane i nie trafia do cache; wywołanie z kodem pobiera własne pod swoim `requestId`), a narzędzie bez uprawnienia nie ma już `access_denied` z `requiredEntitlements` (to zostaje dla odmowy z argumentami).
 - **Sesje (CC-172, CC-184):** sesja w Redisie niesie trasę i znormalizowany filtr z `initialize`. Kolejność: token, składnia query (`400`), `sub` sesji (cudza lub nieznana
   to `404` bez audytu), trasa i filtr (`404`, `filter_mismatch`). Dotyczy też `DELETE` i żądań z `Mcp-Session-Id` razem z `_meta`. Sesje bez trasy (z 4.x) są nieznane (CC-188).
 - **Linki usunięte:** tabela `virtual_servers` (Flyway `V7`), API C5, limit, `vs`/`vsc` w JWT, część "linki" w `purge`. `/v/...` to `404 not_found_or_denied` bez
@@ -248,15 +248,17 @@ instancja adoptuje zmianę co kilka sekund). Poza tym instancje potrzebują tego
 | klucze C2 | jeden plik JWKS (`MCP_INTERNAL_JWT_KEYS_FILE`, `MCP_INTERNAL_JWT_ACTIVE_KID`) | serwery nie zweryfikują tokenu z drugiej instancji |
 | klucz kursora `/activity/calls` i `tools/list` | `MCP_ACTIVITY_CURSOR_KEY`, `MCP_LIST_CURSOR_KEY` | kursor z jednej instancji jest odrzucany na drugiej |
 | `/app/state` | wolumen na instancję (blokada pliku `.instance.lock`: drugi proces na tym samym katalogu nie wstaje) | ochrona przed cofnięciem paczki polityk byłaby wspólna i błędna |
-| `WAIT` | `MCP_REDIS_WAIT_REPLICAS=1` (+ `+wait` w ACL) przy Redisie z repliką | po awarii mastera spalony kod albo oczekująca operacja mogą zniknąć |
+| `WAIT` | `MCP_REDIS_WAIT_REPLICAS=1` (wymagane poza `devstack`; `+wait` w ACL Redisa gateway'a) przy Redisie z repliką | po awarii mastera spalony kod albo oczekująca operacja mogą zniknąć |
 
-Poza profilem `devstack` gateway nie wstaje z kluczami generowanymi na proces (trzy powyższe zmienne są wymagane). `/admin/v1/policy/status` zgłasza rewizję instancji,
-która odpowiedziała; BFF za load balancerem widzi jedną instancję naraz. Utrata Redisa: sesje, limity i potwierdzenia odmawiają (`503` albo `upstream_unavailable`), żadna
+Zmiana stanu potwierdzeń i `WAIT` idą na osobnym połączeniu Redis (każda zmiana własne), bo `WAIT` blokuje połączenie, a wspólne połączenie obsługuje limity i sesje: replika, która przestaje odpowiadać, kończy się odmową potwierdzenia po `MCP_REDIS_WAIT_TIMEOUT`, nie zatrzymaniem gateway'a. Poza profilem `devstack` gateway nie wstaje z kluczami generowanymi na proces ani z `MCP_REDIS_WAIT_REPLICAS=0` (te zmienne są wymagane). `/admin/v1/policy/status` zgłasza rewizję instancji,
+która odpowiedziała; BFF za load balancerem widzi jedną instancję naraz. Utrata Redisa: sesje, limity i potwierdzenia odmawiają (`503` albo `upstream_unavailable`; odmowa sklepu sesji niesie ten sam `requestId` w nagłówku i w zdarzeniu audytu), żadna
 odpowiedź nie jest zgadywana. Cache poświadczeń i sesje do serwerów są w pamięci instancji (czyszczone zdarzeniem `credential.invalidated` i TTL <= 60 s).
+
+**Gwarancje przy ponowieniu klienta.** Kod potwierdzenia `DESTRUCTIVE` jest zużywany raz na wszystkich instancjach, także przy równoległych ponowieniach i zabiciu instancji w trakcie (test `HighAvailabilityTest`). Wywołanie `UPDATE` ma semantykę co najmniej raz: gateway nie deduplikuje wywołań, więc klient (albo load balancer), który ponawia wywołanie po zerwanym połączeniu z zabitą instancją, może wykonać je u serwera dwa razy; serwer powinien być na to odporny (idempotencja po stronie systemu docelowego).
 
 ### Przejście z M4 na M5 (dla ws-01)
 
-Obraz `mcp-gateway:m5-<sha>`; wymagane nowe zmienne poza dev: `MCP_LIST_CURSOR_KEY` (i dotychczasowe `MCP_ACTIVITY_CURSOR_KEY`, `MCP_INTERNAL_JWT_KEYS_FILE`). `MCP_TOOLS_LIST_TIMEOUT`
+Obraz `mcp-gateway:m5-<sha>`; wymagane nowe zmienne poza dev: `MCP_LIST_CURSOR_KEY` i `MCP_REDIS_WAIT_REPLICAS` >= 1 (oraz dotychczasowe `MCP_ACTIVITY_CURSOR_KEY`, `MCP_INTERNAL_JWT_KEYS_FILE`). `MCP_TOOLS_LIST_TIMEOUT`
 opcjonalnie. Sesje MCP sprzed aktualizacji są nieznane (klient inicjuje nową), stan potwierdzeń w Redisie zachowuje format (pole `virtualServer` rekordu jest ignorowane przy odczycie),
 migracja usuwa tabelę linków. ACL Redisa: dodać `+wait`. Wejść razem ze starterem i serwerami na kontraktach 5.x (serwery odrzucają token z `vs`).
 

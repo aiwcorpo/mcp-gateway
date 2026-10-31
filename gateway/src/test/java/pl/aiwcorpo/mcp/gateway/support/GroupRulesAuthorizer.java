@@ -22,8 +22,9 @@ public final class GroupRulesAuthorizer implements ToolAuthorizer {
     }
 
     @Override
-    public boolean mayCall(GatewayUser user, McpServer server, ToolDefinition tool) {
-        return user.hasGroup(requiredEntitlements(server, tool).getFirst());
+    public ToolDecision toolLevel(GatewayUser user, McpServer server, ToolDefinition tool) {
+        String required = requiredEntitlements(server, tool).getFirst();
+        return user.hasGroup(required) ? ToolDecision.allow() : ToolDecision.deny("not_granted", List.of(required));
     }
 
     @Override

@@ -12,7 +12,7 @@ import pl.aiwcorpo.mcp.gateway.audit.AuditEvent;
 
 /**
  * Keeps the audit events of a user's calls for the activity views. Events with no {@code sub} (authentication of an unknown
- * caller, link changes by the system) and the allow of a policy decision (the call's own event follows) are not kept.
+ * caller, changes by the system) and the allow of a policy decision (the call's own event follows) are not kept.
  * A failed write is counted and logged; the audit line is the record, so the call is never failed for it.
  */
 public final class ActivityRecorder {

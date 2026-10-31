@@ -56,7 +56,7 @@ class ReplicatedStoreTest {
 
     @Test
     void aChangeIsAcknowledgedWhileAReplicaHasIt_andRefusedWhenNoneDoes() {
-        RedisConfirmationStore waiting = new RedisConfirmationStore(redis, JsonMapper.builder().build(), "gw:", 1, Duration.ofMillis(300));
+        RedisConfirmationStore waiting = waitingStore();
         RedisConfirmationStore notWaiting = new RedisConfirmationStore(redis, JsonMapper.builder().build(), "gw:");
 
         assertThatCode(() -> waiting.markBurnedInEpoch("sub-a", 1, 60_000)).doesNotThrowAnyException();
@@ -71,6 +71,45 @@ class ReplicatedStoreTest {
             assertThatCode(() -> notWaiting.markBurnedInEpoch("sub-c", 1, 60_000)).doesNotThrowAnyException();
         } finally {
             replica.getDockerClient().unpauseContainerCmd(replica.getContainerId()).exec();
+        }
+    }
+
+    private static RedisConfirmationStore waitingStore() {
+        LettuceConnectionFactory own = new LettuceConnectionFactory(new RedisStandaloneConfiguration(master.getHost(), master.getMappedPort(6379)));
+        own.setShareNativeConnection(false);
+        own.afterPropertiesSet();
+        return new RedisConfirmationStore(redis, JsonMapper.builder().build(), "gw:", 1, Duration.ofMillis(300), own);
+    }
+
+    /** WAIT blocks its connection: with the replica stopped, everything else on the shared connection goes on at once. */
+    @Test
+    void aReplicaThatStopsAnsweringDoesNotSlowDownTheTrafficOfTheGateway() throws Exception {
+        RedisConfirmationStore waiting = waitingStore();
+        replica.getDockerClient().pauseContainerCmd(replica.getContainerId()).exec();
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+        try {
+            java.util.List<java.util.concurrent.Future<?>> blocked = new java.util.ArrayList<>();
+            for (int i = 0; i < 4; i++) {
+                int n = i;
+                blocked.add(pool.submit(() -> assertThatThrownBy(() -> waiting.markBurnedInEpoch("sub-p" + n, 2, 60_000))
+                        .isInstanceOf(ConfirmationStore.StoreUnavailableException.class)));
+            }
+            long slowest = 0;
+            for (int i = 0; i < 40; i++) {
+                long started = System.nanoTime();
+                redis.opsForValue().set("gw:rl:probe", Integer.toString(i));
+                assertThat(redis.opsForValue().get("gw:rl:probe")).isEqualTo(Integer.toString(i));
+                slowest = Math.max(slowest, (System.nanoTime() - started) / 1_000_000);
+                Thread.sleep(10);
+            }
+            assertThat(slowest).as("ms of the slowest request on the shared connection while four changes wait").isLessThan(150);
+            for (java.util.concurrent.Future<?> f : blocked) {
+                f.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            }
+        } finally {
+            replica.getDockerClient().unpauseContainerCmd(replica.getContainerId()).exec();
+            pool.shutdownNow();
+            waiting.close();
         }
     }
 

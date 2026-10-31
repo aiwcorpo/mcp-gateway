@@ -341,8 +341,24 @@ public class GatewayConfiguration {
 
     @Bean
     ConfirmationStore confirmationStore(StringRedisTemplate redis, JsonMapper gatewayJson, GatewayProperties properties) {
-        return new RedisConfirmationStore(redis, gatewayJson, properties.redis().keyPrefix(), properties.redis().waitReplicas(),
-                properties.redis().waitTimeout());
+        GatewayProperties.Redis config = properties.redis();
+        org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory dedicated = null;
+        if (config.waitReplicas() > 0) {
+            org.springframework.data.redis.connection.RedisStandaloneConfiguration standalone =
+                    new org.springframework.data.redis.connection.RedisStandaloneConfiguration(config.host(), config.port());
+            if (config.username() != null && !config.username().isEmpty()) {
+                standalone.setUsername(config.username());
+            }
+            if (config.password() != null && !config.password().isEmpty()) {
+                standalone.setPassword(config.password());
+            }
+            dedicated = new org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory(standalone,
+                    org.springframework.data.redis.connection.lettuce.LettuceClientConfiguration.builder()
+                            .commandTimeout(java.time.Duration.ofSeconds(2)).build());
+            dedicated.setShareNativeConnection(false);
+            dedicated.afterPropertiesSet();
+        }
+        return new RedisConfirmationStore(redis, gatewayJson, config.keyPrefix(), config.waitReplicas(), config.waitTimeout(), dedicated);
     }
 
     @Bean

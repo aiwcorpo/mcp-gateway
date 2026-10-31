@@ -5,11 +5,17 @@
 // without the socket and without credentials: hygiene checks and the self-test of ci/run.sh (the full run follows after the merge).
 // Credentials for the mcp-contracts artifacts (MCP_MAVEN_REPOSITORY_URL, _USER, _PASSWORD) are Jenkins credentials bound in the
 // main job only.
+// BRANCH_NAME exists in multibranch jobs only; a plain pipeline job has GIT_BRANCH ("origin/main"). A change request has CHANGE_ID.
+def onMain() {
+    String branch = env.BRANCH_NAME ?: (env.GIT_BRANCH ?: '').replaceFirst('^origin/', '')
+    return branch == 'main' && !env.CHANGE_ID
+}
+
 pipeline {
     agent none
     stages {
         stage('change request') {
-            when { not { branch 'main' } }
+            when { expression { !onMain() } }
             agent { docker { image 'maven:3.9.12-eclipse-temurin-25' } }
             steps {
                 sh 'ci/self-test.sh'
@@ -17,7 +23,7 @@ pipeline {
             }
         }
         stage('verify') {
-            when { branch 'main' }
+            when { expression { onMain() } }
             agent {
                 docker {
                     label 'docker-trusted'

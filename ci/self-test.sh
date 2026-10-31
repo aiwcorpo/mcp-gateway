@@ -5,7 +5,7 @@ set -u
 root="$(cd "$(dirname "$0")/.." && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-mkdir -p "$work/ci" "$work/gateway/target/surefire-reports" "$work/test-server/target/surefire-reports"
+mkdir -p "$work/ci"
 cp "$root/ci/run.sh" "$work/ci/run.sh"
 cp -R "$root/.ci" "$work/.ci"
 git -C "$work" init -q
@@ -26,8 +26,17 @@ printf '#!/usr/bin/env bash\nexit 0\n' >"$work/fake-passes"
 chmod +x "$work/fake-fails" "$work/fake-passes"
 check "a failed build fails the script" 1 env CI_MVNW="$work/fake-fails" "$work/ci/run.sh" verify
 check "a build that ran no test fails" 1 env CI_MVNW="$work/fake-passes" "$work/ci/run.sh" verify
-echo '<testsuite name="x" tests="3" failures="0"></testsuite>' >"$work/gateway/target/surefire-reports/TEST-x.xml"
-check "a build with tests passes" 0 env CI_MVNW="$work/fake-passes" "$work/ci/run.sh" verify
+report() {
+  mkdir -p "$work/$1/target/surefire-reports"
+  echo "<testsuite name=\"x\" tests=\"$2\" skipped=\"$3\" failures=\"0\"></testsuite>" >"$work/$1/target/surefire-reports/TEST-x.xml"
+}
+report gateway 3 0
+check "a module with no report fails" 1 env CI_MVNW="$work/fake-passes" CI_GATEWAY_MIN_TESTS=2 "$work/ci/run.sh" verify
+report test-server 2 2
+check "a module whose tests were all skipped fails" 1 env CI_MVNW="$work/fake-passes" CI_GATEWAY_MIN_TESTS=2 "$work/ci/run.sh" verify
+report test-server 2 0
+check "a gateway below the floor fails" 1 env CI_MVNW="$work/fake-passes" CI_GATEWAY_MIN_TESTS=4 "$work/ci/run.sh" verify
+check "both modules with tests pass" 0 env CI_MVNW="$work/fake-passes" CI_GATEWAY_MIN_TESTS=2 "$work/ci/run.sh" verify
 check "an unknown step is refused" 2 env CI_MVNW="$work/fake-passes" "$work/ci/run.sh" nonsense
 check "an empty step is refused" 2 env CI_MVNW="$work/fake-passes" "$work/ci/run.sh" ""
 check "two steps are refused" 2 env CI_MVNW="$work/fake-passes" "$work/ci/run.sh" verify hygiene

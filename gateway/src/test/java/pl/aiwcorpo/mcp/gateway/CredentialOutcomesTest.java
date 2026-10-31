@@ -111,8 +111,12 @@ class CredentialOutcomesTest extends GatewayTestBase {
         assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
         assertThat(credentialCache.get(new CredentialCache.Key(sub, "jira", List.of()))).isNull();
         assertThat(output.getAll()).doesNotContain("service-token");
-        for (JsonNode event : events(output, sub, "credential_resolve")) {
-            assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", event)).isEmpty();
-        }
+        List<JsonNode> resolves = events(output, sub, "credential_resolve");
+        assertThat(resolves).as("the refusal is audited like the other type mismatch").hasSize(1);
+        JsonNode resolve = resolves.getFirst();
+        assertThat(resolve.path("reason").asString()).isEqualTo("credential_type_mismatch");
+        assertThat(resolve.path("outcome").asString()).isEqualTo("error");
+        assertThat(resolve.has("credentialType")).as("a value outside the four types is not copied into the event").isFalse();
+        assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", resolve)).isEmpty();
     }
 }

@@ -27,7 +27,16 @@ public interface ToolAuthorizer {
      * {@code tools/list}, but whatever the switches say: a disabled server or tool, the availability of the server and the state of
      * the account do not change it.
      */
-    boolean mayCall(GatewayUser user, McpServer server, ToolDefinition tool);
+    default boolean mayCall(GatewayUser user, McpServer server, ToolDefinition tool) {
+        return toolLevel(user, server, tool).allowed();
+    }
+
+    /**
+     * The decision behind {@link #mayCall}: allowed, denied for a reason that is the user's (no grant, a forbid) or undecided because
+     * the policy could not answer ({@code policy_unavailable}, {@code policy_error}); an undecided call is not a denied one, and the
+     * caller must not tell the client that the tool does not exist.
+     */
+    ToolDecision toolLevel(GatewayUser user, McpServer server, ToolDefinition tool);
 
     /** Groups (C9) that usually grant the tool; shown in the catalog and in access_denied. Informational: the policy decides. */
     List<String> requiredEntitlements(McpServer server, ToolDefinition tool);

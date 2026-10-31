@@ -34,7 +34,11 @@ class AggregateEndpointTest extends GatewayTestBase {
     }
 
     private String token() {
-        return env.idp.token(ALICE_SUB, "alice", List.of("mcp-jira-read", "mcp-jira-write", "mcp-jira-destructive", "mcp-gitlab-read"));
+        return tokenOf(ALICE_SUB);
+    }
+
+    private String tokenOf(String sub) {
+        return env.idp.token(sub, "alice", List.of("mcp-jira-read", "mcp-jira-write", "mcp-jira-destructive", "mcp-gitlab-read"));
     }
 
     private static List<String> names(HttpResponse<String> response) {
@@ -109,7 +113,8 @@ class AggregateEndpointTest extends GatewayTestBase {
         }
         for (String query : List.of("system=jira", "systems=jira&systems=gitlab", "access=admin", "systems=",
                 "systems=jira%2Cgitlab", "systems=%7Ejira", "systems=jira+gitlab", "x".repeat(600))) {
-            HttpResponse<String> response = list(token(), "/mcp?" + query);
+            // One user per query: the audit of a refused request is limited to one event per user and reason in an interval.
+            HttpResponse<String> response = list(tokenOf(java.util.UUID.randomUUID().toString()), "/mcp?" + query);
             assertThat(response.statusCode()).as(query).isEqualTo(400);
             JsonNode body = JSON.readTree(response.body());
             assertThat(body.path("error").asString()).as(query).isEqualTo("invalid_request");
@@ -145,14 +150,20 @@ class AggregateEndpointTest extends GatewayTestBase {
         assertThat(same.statusCode()).as("the same filter in another spelling").isEqualTo(200);
         assertThat(names(same)).contains("jira__get_issue").noneMatch(n -> n.startsWith("gitlab__"));
 
+        boolean first = true;
         for (String path : List.of("/mcp", "/mcp?systems=jira", "/mcp?systems=gitlab&access=read", "/s/mcp-jira/mcp?access=read")) {
             HttpResponse<String> other = send(token, path, listBody, headers);
             assertThat(other.statusCode()).as(path).isEqualTo(404);
             String rid = other.headers().firstValue("X-Request-Id").orElseThrow();
-            assertThat(auditEvents(output, rid)).as(path).singleElement().satisfies(e -> {
-                assertThat(e.path("reason").asString()).isEqualTo("filter_mismatch");
-                assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", e)).isEmpty();
-            });
+            if (first) {
+                assertThat(auditEvents(output, rid)).as(path).singleElement().satisfies(e -> {
+                    assertThat(e.path("reason").asString()).isEqualTo("filter_mismatch");
+                    assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", e)).isEmpty();
+                });
+            } else {
+                assertThat(auditEvents(output, rid)).as(path + ": one event per user and reason in an interval").isEmpty();
+            }
+            first = false;
         }
         assertThat(rawStatus("POST", "/mcp?systems=bad%zz", token, session)).as("syntax before the session").isEqualTo(400);
 
@@ -211,7 +222,7 @@ class AggregateEndpointTest extends GatewayTestBase {
     @Test
     void aCursorOfAnotherUserOrFilterOrOfNoOneIsInvalidParams(CapturedOutput output) throws Exception {
         for (String cursor : List.of("\"not-a-cursor\"", "42", "\"a.b\"")) {
-            HttpResponse<String> response = sendModern(token(), "/mcp", "tools/list", null, "{\"cursor\":" + cursor + "}");
+            HttpResponse<String> response = sendModern(tokenOf(java.util.UUID.randomUUID().toString()), "/mcp", "tools/list", null, "{\"cursor\":" + cursor + "}");
             assertThat(response.statusCode()).as(cursor).isEqualTo(400);
             assertThat(JSON.readTree(response.body()).path("error").path("code").asInt()).isEqualTo(-32602);
             assertThat(auditEvents(output, response.headers().firstValue("X-Request-Id").orElseThrow())).as(cursor).anySatisfy(e -> {
@@ -265,5 +276,36 @@ class AggregateEndpointTest extends GatewayTestBase {
     @Test
     void theMigrationDroppedTheTableOfSavedLinks() {
         assertThat(jdbc.sql("SELECT to_regclass('public.virtual_servers')").query(String.class).optional()).isEmpty();
+    }
+
+    @Test
+    void whatTheUserMayNotCallAnswersLikeWhatDoesNotExistEvenAfterTheLimitOfTheToolWouldHaveBeenReached() throws Exception {
+        pl.aiwcorpo.mcp.gateway.support.RateLimitTestConfiguration.use(pl.aiwcorpo.mcp.gateway.support.RateLimitTestConfiguration.settings(
+                1_000_000, 1_000_000, 10, 10, Map.of()));
+        try {
+            String bob = tokenOfGroups(java.util.UUID.randomUUID().toString(), List.of("mcp-jira-read"));
+            List<String> existing = new ArrayList<>();
+            List<String> missing = new ArrayList<>();
+            for (int i = 0; i < 11; i++) {
+                existing.add(normalized(sendModern(bob, "/mcp", "tools/call", "jira__delete_issue",
+                        "{\"name\":\"jira__delete_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}")));
+                missing.add(normalized(sendModern(bob, "/mcp", "tools/call", "jira__no_such_tool",
+                        "{\"name\":\"jira__no_such_tool\",\"arguments\":{\"issueKey\":\"ABC-1\"}}")));
+            }
+            assertThat(existing).as("eleven calls of a tool without the right").containsOnly(missing.getFirst());
+            assertThat(missing).containsOnly(missing.getFirst());
+            assertThat(missing.getFirst()).contains("not_found_or_denied").doesNotContain("rate_limited");
+        } finally {
+            pl.aiwcorpo.mcp.gateway.support.RateLimitTestConfiguration.restore();
+        }
+    }
+
+    private String tokenOfGroups(String sub, List<String> groups) {
+        return env.idp.token(sub, "bob", groups);
+    }
+
+    /** The answer without what differs per request (the id of the request is in a header, not in the body). */
+    private static String normalized(HttpResponse<String> response) {
+        return response.statusCode() + " " + response.body();
     }
 }

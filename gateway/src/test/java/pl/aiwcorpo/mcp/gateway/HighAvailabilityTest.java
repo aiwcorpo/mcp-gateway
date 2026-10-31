@@ -95,6 +95,7 @@ class HighAvailabilityTest {
                 Tls.fromPkcs12(pki.issue("ha-jira.p12", "mcp-jira", List.of("mcp-jira.internal", "localhost"), true, false),
                         pki.truststore(), TestPki.PASSWORD), new java.net.InetSocketAddress("127.0.0.1", 0));
         jira.extraTools(BULK_TOOLS);
+        jira.updateTool(true);
         jira.start();
         broker.grant("ha-pat", 60);
 
@@ -276,17 +277,48 @@ class HighAvailabilityTest {
 
         assertThat(post(b, token, "/mcp?access=write", "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/list\"}", headers).statusCode())
                 .as("another filter on the other instance").isEqualTo(404);
-        HttpResponse<String> foreign = post(b, token(UUID.randomUUID().toString()), "/mcp?access=read",
-                "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/list\",\"params\":{\"cursor\":\"" + cursor + "\"}}",
-                Map.of("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/list"));
-        assertThat(foreign.statusCode()).as("a cursor of another user").isIn(400, 200);
-        if (foreign.statusCode() == 200) {
-            assertThat(JSON.readTree(foreign.body()).path("error").path("code").asInt()).isEqualTo(-32602);
+
+        // The cursor over the stateless protocol, from one instance to the other: the same user and filter go on, nothing else does.
+        String cursorParams = "{\"cursor\":\"" + cursor + "\"}";
+        for (GatewayProcess instance : new GatewayProcess[] {a, b}) {
+            HttpResponse<String> next = modern(instance, token, "/mcp?access=read", "tools/list", null, cursorParams);
+            assertThat(next.statusCode()).isEqualTo(200);
+            assertThat(JSON.readTree(next.body()).path("result").path("tools").size()).isEqualTo(22);
+            HttpResponse<String> otherUser = modern(instance, token(UUID.randomUUID().toString()), "/mcp?access=read", "tools/list", null, cursorParams);
+            assertThat(otherUser.statusCode()).as("a cursor of another user").isEqualTo(400);
+            assertThat(JSON.readTree(otherUser.body()).path("error").path("code").asInt()).isEqualTo(-32602);
+            HttpResponse<String> otherFilter = modern(instance, token, "/mcp?access=write", "tools/list", null, cursorParams);
+            assertThat(otherFilter.statusCode()).as("a cursor of another filter").isEqualTo(400);
+            assertThat(JSON.readTree(otherFilter.body()).path("error").path("code").asInt()).isEqualTo(-32602);
+            String tampered = cursor.substring(0, cursor.length() - 2) + (cursor.endsWith("AA") ? "BB" : "AA");
+            assertThat(modern(instance, token, "/mcp?access=read", "tools/list", null, "{\"cursor\":\"" + tampered + "\"}").statusCode())
+                    .isEqualTo(400);
         }
     }
 
     @Test
     @Order(3)
+    void aPurgeOnOneInstanceRemovesThePendingOperationForTheOther() throws Exception {
+        String sub = UUID.randomUUID().toString();
+        broker.enroll(sub, SECRET);
+        String token = token(sub);
+        long before = deletesAtTheServer();
+        assertThat(toolError(callTool(a, token, "jira__delete_issue", "{\"issueKey\":\"ABC-5\"}")).path("error").asString())
+                .isEqualTo("confirmation_required");
+
+        HttpRequest purge = HttpRequest.newBuilder(URI.create("https://localhost:" + b.internalPort() + "/admin/v1/users/" + sub + "/purge"))
+                .POST(HttpRequest.BodyPublishers.noBody()).build();
+        assertThat(HttpClient.newBuilder().sslContext(env.offboardingTls).build().send(purge, HttpResponse.BodyHandlers.ofString())
+                .statusCode()).isEqualTo(204);
+
+        String code = Totp.currentCode(SECRET, System.currentTimeMillis() / 1000);
+        JsonNode after = toolError(callTool(a, token, "jira__delete_issue", "{\"issueKey\":\"ABC-5\",\"confirmation_code\":\"" + code + "\"}"));
+        assertThat(after.path("error").asString()).as("the pending operation went with the purge, the code confirms nothing").isEqualTo("confirmation_failed");
+        assertThat(deletesAtTheServer()).isEqualTo(before);
+    }
+
+    @Test
+    @Order(4)
     void aLostRedisIsRefusedNotGuessed() throws Exception {
         String token = token(UUID.randomUUID().toString());
         assertThat(toolError(callTool(a, token, "jira__get_issue", "{\"issueKey\":\"ABC-1\"}")).has("error")).isFalse();
@@ -315,14 +347,26 @@ class HighAvailabilityTest {
     }
 
     @Test
-    @Order(4)
-    void killingOneInstanceInTheMiddleOfCallsCostsOnlyARetry() throws Exception {
+    @Order(5)
+    void killingOneInstanceInTheMiddleOfCallsCostsOnlyARetryAndASpentCodeStaysSpent() throws Exception {
         GatewayProcess[] balancer = {a, b};
         AtomicInteger turn = new AtomicInteger();
         AtomicInteger retries = new AtomicInteger();
         AtomicInteger done = new AtomicInteger();
         List<String> failures = java.util.Collections.synchronizedList(new ArrayList<>());
-        ExecutorService pool = Executors.newFixedThreadPool(6);
+        long updatesBefore = jira.requests().stream().filter(r -> "tools/call".equals(r.rpcMethod()) && "add_comment".equals(r.toolName())).count();
+
+        // The DESTRUCTIVE operation: one pending call, one code, four callers that retry it at once on both instances.
+        String sub = UUID.randomUUID().toString();
+        broker.enroll(sub, SECRET);
+        String destructiveToken = token(sub);
+        assertThat(toolError(callTool(b, destructiveToken, "jira__delete_issue", "{\"issueKey\":\"ABC-77\"}")).path("error").asString())
+                .isEqualTo("confirmation_required");
+        String code = Totp.currentCode(SECRET, System.currentTimeMillis() / 1000);
+        long deletesBefore = deletesAtTheServer();
+        AtomicInteger deleteSucceeded = new AtomicInteger();
+
+        ExecutorService pool = Executors.newFixedThreadPool(10);
         List<Future<?>> callers = new ArrayList<>();
         for (int caller = 0; caller < 6; caller++) {
             // One user per caller: the limits are shared by the instances, and 240 calls of one user would meet the limit of a tool.
@@ -335,7 +379,7 @@ class HighAvailabilityTest {
                         // A balancer that meets a dead node tries the other one.
                         GatewayProcess instance = balancer[Math.floorMod(start + attempt, 2)];
                         try {
-                            HttpResponse<String> response = callTool(instance, token, "jira__get_issue", "{\"issueKey\":\"ABC-1\"}");
+                            HttpResponse<String> response = callTool(instance, token, "jira__add_comment", "{\"issueKey\":\"ABC-1\"}");
                             if (response.statusCode() == 200 && !toolError(response).has("error")) {
                                 succeeded = true;
                             } else if (response.statusCode() >= 500 && !instance.alive()) {
@@ -360,6 +404,31 @@ class HighAvailabilityTest {
                 return null;
             }));
         }
+        for (int caller = 0; caller < 4; caller++) {
+            int offset = caller;
+            callers.add(pool.submit(() -> {
+                for (int attempt = 0; attempt < 6; attempt++) {
+                    try {
+                        HttpResponse<String> response = callTool(balancer[Math.floorMod(offset + attempt, 2)], destructiveToken,
+                                "jira__delete_issue", "{\"issueKey\":\"ABC-77\",\"confirmation_code\":\"" + code + "\"}");
+                        JsonNode error = toolError(response);
+                        if (response.statusCode() == 200 && !error.has("error")) {
+                            deleteSucceeded.incrementAndGet();
+                            return null;
+                        }
+                        if ("confirmation_failed".equals(error.path("error").asString())) {
+                            return null;
+                        }
+                    } catch (IOException e) {
+                        retries.incrementAndGet();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return null;
+                    }
+                }
+                return null;
+            }));
+        }
         await().atMost(Duration.ofSeconds(30)).until(() -> done.get() >= 30);
         a.kill();
         for (Future<?> caller : callers) {
@@ -369,7 +438,15 @@ class HighAvailabilityTest {
         assertThat(failures).as("errors other than the retry of a connection to the dead instance").isEmpty();
         assertThat(done.get()).isEqualTo(6 * 40);
         assertThat(a.alive()).isFalse();
-        assertThat(toolError(callTool(b, token(UUID.randomUUID().toString()), "jira__get_issue", "{\"issueKey\":\"ABC-1\"}")).has("error")).isFalse();
         assertThat(retries.get()).as("the dead instance was met at least once").isPositive();
+
+        long updates = jira.requests().stream().filter(r -> "tools/call".equals(r.rpcMethod()) && "add_comment".equals(r.toolName())).count()
+                - updatesBefore;
+        assertThat(updates).as("an UPDATE is at-least-once: every call ran, a call retried after the kill may have run twice")
+                .isGreaterThanOrEqualTo(done.get()).isLessThanOrEqualTo(done.get() + retries.get());
+        assertThat(deletesAtTheServer() - deletesBefore).as("a code is spent once, whatever instance and however many retries").isEqualTo(1);
+        assertThat(deleteSucceeded.get()).isLessThanOrEqualTo(1);
+        assertThat(toolError(callTool(b, token(UUID.randomUUID().toString()), "jira__get_issue", "{\"issueKey\":\"ABC-1\"}")).has("error"))
+                .isFalse();
     }
 }

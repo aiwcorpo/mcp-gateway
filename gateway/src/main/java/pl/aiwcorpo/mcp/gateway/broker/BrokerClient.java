@@ -229,6 +229,12 @@ public class BrokerClient implements AuthenticatorPort {
             String value = node.path("value").asString(null);
             String type = node.path("type").asString(null);
             JsonNode ttl = node.path("cacheTtlSeconds");
+            if (type != null && !TYPES.contains(type) && SCHEMES.contains(scheme) && value != null && !value.isEmpty()) {
+                // A type outside the four is no type of any system's set (CC-166): the same refusal, but the audit cannot name a value
+                // that is not one of the four.
+                log.error("broker resolve rid={}: a credential type outside the contract", requestId);
+                return new Resolution.TypeMismatch(null);
+            }
             if (!SCHEMES.contains(scheme) || value == null || value.isEmpty() || !TYPES.contains(type) || !ttl.isInt()
                     || ttl.asInt() < 0 || ttl.asInt() > 60 || !VISIBLE_ASCII.matcher(value).matches()) {
                 log.error("broker resolve rid={}: 200 body outside C4", requestId);

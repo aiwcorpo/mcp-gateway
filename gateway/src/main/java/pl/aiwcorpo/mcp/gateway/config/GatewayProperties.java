@@ -24,7 +24,7 @@ public record GatewayProperties(
         @DefaultValue("0.1.0") String version,
         /*
          * Public base URL as clients see it (publicBaseUrl of C5, CC-089): RFC 9728 resource, WWW-Authenticate,
-         * MCP endpoint and portal links. Always configuration, never the Host of a request.
+         * MCP endpoint and portal addresses. Always configuration, never the Host of a request.
          */
         @NotNull URI publicUrl,
         @Valid @NotNull Oidc oidc,

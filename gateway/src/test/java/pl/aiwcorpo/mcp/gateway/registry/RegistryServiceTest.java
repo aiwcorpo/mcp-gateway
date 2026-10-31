@@ -365,6 +365,20 @@ class RegistryServiceTest extends GatewayTestBase {
     }
 
     @Test
+    void aHeldManifestOfTheDevEnvironmentDisablesTheServerAtAProductionStart() {
+        ObjectNode dev = Manifests.jira("1.4.0", Tool.readOnly("get_issue")).put("environment", "dev");
+        assertThat(service(servers, true).register(requestId, SERVER, dev, "ci")).isInstanceOf(Result.Accepted.class);
+
+        ServerRegistry restarted = registry("user-secret", Map.of());
+        service(restarted, false).load();
+
+        McpServer disabled = restarted.find(SERVER).orElseThrow();
+        assertThat(disabled.enabled()).as("a manifest of the dev environment is no manifest of production").isFalse();
+        assertThat(disabled.tools()).containsOnlyKeys("get_issue");
+        assertThat(store.tools(SERVER)).containsOnlyKeys("get_issue");
+    }
+
+    @Test
     void aStateAnotherInstanceWroteIsTakenWhenItIsLookedAtAgain() {
         register(Manifests.jira("1.4.0", Tool.readOnly("get_issue")));
         ServerRegistry otherServers = registry("user-secret", Map.of());

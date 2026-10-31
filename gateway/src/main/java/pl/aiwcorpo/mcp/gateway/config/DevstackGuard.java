@@ -74,6 +74,9 @@ public final class DevstackGuard {
         if (blank(p.mcp().listCursorKey())) {
             used.add("gateway.mcp.list-cursor-key is empty (a key per process)");
         }
+        if (p.redis().waitReplicas() < 1) {
+            used.add("gateway.redis.wait-replicas is 0 (a burned code is not confirmed by a replica)");
+        }
         if (p.policy().stateDir() == null || p.policy().stateDir().isBlank()) {
             used.add("gateway.policy.state-dir is empty");
         }

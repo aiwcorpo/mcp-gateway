@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.system.CapturedOutput;
 
 import io.lettuce.core.RedisClient;
+import pl.aiwcorpo.mcp.gateway.broker.CredentialCache;
 import io.lettuce.core.RedisURI;
 import io.lettuce.core.api.StatefulRedisConnection;
 import pl.aiwcorpo.mcp.gateway.support.Contracts;
@@ -422,5 +423,26 @@ class ConfirmationFlowTest extends GatewayTestBase {
         } finally {
             client.shutdown();
         }
+    }
+
+    @Test
+    void theCredentialOfACallWithoutACodeIsNeverCachedAndTheCallWithTheCodeResolvesUnderItsOwnRequestId() throws Exception {
+        Person p = enrolled();
+        credentialCache.clear();
+        long before = resolveCount();
+        CredentialCache.Key key = new CredentialCache.Key(p.sub(), "jira", List.of());
+
+        HttpResponse<String> first = delete(p, "ABC-31", null);
+        assertThat(error(first).path("error").asString()).isEqualTo("confirmation_required");
+        assertThat(delete(p, "ABC-31", null).statusCode()).isEqualTo(200);
+        assertThat(resolveCount()).as("each call without a code asks the broker, as CC-178 orders the account check first").isEqualTo(before + 2);
+        assertThat(credentialCache.get(key)).as("nothing stored for a call that does not use the credential").isNull();
+
+        HttpResponse<String> confirmed = delete(p, "ABC-31", code());
+        assertThat(error(confirmed).has("error")).as(confirmed.body()).isFalse();
+        String confirmedId = confirmed.headers().firstValue("X-Request-Id").orElseThrow();
+        assertThat(env.broker.received()).as("the call with the code has its own credential_resolve")
+                .anyMatch(r -> r.path().equals("/v1/credentials/resolve") && confirmedId.equals(r.requestId()));
+        assertThat(credentialCache.get(key)).as("a call that used the credential may cache it").isNotNull();
     }
 }

@@ -29,6 +29,15 @@ public class CredentialService {
     }
 
     public Resolution resolve(GatewayUser user, String system, CredentialPolicy policy, String tool, String requestId) {
+        return resolve(user, system, policy, tool, requestId, true);
+    }
+
+    /**
+     * @param keepInCache false for a call that will not use the credential (the first call of a DESTRUCTIVE tool, which only creates
+     *                    the pending confirmation): its result is not stored, the call with the code resolves again under its own requestId
+     */
+    public Resolution resolve(GatewayUser user, String system, CredentialPolicy policy, String tool, String requestId,
+                              boolean keepInCache) {
         List<String> scopes = policy.scopes().stream().sorted().toList();
         CredentialCache.Key key = new CredentialCache.Key(user.sub(), system, scopes);
         boolean cacheUsable = invalidationsLive.getAsBoolean();
@@ -56,7 +65,7 @@ public class CredentialService {
             if (!policy.acceptedTypes().contains(granted.credential().type())) {
                 return record(new Resolution.TypeMismatch(granted.credential().type()));
             }
-            if (cacheUsable && granted.credential().cacheTtlSeconds() > 0) {
+            if (keepInCache && cacheUsable && granted.credential().cacheTtlSeconds() > 0) {
                 cache.put(key, granted.credential(), generation);
             }
         }

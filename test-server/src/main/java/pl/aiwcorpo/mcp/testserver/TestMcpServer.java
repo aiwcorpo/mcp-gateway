@@ -180,6 +180,7 @@ public final class TestMcpServer implements AutoCloseable {
     private volatile boolean toolListFails;
     private volatile long toolListDelayMillis;
     private volatile int extraTools;
+    private volatile boolean updateTool;
     private volatile String reportedVersion = "0.1.0";
 
     /** From now on {@code tools/list} leaves this tool out: a server that dropped it. */
@@ -197,6 +198,11 @@ public final class TestMcpServer implements AutoCloseable {
     /** {@code tools/list} answers after this many milliseconds: a server that is slow. */
     public void slowToolList(long millis) {
         toolListDelayMillis = millis;
+    }
+
+    /** Serves the UPDATE tool {@code add_comment}, which only answers: tests count its executions in {@link #requests()}. */
+    public void updateTool(boolean enabled) {
+        updateTool = enabled;
     }
 
     /** Serves {@code count} more READ_ONLY tools named {@code bulk_tool_NNN}, in the list and in the manifest: a long list to page. */
@@ -244,10 +250,11 @@ public final class TestMcpServer implements AutoCloseable {
         for (JsonNode definition : toolDefinitions(Map.of())) {
             String name = definition.path("name").asString();
             boolean destructive = "delete_issue".equals(name);
+            boolean update = "add_comment".equals(name);
             ObjectNode entry = tools.addObject();
             entry.put("name", name);
-            entry.put("risk", destructive ? "DESTRUCTIVE" : "READ_ONLY");
-            entry.put("action", destructive ? "delete" : "read");
+            entry.put("risk", destructive ? "DESTRUCTIVE" : update ? "UPDATE" : "READ_ONLY");
+            entry.put("action", destructive ? "delete" : update ? "update" : "read");
             entry.putArray("resourceRefs").addObject().put("argument", "search_issues".equals(name) ? "project" : "issueKey")
                     .put("type", "search_issues".equals(name) ? "Jira::Project" : "Jira::Issue");
             entry.set("definition", definition);
@@ -431,6 +438,11 @@ public final class TestMcpServer implements AutoCloseable {
                     return out;
                 });
             }
+            case "add_comment" -> {
+                ObjectNode out = JSON.createObjectNode();
+                out.put("commented", arguments.path("issueKey").asString(""));
+                yield toolResult(out, false);
+            }
             case "delete_issue" -> {
                 String key = arguments.path("issueKey").asString("");
                 if (arguments.has("confirmation_code")) {
@@ -484,6 +496,9 @@ public final class TestMcpServer implements AutoCloseable {
                 "project", "Project key, e.g. ABC.", true));
         tools.add(tool("delete_issue", "Delete issue", overrides.getOrDefault("delete_issue", "Deletes one Jira issue."),
                 "issueKey", "Issue key, e.g. ABC-123.", false));
+        if (updateTool) {
+            tools.add(tool("add_comment", "Add comment", "Adds a comment to a Jira issue.", "issueKey", "Issue key, e.g. ABC-123.", false));
+        }
         for (int i = 1; i <= extraTools; i++) {
             tools.add(tool(String.format("bulk_tool_%03d", i), "Bulk tool", "One of many tools that only fill a long list.",
                     "issueKey", "Issue key, e.g. ABC-123.", true));

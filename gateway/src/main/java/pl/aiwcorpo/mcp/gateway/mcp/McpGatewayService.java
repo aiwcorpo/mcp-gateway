@@ -51,9 +51,9 @@ import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * tools/list and tools/call through the gateway: names {@code <system>__<tool>} towards the client (C5), the
- * static tool list, the link (when the client came through one) and the authorizer as the filter, the broker
- * credential, then the server. A link only narrows: a tool is visible and callable only when the link names it
+ * tools/list and tools/call through the gateway: names {@code <system>__<tool>} towards the client (C5), the approved
+ * tools of the servers, the endpoint (route and filter of its query) and the authorizer as the filter, the broker
+ * credential, then the server. The filter only narrows: a tool is visible and callable only when the endpoint leaves it
  * and the authorizer allows it for the caller. Every tools/call leaves one {@code policy_decision} and one
  * {@code tool_call} event (C8).
  */
@@ -132,6 +132,10 @@ public class McpGatewayService {
      */
     public void auditRefusedRequest(GatewayUser user, String requestId, String clientRequestId, String reason, String outcome,
                                     String canonicalFilter) {
+        // An authenticated client can repeat a refused request as fast as it likes: one event per user and reason in an interval.
+        if (!rateLimitAudit.due(user.sub(), reason)) {
+            return;
+        }
         audit.emit(AuditEvent.of("policy_decision", requestId, componentId).clientRequestId(clientRequestId).user(user)
                 .filter(canonicalFilter).decision("deny", reason).policyRevision(authorizer.policyRevision()).outcome(outcome));
     }
@@ -356,6 +360,7 @@ public class McpGatewayService {
 
     /** What the checks of the call learned on the way, kept for the events. */
     private static final class CallState {
+        boolean keepCredential = true;
         Verdict definition;
         Resolution resolution;
     }
@@ -371,17 +376,25 @@ public class McpGatewayService {
         String clientName = params.path("name").asString(null);
         JsonNode arguments = params.has("arguments") ? params.get("arguments") : json.createObjectNode();
         if (clientName == null || !arguments.isObject()) {
-            finish(ctx, ctx.target().server(), null, null, started, 0, "allow", null, "invalid_argument", null);
+            if (rateLimitAudit.due(ctx.user().sub(), "invalid_call")) {
+                finish(ctx, ctx.target().server(), null, null, started, 0, "allow", null, "invalid_argument", null);
+            }
             throw new RpcFailure(-32602, "tools/call needs a string name and object arguments.", 400);
         }
         int argsLength = json.writeValueAsString(arguments).getBytes(StandardCharsets.UTF_8).length;
         Optional<ServerRegistry.Resolved> resolved = registry.resolveForCall(clientName);
-        Optional<RateLimiter.Limited> limited = rateLimiter.check(ctx.user().sub(), ctx.user().client(),
-                resolved.map(r -> r.server().qualifiedName(r.tool())).orElse(null), resolved.map(r -> r.tool().risk()).orElse(null));
-        if (limited.isPresent()) {
-            return rateLimitedCall(ctx, resolved, limited.get(), started, argsLength);
-        }
         McpServer addressed = ctx.target().server();
+        // What the user may not call is decided before anything is counted for the tool: a limit of the tool that answers differently for
+        // a tool that exists and one that does not would tell the user which is which (invariant 8).
+        ToolDecision toolLevel = resolved.isEmpty() ? null
+                : authorizer.toolLevel(ctx.user(), resolved.get().server(), resolved.get().tool());
+        boolean mayCall = toolLevel != null && toolLevel.allowed();
+        Optional<RateLimiter.Limited> limited = rateLimiter.check(ctx.user().sub(), ctx.user().client(),
+                mayCall ? resolved.get().server().qualifiedName(resolved.get().tool()) : null,
+                mayCall ? resolved.get().tool().risk() : null);
+        if (limited.isPresent()) {
+            return rateLimitedCall(ctx, mayCall ? resolved : Optional.empty(), limited.get(), started, argsLength);
+        }
         if (resolved.isEmpty()) {
             decisionEvent(ctx, addressed, null, "deny", "not_granted", "not_found_or_denied");
             return finish(ctx, addressed, null, null, started, argsLength, "deny", "not_granted", null,
@@ -389,8 +402,18 @@ public class McpGatewayService {
         }
         McpServer server = resolved.get().server();
         ToolDefinition tool = resolved.get().tool();
+        if (!mayCall && ("policy_unavailable".equals(toolLevel.reason()) || "policy_error".equals(toolLevel.reason()))) {
+            // Undecided is not denied: the client is told the service failed, and the audit says why.
+            boolean unavailable = "policy_unavailable".equals(toolLevel.reason());
+            String code = unavailable ? "upstream_unavailable" : "internal_error";
+            decisionEvent(ctx, server, tool, "deny", toolLevel.reason(), code);
+            return finish(ctx, server, tool, null, started, argsLength, "deny", toolLevel.reason(), null,
+                    unavailable ? errors.error("upstream_unavailable", "The policy service is unavailable. Try again later.")
+                            : errors.error("internal_error", "The call could not be completed."));
+        }
         CallState state = new CallState();
-        CallOrder.Verdict verdict = CallOrder.decide(authorizer.mayCall(ctx.user(), server, tool), throughEndpoint(ctx, server, tool),
+        state.keepCredential = !tool.requiresConfirmation() || arguments.has("confirmation_code");
+        CallOrder.Verdict verdict = CallOrder.decide(mayCall, throughEndpoint(ctx, server, tool),
                 () -> server.enabled() && !tool.disabled(),
                 () -> readDefinitions(ctx, server, tool, state),
                 () -> state.definition == null || state.definition == Verdict.INTACT,
@@ -493,7 +516,8 @@ public class McpGatewayService {
         if (!server.credential().required()) {
             return true;
         }
-        state.resolution = credentials.resolve(ctx.user(), server.system(), server.credential(), tool.name(), ctx.requestId());
+        state.resolution = credentials.resolve(ctx.user(), server.system(), server.credential(), tool.name(), ctx.requestId(),
+                state.keepCredential);
         return !(state.resolution instanceof Resolution.Required);
     }
 
@@ -745,7 +769,7 @@ public class McpGatewayService {
 
     /**
      * Audits and counts the call. {@code result} null means a JSON-RPC error follows ({@code forcedErrorCode}).
-     * {@code server} is null only for a tool outside the configuration called through a link.
+     * {@code server} is null only for a tool outside the configuration called on {@code /mcp}.
      */
     private ObjectNode finish(CallContext ctx, McpServer server, ToolDefinition tool, Credential credential,
                               long startedNanos, int argsLength, String decision, String reason, String forcedErrorCode,

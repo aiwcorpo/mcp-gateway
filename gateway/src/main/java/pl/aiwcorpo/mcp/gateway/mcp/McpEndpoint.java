@@ -8,6 +8,7 @@ import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -90,6 +91,15 @@ public class McpEndpoint {
 
     private ResponseEntity<String> post(Optional<Target> addressed, Jwt token, HttpServletRequest request) throws IOException {
         String requestId = UuidV7.next();
+        try {
+            return post(addressed, token, request, requestId);
+        } catch (DataAccessException failure) {
+            return stateStoreUnavailable(GatewayUser.from(token), requestId, request.getHeader("X-Request-Id"), failure);
+        }
+    }
+
+    private ResponseEntity<String> post(Optional<Target> addressed, Jwt token, HttpServletRequest request, String requestId)
+            throws IOException {
         GatewayUser user = GatewayUser.from(token);
         if (addressed.isEmpty()) {
             return plain(HttpStatus.NOT_FOUND, requestId);
@@ -153,10 +163,11 @@ public class McpEndpoint {
     /** No stream of the server (CC-179): {@code GET} is 405 on both routes, for legacy and modern clients alike. */
     @GetMapping({"/mcp", "/s/{serverId}/mcp"})
     public ResponseEntity<String> get(HttpServletRequest request) {
+        String requestId = UuidV7.next();
         if (!originAllowed(request)) {
-            return plain(HttpStatus.FORBIDDEN, UuidV7.next());
+            return plain(HttpStatus.FORBIDDEN, requestId);
         }
-        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).header(HttpHeaders.ALLOW, "POST, DELETE")
+        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).header(HttpHeaders.ALLOW, "POST, DELETE").header("X-Request-Id", requestId)
                 .contentType(MediaType.APPLICATION_JSON).body(JsonErrorController.body(405));
     }
 
@@ -173,6 +184,14 @@ public class McpEndpoint {
 
     private ResponseEntity<String> delete(Optional<Target> addressed, Jwt token, HttpServletRequest request) {
         String requestId = UuidV7.next();
+        try {
+            return delete(addressed, token, request, requestId);
+        } catch (DataAccessException failure) {
+            return stateStoreUnavailable(GatewayUser.from(token), requestId, request.getHeader("X-Request-Id"), failure);
+        }
+    }
+
+    private ResponseEntity<String> delete(Optional<Target> addressed, Jwt token, HttpServletRequest request, String requestId) {
         String sessionId = request.getHeader("Mcp-Session-Id");
         GatewayUser user = GatewayUser.from(token);
         if (addressed.isEmpty()) {
@@ -204,13 +223,14 @@ public class McpEndpoint {
         return plain(HttpStatus.NO_CONTENT, requestId);
     }
 
-    /** Redis holds the sessions: when it does not answer nothing is guessed, the request is refused (fail-closed). */
-    @org.springframework.web.bind.annotation.ExceptionHandler(org.springframework.dao.DataAccessException.class)
-    public ResponseEntity<String> stateStoreUnavailable(org.springframework.dao.DataAccessException failure) {
-        log.error("session store unavailable: {}", failure.getClass().getName());
+    /** Redis holds the sessions: when it does not answer nothing is guessed, the request is refused (fail-closed) and the refusal is audited. */
+    private ResponseEntity<String> stateStoreUnavailable(GatewayUser user, String requestId, String clientRequestId,
+                                                         org.springframework.dao.DataAccessException failure) {
+        log.error("session store unavailable rid={}: {}", requestId, failure.getClass().getName());
         meters.counter("mcp.gateway.requests.store_unavailable").increment();
+        service.auditRefusedRequest(user, requestId, clientRequestId, "upstream_unavailable", "error", null);
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).header(HttpHeaders.RETRY_AFTER, "5")
-                .header("X-Request-Id", UuidV7.next()).contentType(MediaType.APPLICATION_JSON)
+                .header("X-Request-Id", requestId).contentType(MediaType.APPLICATION_JSON)
                 .body("{\"error\":\"upstream_unavailable\",\"message\":\"The session store is temporarily unavailable. Try again in a few seconds.\"}");
     }
 

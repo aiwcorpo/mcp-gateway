@@ -55,8 +55,8 @@ public final class CedarToolAuthorizer implements ToolAuthorizer {
     }
 
     @Override
-    public boolean mayCall(GatewayUser user, McpServer server, ToolDefinition tool) {
-        return evaluate(user, server, tool, null).decision().allowed();
+    public ToolDecision toolLevel(GatewayUser user, McpServer server, ToolDefinition tool) {
+        return evaluate(user, server, tool, null).decision();
     }
 
     private Evaluation evaluate(GatewayUser user, McpServer server, ToolDefinition tool, JsonNode arguments) {

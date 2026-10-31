@@ -40,6 +40,7 @@ class DevstackGuardTest {
         m.put("gateway.internal-jwt.keys-file", "/keys/internal-jwt.jwks");
         m.put("gateway.activity.cursor-key", "a-key-shared-by-every-instance");
         m.put("gateway.mcp.list-cursor-key", "another-key-shared-by-every-instance");
+        m.put("gateway.redis.wait-replicas", "1");
         m.put("gateway.internal-endpoint.port", "8443");
         m.put("gateway.admin.audience", "mcp-gateway-admin");
         m.put("gateway.sessions.client-idle-timeout", "1h");
@@ -156,7 +157,8 @@ class DevstackGuardTest {
 
     @Test
     void keysThatAreGeneratedPerProcessAreRefusedOutsideTheDevstackBecauseASecondInstanceCouldNotUseThem() {
-        for (String key : List.of("gateway.internal-jwt.keys-file", "gateway.activity.cursor-key", "gateway.mcp.list-cursor-key")) {
+        for (String key : List.of("gateway.internal-jwt.keys-file", "gateway.activity.cursor-key", "gateway.mcp.list-cursor-key",
+                "gateway.redis.wait-replicas")) {
             Map<String, String> values = production();
             values.remove(key);
             assertThat(DevstackGuard.relaxations(bind(values))).as(key).hasSize(1).first().asString().contains(key);

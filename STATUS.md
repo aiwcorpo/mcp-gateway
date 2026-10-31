@@ -17,7 +17,7 @@ filtr to `EndpointFilter` z kontraktów.
 ```
 ./mvnw -B install
 test-server: 105 testów
-gateway:     670 testów (z 534 w M4); nowe: EndpointVectorsTest 147 (wektory endpoint-filter i endpoint-aggregate), AggregateEndpointTest 11,
+gateway:     675 testów (z 534 w M4); nowe: EndpointVectorsTest 147 (wektory endpoint-filter i endpoint-aggregate), AggregateEndpointTest 11,
              HighAvailabilityTest 4 (dwa procesy), ReplicatedStoreTest 1 (WAIT), PolicyServiceTest +1, DevstackContextTest +1, DevstackGuardTest +1,
              CredentialOutcomesTest +1, ConfirmationStateSizeTest +1; GatewayAuthenticationVectorsTest 18 (z 16)
 ci/self-test.sh: 8 sprawdzeń
@@ -40,7 +40,8 @@ Wektory 5.1.0 dla gateway'a: `endpoint-filter/` (parse, route, apply, call, call
   Nie ma go w katalogu ani na listach.
 - **Wywołanie narzędzia z innego systemu na `/s/<serverId>/mcp`** liczy trasę jak filtr: `not_found_or_denied`, powód `filter_scope` (gdy użytkownik ma prawo) albo `not_granted`.
 - **Filtr w zdarzeniu `rate_limited`** (`limitRequest`) niesie `filter`; reszta kodu limitów bez zmian.
-- **Audyt odmów bez limitu:** `invalid_filter`, `filter_mismatch` i `invalid_cursor` nie są ograniczane (jedno zdarzenie na żądanie uwierzytelnionego użytkownika).
+- **Audyt odmów żądania** (`invalid_filter`, `filter_mismatch`, `invalid_cursor`, zły `tools/call`) idzie przez `RateLimitAuditThrottle`: jedno zdarzenie na użytkownika i powód w odstępie.
+- **Po przeglądzie Opus:** limit narzędzia po `mayCall` (nie ma wyroczni istnienia); decyzja polityki trójstanowa (`policy_unavailable` i `policy_error` to nie `not_found_or_denied`); poświadczenie wywołania bez kodu nie trafia do cache; `WAIT` na osobnym połączeniu, `MCP_REDIS_WAIT_REPLICAS` >= 1 wymagane poza dev; per moduł testy nieopuszczone i podłoga dla gateway'a w `ci/run.sh`; typ poświadczenia spoza czterech to `credential_type_mismatch` w audycie; `X-Request-Id` na 405 i spójny `requestId` w 503 sklepu sesji; `deleteUser` z `WAIT`.
 - **Format stanu potwierdzeń w Redisie zachowany:** rekord `PendingCall` zmienił pole `virtualServer` na `filter`; stare pole jest ignorowane przy odczycie (test `ConfirmationStateSizeTest`).
   Sesje klientów z 4.x są nieznane (CC-188). Migracja `V7` usuwa tabelę `virtual_servers` (test w `AggregateEndpointTest`).
 - **Plik kluczy C2 od ws-01** (JWKS z prywatnymi kluczami P-256, `kid` `stack-c2-1` i `stack-c2-2`): gateway czyta go tak, jak `SigningKeys.read` (każdy klucz prywatny P-256 z `kid`); aktywny to
@@ -606,4 +607,4 @@ Przegląd bez kontekstu: 0 CRITICAL, 0 HIGH, 4 MEDIUM, 13 LOW, wszystkie bez zmi
 | LOW-11 README o 5xx brokera, brak testów ścieżek `internal_error` | poprawione: README zgodne z kodem (każde 5xx -> `upstream_unavailable`); test 401 i 200 bez `value` -> `internal_error` bez `tools/call` |
 | LOW-12 wyciek połączeń pub/sub, trwałe wyłączenie cache po wyjątku | poprawione: połączenie zamykane po nieudanej subskrypcji; po wyjątku bez rozłączenia ponowna subskrypcja przywraca `live` |
 | LOW-13 testy limitu 1 MiB, wzorzec `prv`, `tool` na `mcp-jira` | poprawione: test 413, `policy-revision` sprawdzany wzorcem przy starcie; test `tool` na prawdziwym `mcp-jira` należy do ws-10/ws-04 |
-M5: osiągnięty (2026-10-31) - kontrakty 5.1.0, /mcp z filtrem, HA dwóch instancji, ci/run.sh; obraz mcp-gateway:m5-2f3c4a4
+
