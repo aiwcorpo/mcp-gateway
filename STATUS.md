@@ -1,5 +1,68 @@
 # Status ws-05 (mcp-gateway)
 
+Kamień: **M5** (fala z 2026-10-31) na kontraktach `mcp-contracts` **5.1.0**, kod na gałęzi `main`. Pod spodem M4 i starsze (sekcje niżej, wiersze
+zastąpione w M5 są oznaczone). PoC `poc/mcp-query` był materiałem: klasa `ToolFilter`, trasa `/f/` i `access=write` jako READ_ONLY+UPDATE nie weszły,
+filtr to `EndpointFilter` z kontraktów.
+
+## M5: zakres z zadania
+
+| Punkt | Stan |
+| --- | --- |
+| A. Kontrakty 5.1.0 | `/mcp` i `/s/<serverId>/mcp` z filtrem (surowe `getQueryString()`, `EndpointFilter`); V2 (zasób `/mcp` bez query, `aud = mcp-gateway`); kolejność `tools/call` wg CC-178 (`CallOrder`); `listChanged: false`, `GET` 405 (CC-179); limit odczytu `MCP_TOOLS_LIST_TIMEOUT` i równoległy odczyt (CC-180); strony po 100 i kursor HMAC (CC-181); kolejność kontroli sesji i wiązanie z trasą i filtrem w Redisie (CC-184); sesje 4.x nieznane i mapowanie `link_scope` przy odczycie (CC-188); usunięte linki: tabela (`V7`), API C5, `vs`/`vsc`, część "linki" w `purge`, `/v/` = 404 bez audytu (filtr serwletowy przed łańcuchem bezpieczeństwa); audyt `filter`, `filter_scope`, `invalid_filter`, `filter_mismatch`, `invalid_cursor`; mapy w `ActivityAggregator` i `ActivityService` |
+| B. HA | wspólne klucze C2 (plik JWKS), klucze kursora `/activity/calls` i `tools/list`: poza `devstack` wymagane (start odmawia); `WAIT` przy stanie potwierdzeń (`MCP_REDIS_WAIT_REPLICAS`, test na masterze z repliką); `/app/state` jest per instancja i ma blokadę pliku (drugi proces na tym katalogu nie wstaje); sesje i wiązanie filtra w Redisie; utrata Redisa to odmowa (503 / `upstream_unavailable`) |
+| E. Braki DoD | CC-166: atrapa brokera z typem spoza czterech (`UNKNOWN_TYPE`) daje `internal_error`, bez użycia i cache; trzymany manifest przy starcie (`enabled: false`) i `environment_mismatch` miały testy jednostkowe (patrz "Niezrobione"); klucz `dev-` w starcie produkcyjnym (`DevstackContextTest`); `ci/run.sh` z self-testem, nakładki GitLab, Jenkins, GitHub. Kod `rate_limited` nietknięty |
+
+## Testy
+
+```
+./mvnw -B install
+test-server: 105 testów
+gateway:     670 testów (z 534 w M4); nowe: EndpointVectorsTest 147 (wektory endpoint-filter i endpoint-aggregate), AggregateEndpointTest 11,
+             HighAvailabilityTest 4 (dwa procesy), ReplicatedStoreTest 1 (WAIT), PolicyServiceTest +1, DevstackContextTest +1, DevstackGuardTest +1,
+             CredentialOutcomesTest +1, ConfirmationStateSizeTest +1; GatewayAuthenticationVectorsTest 18 (z 16)
+ci/self-test.sh: 8 sprawdzeń
+```
+
+Wektory 5.1.0 dla gateway'a: `endpoint-filter/` (parse, route, apply, call, call-state, session, session-order uruchamiane w Javie; error-response w `AggregateEndpointTest`),
+`endpoint-aggregate/` (list, availability, page, cursor, routing; `list-changed-*` to M6), `oauth-metadata/` i `legacy-link-route-gone` po HTTP, `gateway-authentication/rejected-on-aggregate-endpoint*`.
+`mcp-endpoint/` to wektory BFF.
+
+## Decyzje i odstępstwa M5
+
+- **Zakaz Cedar na poziomie narzędzia to `not_found_or_denied` z powodem `not_granted`** (CC-178, krok 1: `mayCall`), także gdy powodem jest `forbid` z paczki `overrides`. Wcześniej
+  `access_denied` z `requiredEntitlements` i powód `policy_forbid`; `access_denied` zostaje dla odmowy z argumentami (zasób) i dla `exchange_denied`. SIEM traci rozróżnienie awaryjnego
+  `forbid` od braku grupy (propozycja CC 1).
+- **Poświadczenie jest pobierane przed potwierdzeniem `DESTRUCTIVE`** (CC-178 stawia `credential_required` przed decyzją z argumentami i bramką). Pierwsze wywołanie bez kodu
+  woła więc brokera, ale poświadczenie nie jest używane. Zmienia decyzję M3 "żadne poświadczenie dla niepotwierdzonego wywołania".
+- **Serwer, którego odczyt `tools/list` się nie udał, jest pominięty na liście** (CC-180); nie ma już "ostatniego odczytu" (M4). Na `/s/<serverId>/mcp` lista jest wtedy pusta, nie błędem.
+  Wywołanie nadal daje `upstream_unavailable`.
+- **Narzędzie czekające na pierwsze zatwierdzenie** jest znane wywołaniu jako wyłączone (`ServerRegistry.resolveForCall`): użytkownik z uprawnieniem dostaje `tool_disabled`, nie `not_found_or_denied`.
+  Nie ma go w katalogu ani na listach.
+- **Wywołanie narzędzia z innego systemu na `/s/<serverId>/mcp`** liczy trasę jak filtr: `not_found_or_denied`, powód `filter_scope` (gdy użytkownik ma prawo) albo `not_granted`.
+- **Filtr w zdarzeniu `rate_limited`** (`limitRequest`) niesie `filter`; reszta kodu limitów bez zmian.
+- **Audyt odmów bez limitu:** `invalid_filter`, `filter_mismatch` i `invalid_cursor` nie są ograniczane (jedno zdarzenie na żądanie uwierzytelnionego użytkownika).
+- **Format stanu potwierdzeń w Redisie zachowany:** rekord `PendingCall` zmienił pole `virtualServer` na `filter`; stare pole jest ignorowane przy odczycie (test `ConfirmationStateSizeTest`).
+  Sesje klientów z 4.x są nieznane (CC-188). Migracja `V7` usuwa tabelę `virtual_servers` (test w `AggregateEndpointTest`).
+- **Plik kluczy C2 od ws-01** (JWKS z prywatnymi kluczami P-256, `kid` `stack-c2-1` i `stack-c2-2`): gateway czyta go tak, jak `SigningKeys.read` (każdy klucz prywatny P-256 z `kid`); aktywny to
+  `MCP_INTERNAL_JWT_ACTIVE_KID` (np. `stack-c2-1`). Ten sam format ma plik w `HighAvailabilityTest`. Nie sprawdzałem pliku ws-01 na żywo (nie czytam `.secrets`).
+- **Starter:** gateway nie zależy od startera `mcp-platform-starter`; beta 3.0.0-beta-10 nie wymaga zmian po tej stronie. Atrapy serwera i brokera to `test-server` tego repo.
+- **Tymczasowe w HA:** lock pliku w `/app/state` jest per proces; dwa kontenery z jednym wolumenem nie wstaną.
+
+## Niezrobione i uwagi
+
+- Restart z trzymanym manifestem jako test na prawdziwym starcie: zostaje test jednostkowy `RegistryServiceTest` (`enabled: false`, nic nie skasowane) i `environment_mismatch` w `ManifestValidator` bez trybu dev.
+- `GET /admin/v1/policy/status` zwraca rewizję jednej instancji (tej, która odpowiedziała); pełna lista instancji wymaga zmiany kontraktu albo zapytania do każdej instancji.
+- Obraz końcowy: patrz niżej.
+- Pomiar liczby tokenów listy `/mcp` dla zalecenia filtra (README kontraktów mówi o pomiarze M5) należy do `mcp-load-tests`.
+
+## Propozycje CC (M5, do ws-00)
+
+1. **Powód audytu dla `forbid` na poziomie narzędzia:** CC-178 każe `not_granted` także dla zakazu z paczki `overrides`; awaryjny zakaz nie różni się w SIEM od braku grupy. Dopuścić `policy_forbid` przy tym samym kodzie klienta.
+2. **Kolejność poświadczenia i potwierdzenia:** dopisać do README, że `credential_required` poprzedza bramkę `DESTRUCTIVE`, więc pierwsze wywołanie bez kodu pobiera poświadczenie.
+3. **`/admin/v1/policy/status` za load balancerem:** opisać, która instancja odpowiada, albo dodać parametr `instanceId`.
+4. **`WAIT` w ACL Redisa gateway'a:** dopisać `+wait` do listy poleceń w dokumentacji stosu (ws-01).
+
+
 Kamień: **M4** (fala z 2026-10-29) na kontraktach `mcp-contracts` **4.1.0**. Pod spodem M3 (od "Kamienie pośrednie M3" niżej),
 M2 i M1; wiersze zastąpione w M4 są oznaczone.
 
