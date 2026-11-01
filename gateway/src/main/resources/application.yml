@@ -108,6 +108,9 @@ gateway:
     per-tool: ${MCP_RATE_LIMIT_PER_TOOL:120}
     destructive-per-tool: ${MCP_RATE_LIMIT_DESTRUCTIVE_PER_TOOL:10}
     audit-interval: ${MCP_RATE_LIMIT_AUDIT_INTERVAL:10s}
+  audit:
+    # Live keys (user, reason, target) per user and reason in the audit of repeatable refusals; the interval is MCP_RATE_LIMIT_AUDIT_INTERVAL (CC-191).
+    throttle-max-targets-per-user: ${MCP_AUDIT_THROTTLE_MAX_TARGETS_PER_USER:50}
   mcp:
     # Milliseconds one server has for the read of its tools/list when a client lists tools (CC-180); a slower server is skipped.
     tools-list-timeout: ${MCP_TOOLS_LIST_TIMEOUT:3000}

@@ -23,6 +23,7 @@ import pl.aiwcorpo.mcp.gateway.authz.ToolAuthorizer;
 import pl.aiwcorpo.mcp.gateway.authz.ToolDecision;
 import pl.aiwcorpo.mcp.gateway.broker.CredentialService;
 import pl.aiwcorpo.mcp.gateway.confirm.ConfirmationService;
+import pl.aiwcorpo.mcp.gateway.ratelimit.EndpointAuditThrottle;
 import pl.aiwcorpo.mcp.gateway.ratelimit.RateLimitAuditThrottle;
 import pl.aiwcorpo.mcp.gateway.ratelimit.RateLimiter;
 import pl.aiwcorpo.mcp.gateway.registry.DefinitionGuard;
@@ -64,6 +65,7 @@ class UndecidedPolicyTest {
                 mock(UpstreamSessions.class), mock(CredentialService.class), authorizer, audit, new ToolErrors(JSON), JSON, meters,
                 "mcp-gateway", mock(ConfirmationService.class), mock(RegistryService.class), mock(DefinitionGuard.class), limiter,
                 new RateLimitAuditThrottle(Duration.ofSeconds(10), System::nanoTime, meters),
+                new EndpointAuditThrottle(Duration.ofSeconds(10), 50, System::currentTimeMillis, meters, audit, "mcp-gateway", () -> null),
                 new ToolsListCursor("0123456789abcdef".getBytes(), JSON), Duration.ofSeconds(3), Clock.systemUTC());
         GatewayUser user = new GatewayUser("sub-1", "alice", "claude-code", List.of("mcp-jira-read"), "token");
         CallContext ctx = new CallContext("01a19307-c3cb-77bb-8622-b2c6b6d53779", null, user, Target.aggregate(), EndpointFilter.none(),

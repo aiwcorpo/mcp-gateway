@@ -113,7 +113,7 @@ public class McpEndpoint {
         try {
             filter = filterOf(request, target);
         } catch (EndpointFilter.Invalid invalid) {
-            return invalidFilter(user, requestId, clientRequestId, invalid);
+            return invalidFilter(user, requestId, clientRequestId, invalid, request.getQueryString());
         }
         byte[] body = request.getInputStream().readNBytes(MAX_BODY + 1);
         if (body.length > MAX_BODY) {
@@ -206,7 +206,7 @@ public class McpEndpoint {
         try {
             filter = filterOf(request, target);
         } catch (EndpointFilter.Invalid invalid) {
-            return invalidFilter(user, requestId, clientRequestId, invalid);
+            return invalidFilter(user, requestId, clientRequestId, invalid, request.getQueryString());
         }
         if (sessionId == null) {
             return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).header(HttpHeaders.ALLOW, "POST")
@@ -228,7 +228,7 @@ public class McpEndpoint {
                                                          org.springframework.dao.DataAccessException failure) {
         log.error("session store unavailable rid={}: {}", requestId, failure.getClass().getName());
         meters.counter("mcp.gateway.requests.store_unavailable").increment();
-        service.auditRefusedRequest(user, requestId, clientRequestId, "upstream_unavailable", "error", null);
+        service.auditRefusedRequest(user, requestId, clientRequestId, "upstream_unavailable", "error", null, null);
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).header(HttpHeaders.RETRY_AFTER, "5")
                 .header("X-Request-Id", requestId).contentType(MediaType.APPLICATION_JSON)
                 .body("{\"error\":\"upstream_unavailable\",\"message\":\"The session store is temporarily unavailable. Try again in a few seconds.\"}");
@@ -242,9 +242,9 @@ public class McpEndpoint {
     }
 
     private ResponseEntity<String> invalidFilter(GatewayUser user, String requestId, String clientRequestId,
-                                                 EndpointFilter.Invalid invalid) {
+                                                 EndpointFilter.Invalid invalid, String rawQuery) {
         log.debug("rid={}: the query is not a filter ({})", requestId, invalid.cause());
-        service.auditRefusedRequest(user, requestId, clientRequestId, "invalid_filter", "error", null);
+        service.auditRefusedRequest(user, requestId, clientRequestId, "invalid_filter", "error", null, rawQuery);
         meters.counter("mcp.gateway.requests.invalid_filter").increment();
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).header("X-Request-Id", requestId)
                 .contentType(MediaType.APPLICATION_JSON).body(INVALID_FILTER_BODY);
@@ -256,7 +256,7 @@ public class McpEndpoint {
         SessionCheck.Result result = SessionCheck.check(user.sub(), target.route(), filter.canonical(), session);
         if (result == SessionCheck.Result.MISMATCH) {
             service.auditRefusedRequest(user, requestId, clientRequestId, "filter_mismatch", "denied",
-                    filter.isEmpty() ? null : filter.canonical());
+                    filter.isEmpty() ? null : filter.canonical(), target.route() + "?" + filter.canonical());
         }
         return result == SessionCheck.Result.CONTINUE ? null : plain(HttpStatus.NOT_FOUND, requestId);
     }

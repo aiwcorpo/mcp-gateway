@@ -61,6 +61,7 @@ import pl.aiwcorpo.mcp.gateway.jwt.InternalTokenIssuer;
 import pl.aiwcorpo.mcp.gateway.jwt.SigningKeys;
 import pl.aiwcorpo.mcp.gateway.mcp.ClientSessionStore;
 import pl.aiwcorpo.mcp.gateway.mcp.McpGatewayService;
+import pl.aiwcorpo.mcp.gateway.ratelimit.EndpointAuditThrottle;
 import pl.aiwcorpo.mcp.gateway.mcp.ToolsListCursor;
 import pl.aiwcorpo.mcp.gateway.mcp.ToolErrors;
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
@@ -329,6 +330,13 @@ public class GatewayConfiguration {
         return new ToolsListCursor(key, gatewayJson);
     }
 
+    /** One event per user, reason and target in an interval for the refusals a client can repeat (CC-190, CC-191). */
+    @Bean
+    EndpointAuditThrottle endpointAuditThrottle(GatewayProperties properties, MeterRegistry meters, AuditLog audit, ToolAuthorizer authorizer) {
+        return new EndpointAuditThrottle(properties.rateLimit().auditInterval(), properties.audit().throttleMaxTargetsPerUser(),
+                System::currentTimeMillis, meters, audit, properties.componentId(), authorizer::policyRevision);
+    }
+
     @Bean
     ActivityController activityController(ActivityService activity, ActivityCursor cursors, Clock clock, JsonMapper gatewayJson) {
         return new ActivityController(activity, cursors, clock, gatewayJson);
@@ -399,9 +407,9 @@ public class GatewayConfiguration {
                                         RegistryService registryService, DefinitionGuard definitionGuard,
                                         pl.aiwcorpo.mcp.gateway.ratelimit.RateLimiter rateLimiter,
                                         pl.aiwcorpo.mcp.gateway.ratelimit.RateLimitAuditThrottle rateLimitAudit,
-                                        ToolsListCursor listCursor, Clock clock) {
+                                        EndpointAuditThrottle endpointAudit, ToolsListCursor listCursor, Clock clock) {
         return new McpGatewayService(registry, urls, upstream, credentials, authorizer, audit, errors, gatewayJson, meters,
-                properties.componentId(), confirmations, registryService, definitionGuard, rateLimiter, rateLimitAudit, listCursor,
+                properties.componentId(), confirmations, registryService, definitionGuard, rateLimiter, rateLimitAudit, endpointAudit, listCursor,
                 properties.mcp().toolsListTimeout(), clock);
     }
 

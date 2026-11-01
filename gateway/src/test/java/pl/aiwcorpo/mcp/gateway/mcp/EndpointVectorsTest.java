@@ -202,7 +202,7 @@ class EndpointVectorsTest {
                 default -> { }
             }
         }
-        assertThat(kinds).containsExactly("availability", "cursor", "legacy-route", "list", "list-changed", "page", "routing");
+        assertThat(kinds).containsExactly("audit-throttle", "availability", "cursor", "legacy-route", "list", "list-changed", "page", "routing");
         return tests;
     }
 

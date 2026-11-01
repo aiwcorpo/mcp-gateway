@@ -1,6 +1,6 @@
 # Status ws-05 (mcp-gateway)
 
-Kamień: **M5** (fala z 2026-10-31) na kontraktach `mcp-contracts` **5.1.0**, kod na gałęzi `main`. Pod spodem M4 i starsze (sekcje niżej, wiersze
+Kamień: **M5** (fala z 2026-10-31) na kontraktach `mcp-contracts` **5.1.2**, kod na gałęzi `main`. Pod spodem M4 i starsze (sekcje niżej, wiersze
 zastąpione w M5 są oznaczone). PoC `poc/mcp-query` był materiałem: klasa `ToolFilter`, trasa `/f/` i `access=write` jako READ_ONLY+UPDATE nie weszły,
 filtr to `EndpointFilter` z kontraktów.
 
@@ -57,6 +57,8 @@ Wektory 5.1.0 dla gateway'a: `endpoint-filter/` (parse, route, apply, call, call
 - Pomiar liczby tokenów listy `/mcp` dla zalecenia filtra (README kontraktów mówi o pomiarze M5) należy do `mcp-load-tests`.
 
 ## Propozycje CC (M5, do ws-00)
+
+0. **Doprecyzowanie CC-191 (zaimplementowane tak w `EndpointAuditThrottle`):** limit kluczy liczony per (`sub`, powód), nie per `sub`, żeby tanie `invalid_filter` nie wyczerpywały budżetu odmów narzędzi; okno zamyka timer niezależnie od ruchu i kontrolowane zamknięcie zapisuje podsumowania otwartych okien; podsumowanie powinno nieść też liczbę różnych pominiętych celów, ale schemat 5.1.2 nie ma na to pola (`additionalProperties: false`), więc gateway wystawia ją tylko w metryce `mcp_audit_endpoint_summary_targets` (propozycja pola `suppressedTargets`). Skrót celu żyje w pamięci instancji, przy N instancjach okna są osobne.
 
 1. **Powód audytu dla `forbid` na poziomie narzędzia:** CC-178 każe `not_granted` także dla zakazu z paczki `overrides`; awaryjny zakaz nie różni się w SIEM od braku grupy. Dopuścić `policy_forbid` przy tym samym kodzie klienta.
 2. **Kolejność poświadczenia i potwierdzenia:** dopisać do README, że `credential_required` poprzedza bramkę `DESTRUCTIVE`, więc pierwsze wywołanie bez kodu pobiera poświadczenie.

@@ -153,6 +153,12 @@ public final class AuditEvent {
         return this;
     }
 
+    /** On the summary event of an audit throttle window: how many refusals of the reason were left out (CC-191). */
+    public AuditEvent suppressedCount(int value) {
+        fields.put("suppressedCount", Math.max(1, value));
+        return this;
+    }
+
     public AuditEvent argsLength(int value) {
         fields.put("argsLength", Math.max(0, value));
         return this;

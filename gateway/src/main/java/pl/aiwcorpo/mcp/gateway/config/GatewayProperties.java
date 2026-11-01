@@ -251,7 +251,9 @@ public record GatewayProperties(
             /* Per second and per reason, for missing_token and malformed. */
             @DefaultValue("20") @Min(1) int unauthenticatedPerSecond,
             /* One client_certificate_rejected event per source address in this time on the admin port. */
-            @DefaultValue("1m") Duration certificateRejectionInterval) {
+            @DefaultValue("1m") Duration certificateRejectionInterval,
+            /* Live keys (user, reason, target) of the audit of repeatable refusals per user and reason; further targets share one key (CC-191). */
+            @DefaultValue("50") @Min(1) int throttleMaxTargetsPerUser) {
     }
 
     /** Prometheus endpoint on the internal port: only client certificates with these names (empty = nobody). */

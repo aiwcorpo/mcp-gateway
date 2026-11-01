@@ -86,7 +86,7 @@ class AggregateEndpointTest extends GatewayTestBase {
 
     @Test
     void aCallOutsideTheFilterIsNotFoundWhateverTheStateOfTheTool(CapturedOutput output) throws Exception {
-        HttpResponse<String> call = sendModern(token(), "/mcp?access=write", "tools/call", "jira__get_issue",
+        HttpResponse<String> call = sendModern(tokenOf(java.util.UUID.randomUUID().toString()), "/mcp?access=write", "tools/call", "jira__get_issue",
                 "{\"name\":\"jira__get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
         assertThat(toolError(call).path("error").asString()).isEqualTo("not_found_or_denied");
         assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
@@ -150,21 +150,19 @@ class AggregateEndpointTest extends GatewayTestBase {
         assertThat(same.statusCode()).as("the same filter in another spelling").isEqualTo(200);
         assertThat(names(same)).contains("jira__get_issue").noneMatch(n -> n.startsWith("gitlab__"));
 
-        boolean first = true;
         for (String path : List.of("/mcp", "/mcp?systems=jira", "/mcp?systems=gitlab&access=read", "/s/mcp-jira/mcp?access=read")) {
             HttpResponse<String> other = send(token, path, listBody, headers);
             assertThat(other.statusCode()).as(path).isEqualTo(404);
             String rid = other.headers().firstValue("X-Request-Id").orElseThrow();
-            if (first) {
-                assertThat(auditEvents(output, rid)).as(path).singleElement().satisfies(e -> {
-                    assertThat(e.path("reason").asString()).isEqualTo("filter_mismatch");
-                    assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", e)).isEmpty();
-                });
-            } else {
-                assertThat(auditEvents(output, rid)).as(path + ": one event per user and reason in an interval").isEmpty();
-            }
-            first = false;
+            assertThat(auditEvents(output, rid)).as(path + ": another route or filter is another target").singleElement().satisfies(e -> {
+                assertThat(e.path("reason").asString()).isEqualTo("filter_mismatch");
+                assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", e)).isEmpty();
+            });
         }
+        HttpResponse<String> repeated = send(token, "/mcp", listBody, headers);
+        assertThat(repeated.statusCode()).isEqualTo(404);
+        assertThat(auditEvents(output, repeated.headers().firstValue("X-Request-Id").orElseThrow()))
+                .as("the same refusal again in the interval: one event per user, reason and target").isEmpty();
         assertThat(rawStatus("POST", "/mcp?systems=bad%zz", token, session)).as("syntax before the session").isEqualTo(400);
 
         HttpResponse<String> foreign = send(bobToken(), "/mcp?systems=gitlab", listBody, headers);
@@ -307,5 +305,22 @@ class AggregateEndpointTest extends GatewayTestBase {
     /** The answer without what differs per request (the id of the request is in a header, not in the body). */
     private static String normalized(HttpResponse<String> response) {
         return response.statusCode() + " " + response.body();
+    }
+
+    @Test
+    void aQueryOverTheLimitOfTheTransportIsA400OrA414WithoutAReason() throws Exception {
+        try (java.net.Socket socket = new java.net.Socket("localhost", port)) {
+            String body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}";
+            socket.getOutputStream().write(("POST /mcp?exclude=" + "a".repeat(20_000) + " HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer " + token()
+                    + "\r\nContent-Type: application/json\r\nContent-Length: " + body.length() + "\r\nConnection: close\r\n\r\n" + body)
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            String answer = new String(socket.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            int status = Integer.parseInt(answer.split(" ", 3)[1]);
+            assertThat(status).isIn(400, 414);
+            assertThat(answer.toLowerCase(java.util.Locale.ROOT)).doesNotContain("www-authenticate").doesNotContain("\"reason\"");
+            JsonNode json = JSON.readTree(answer.substring(answer.indexOf("\r\n\r\n") + 4));
+            assertThat(json.path("error").asString()).isEqualTo("invalid_request");
+            assertThat(Contracts.schemaErrors("schemas/common.schema.json#/$defs/TransportLimitError", json)).isEmpty();
+        }
     }
 }

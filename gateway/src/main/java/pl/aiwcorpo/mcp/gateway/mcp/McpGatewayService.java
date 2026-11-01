@@ -34,6 +34,7 @@ import pl.aiwcorpo.mcp.gateway.confirm.ConfirmationService;
 import pl.aiwcorpo.mcp.gateway.confirm.OperationDescription;
 import pl.aiwcorpo.mcp.gateway.confirm.PendingCall;
 import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
+import pl.aiwcorpo.mcp.gateway.ratelimit.EndpointAuditThrottle;
 import pl.aiwcorpo.mcp.gateway.ratelimit.RateLimitAuditThrottle;
 import pl.aiwcorpo.mcp.gateway.ratelimit.RateLimiter;
 import pl.aiwcorpo.mcp.gateway.registry.DefinitionGuard;
@@ -77,6 +78,7 @@ public class McpGatewayService {
     private final DefinitionGuard definitionGuard;
     private final RateLimiter rateLimiter;
     private final RateLimitAuditThrottle rateLimitAudit;
+    private final EndpointAuditThrottle endpointAudit;
     private final ToolsListCursor listCursor;
     private final Duration toolsListTimeout;
     private final Clock clock;
@@ -86,7 +88,7 @@ public class McpGatewayService {
                              CredentialService credentials, ToolAuthorizer authorizer, AuditLog audit, ToolErrors errors,
                              JsonMapper json, MeterRegistry meters, String componentId, ConfirmationService confirmations,
                              RegistryService registryService, DefinitionGuard definitionGuard, RateLimiter rateLimiter,
-                             RateLimitAuditThrottle rateLimitAudit, ToolsListCursor listCursor, Duration toolsListTimeout,
+                             RateLimitAuditThrottle rateLimitAudit, EndpointAuditThrottle endpointAudit, ToolsListCursor listCursor, Duration toolsListTimeout,
                              Clock clock) {
         this.registry = registry;
         this.urls = urls;
@@ -103,6 +105,7 @@ public class McpGatewayService {
         this.definitionGuard = definitionGuard;
         this.rateLimiter = rateLimiter;
         this.rateLimitAudit = rateLimitAudit;
+        this.endpointAudit = endpointAudit;
         this.listCursor = listCursor;
         this.toolsListTimeout = toolsListTimeout;
         this.clock = clock;
@@ -131,9 +134,11 @@ public class McpGatewayService {
      * that is not ours ({@code invalid_cursor}). One policy_decision (C8); the client learns the reason from the HTTP answer only.
      */
     public void auditRefusedRequest(GatewayUser user, String requestId, String clientRequestId, String reason, String outcome,
-                                    String canonicalFilter) {
-        // An authenticated client can repeat a refused request as fast as it likes: one event per user and reason in an interval.
-        if (!rateLimitAudit.due(user.sub(), reason)) {
+                                    String canonicalFilter, String target) {
+        // An authenticated client can repeat a refused request as fast as it likes: one event per user, reason and target in an interval
+        // for the refusals it can repeat at will (CC-190, CC-191); the failure of the session store keeps the older limit by reason.
+        boolean repeatable = !"upstream_unavailable".equals(reason);
+        if (repeatable ? !endpointAudit.admit(user, reason, target) : !rateLimitAudit.due(user.sub(), reason)) {
             return;
         }
         audit.emit(AuditEvent.of("policy_decision", requestId, componentId).clientRequestId(clientRequestId).user(user)
@@ -152,7 +157,8 @@ public class McpGatewayService {
                     ? listCursor.open(ctx.user().sub(), ctx.filter().canonical(), cursorParam.asString(), clock.instant().getEpochSecond())
                     : Optional.empty();
             if (opened.isEmpty()) {
-                auditRefusedRequest(ctx.user(), ctx.requestId(), ctx.clientRequestId(), "invalid_cursor", "error", ctx.auditFilter());
+                auditRefusedRequest(ctx.user(), ctx.requestId(), ctx.clientRequestId(), "invalid_cursor", "error", ctx.auditFilter(),
+                        cursorParam.isString() ? cursorParam.asString() : cursorParam.toString());
                 throw new RpcFailure(-32602, "Invalid cursor", 400);
             }
             after = opened.get();
@@ -396,6 +402,10 @@ public class McpGatewayService {
             return rateLimitedCall(ctx, mayCall ? resolved : Optional.empty(), limited.get(), started, argsLength);
         }
         if (resolved.isEmpty()) {
+            if (!endpointAudit.admit(ctx.user(), "not_granted", clientName)) {
+                count(addressed, null, "denied", "not_found_or_denied", System.nanoTime() - started);
+                return errors.error("not_found_or_denied", ToolErrors.NOT_FOUND_OR_DENIED_MESSAGE);
+            }
             decisionEvent(ctx, addressed, null, "deny", "not_granted", "not_found_or_denied");
             return finish(ctx, addressed, null, null, started, argsLength, "deny", "not_granted", null,
                     errors.error("not_found_or_denied", ToolErrors.NOT_FOUND_OR_DENIED_MESSAGE));
@@ -527,6 +537,11 @@ public class McpGatewayService {
         String reason = verdict.auditReason();
         if ("tool_disabled".equals(reason) && state.definition != null && state.definition != Verdict.INTACT) {
             reason = state.definition.reason();
+        }
+        if (("not_granted".equals(reason) || "filter_scope".equals(reason))
+                && !endpointAudit.admit(ctx.user(), reason, server.qualifiedName(tool))) {
+            count(server, tool, "denied", "not_found_or_denied", System.nanoTime() - started);
+            return errors.error("not_found_or_denied", ToolErrors.NOT_FOUND_OR_DENIED_MESSAGE);
         }
         if ("credential_required".equals(reason)) {
             decisionEvent(ctx, server, tool, "allow", null, null);
