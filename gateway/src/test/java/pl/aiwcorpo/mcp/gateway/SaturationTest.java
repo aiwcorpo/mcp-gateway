@@ -72,6 +72,7 @@ class SaturationTest {
     static void start() throws Exception {
         env = GatewayTestEnvironment.get();
         dir = Files.createTempDirectory("mcp-gateway-saturation");
+        env.forgetRegistryOf("mcp-jira");
         redis = new GenericContainer<>("redis:8.8.4-alpine")
                 .withCopyToContainer(Transferable.of(GatewayTestEnvironment.redisAcl()), "/etc/redis-users.acl")
                 .withCommand("redis-server", "--aclfile", "/etc/redis-users.acl", "--appendonly", "no").withExposedPorts(6379);
@@ -120,7 +121,7 @@ class SaturationTest {
     }
 
     @AfterAll
-    static void stop() {
+    static void stop() throws Exception {
         if (gateway != null) {
             gateway.close();
         }
@@ -133,6 +134,7 @@ class SaturationTest {
         if (redis != null) {
             redis.stop();
         }
+        env.forgetRegistryOf("mcp-jira");
     }
 
     private static String jcmd(String... args) throws Exception {

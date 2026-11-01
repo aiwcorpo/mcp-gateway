@@ -154,6 +154,22 @@ public final class GatewayTestEnvironment {
         offboardingTls = Tls.fromPkcs12(offboardingKeystore, pki.truststore(), TestPki.PASSWORD);
     }
 
+    /**
+     * Forgets the manifest and the approvals of a server in the shared database. A test that starts gateways of its own with another
+     * server behind {@code serverId} (the bootstrap approves a manifest once and never replaces it) starts and ends with it.
+     */
+    public void forgetRegistryOf(String serverId) throws Exception {
+        try (java.sql.Connection connection = java.sql.DriverManager.getConnection("jdbc:postgresql://" + postgres.getHost() + ":"
+                + postgres.getMappedPort(5432) + "/gateway", "gateway", POSTGRES_PASSWORD);
+             java.sql.PreparedStatement tools = connection.prepareStatement("DELETE FROM registry_tools WHERE server_id = ?");
+             java.sql.PreparedStatement servers = connection.prepareStatement("DELETE FROM registry_servers WHERE server_id = ?")) {
+            tools.setString(1, serverId);
+            tools.executeUpdate();
+            servers.setString(1, serverId);
+            servers.executeUpdate();
+        }
+    }
+
     /** The ACL file of the Redis of mcp-platform-dev: the commands the gateway may use, and an admin for the tests. */
     public static String redisAcl() {
         return String.join("\n",

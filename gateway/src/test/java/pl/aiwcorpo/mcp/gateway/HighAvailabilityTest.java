@@ -76,6 +76,7 @@ class HighAvailabilityTest {
     static void startTwoInstances() throws Exception {
         env = GatewayTestEnvironment.get();
         dir = Files.createTempDirectory("mcp-gateway-ha");
+        env.forgetRegistryOf("mcp-jira");
         redis = new GenericContainer<>("redis:8.8.4-alpine")
                 .withCopyToContainer(Transferable.of(GatewayTestEnvironment.redisAcl()), "/etc/redis-users.acl")
                 .withCommand("redis-server", "--aclfile", "/etc/redis-users.acl", "--appendonly", "no")
@@ -160,7 +161,7 @@ class HighAvailabilityTest {
     }
 
     @AfterAll
-    static void stop() {
+    static void stop() throws Exception {
         for (GatewayProcess instance : new GatewayProcess[] {a, b}) {
             if (instance != null) {
                 instance.close();
@@ -175,6 +176,7 @@ class HighAvailabilityTest {
         if (redis != null) {
             redis.stop();
         }
+        env.forgetRegistryOf("mcp-jira");
     }
 
     // --- helpers -----------------------------------------------------------------------------------------------
