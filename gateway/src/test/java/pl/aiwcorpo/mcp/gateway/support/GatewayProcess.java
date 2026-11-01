@@ -44,10 +44,16 @@ public final class GatewayProcess implements AutoCloseable {
     /** Starts the process and returns when the metadata document answers, i.e. when the gateway serves. */
     public static GatewayProcess start(String name, Path directory, Map<String, String> properties, int port, int internalPort)
             throws Exception {
+        return start(name, directory, properties, port, internalPort, List.of("-Xmx384m"));
+    }
+
+    /** As above with the options of the JVM (heap, exit on out of memory) given by the caller. */
+    public static GatewayProcess start(String name, Path directory, Map<String, String> properties, int port, int internalPort,
+                                       List<String> jvmOptions) throws Exception {
         List<String> command = new ArrayList<>();
         command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
         command.add("--enable-native-access=ALL-UNNAMED");
-        command.add("-Xmx384m");
+        command.addAll(jvmOptions);
         command.add("-cp");
         command.add(System.getProperty("java.class.path"));
         command.add("pl.aiwcorpo.mcp.gateway.GatewayApplication");
@@ -94,6 +100,10 @@ public final class GatewayProcess implements AutoCloseable {
             Thread.sleep(300);
         }
         throw new IllegalStateException(name + " did not serve within 90 s:\n" + tail());
+    }
+
+    public long pid() {
+        return process.pid();
     }
 
     public int port() {

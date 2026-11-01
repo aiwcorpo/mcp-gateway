@@ -49,6 +49,11 @@ Wektory 5.1.0 dla gateway'a: `endpoint-filter/` (parse, route, apply, call, call
 - **Starter:** gateway nie zależy od startera `mcp-platform-starter`; beta 3.0.0-beta-10 nie wymaga zmian po tej stronie. Atrapy serwera i brokera to `test-server` tego repo.
 - **Tymczasowe w HA:** lock pliku w `/app/state` jest per proces; dwa kontenery z jednym wolumenem nie wstaną.
 
+## Przeciążenie (raport testów obciążeniowych 2026-11-01)
+
+Przyczyna z dowodem (przebiegi lokalne `SaturationTest`, jedna instancja, 1200 wywołań naraz do systemu z opóźnieniem 400 ms; surowe wyniki w scratchpadzie jako `ws05-saturation-*.txt`): (1) żądania w toku nie miały limitu (serwer za gatewayem widział 258 wywołań naraz), (2) wywołanie czeka na pulę JDBC (10 połączeń) przy każdym zdarzeniu aktywności, 689 razy `CannotGetJdbcConnectionException`, (3) pamięć rosła liniowo z liczbą żądań w toku (żywy zbiór około 170 MB wobec około 50 MB z limitem; próbki w trakcie przebiegu płaskie, więc to nie wyciek), a ze stertą 192 MB proces umarł z `OutOfMemoryError` w kilka sekund, (4) w compose stosu nie ma limitu pamięci kontenera, więc sterta (75% pamięci maszyny) nie jest ograniczona sensownie. Nie znalazłem nieograniczonych map: throttling ma czyszczenie, sesje do serwerów i cache poświadczeń mają TTL. Kolejka poleceń Lettuce nie miała limitu: ograniczona. Czego nie ustaliłem: dlaczego gateway-2 miał 4,1 GiB w stosie (nie powtórzyłem tego lokalnie, brak zrzutu sterty ze stosu).
+Poprawka: `ConcurrencyLimitFilter` (128 żądań w toku, 503 + `Retry-After`, kod `upstream_unavailable`), ograniczona kolejka Redisa, wymóg limitu pamięci kontenera w README. Z limitem 40 i stertą 320 MB ten sam przebieg: wszystko poza `ok` to 503, serwer widzi najwyżej 40 wywołań, proces żyje.
+
 ## Niezrobione i uwagi
 
 - Restart z trzymanym manifestem jako test na prawdziwym starcie: zostaje test jednostkowy `RegistryServiceTest` (`enabled: false`, nic nie skasowane) i `environment_mismatch` w `ManifestValidator` bez trybu dev.

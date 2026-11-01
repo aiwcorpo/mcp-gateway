@@ -179,6 +179,9 @@ public final class TestMcpServer implements AutoCloseable {
     private volatile java.util.Set<String> hiddenTools = java.util.Set.of();
     private volatile boolean toolListFails;
     private volatile long toolListDelayMillis;
+    private volatile long toolCallDelayMillis;
+    private final java.util.concurrent.atomic.AtomicInteger callsInFlight = new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger mostCallsInFlight = new java.util.concurrent.atomic.AtomicInteger();
     private volatile int extraTools;
     private volatile boolean updateTool;
     private volatile String reportedVersion = "0.1.0";
@@ -198,6 +201,16 @@ public final class TestMcpServer implements AutoCloseable {
     /** {@code tools/list} answers after this many milliseconds: a server that is slow. */
     public void slowToolList(long millis) {
         toolListDelayMillis = millis;
+    }
+
+    /** {@code tools/call} answers after this many milliseconds: a system that is slow. */
+    public void slowToolCalls(long millis) {
+        toolCallDelayMillis = millis;
+    }
+
+    /** The most {@code tools/call} requests this server has had in flight at once since the start. */
+    public int mostCallsInFlight() {
+        return mostCallsInFlight.get();
     }
 
     /** Serves the UPDATE tool {@code add_comment}, which only answers: tests count its executions in {@link #requests()}. */
@@ -381,7 +394,21 @@ public final class TestMcpServer implements AutoCloseable {
             }
             case "tools/call" -> {
                 record(exchange, headers, body, method, toolName, 200, null, sub, sessionId);
-                ObjectNode result = callTool(toolName, message.path("params").path("arguments"), headers);
+                int inFlight = callsInFlight.incrementAndGet();
+                mostCallsInFlight.accumulateAndGet(inFlight, Math::max);
+                ObjectNode result;
+                try {
+                    if (toolCallDelayMillis > 0) {
+                        try {
+                            Thread.sleep(toolCallDelayMillis);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
+                    result = callTool(toolName, message.path("params").path("arguments"), headers);
+                } finally {
+                    callsInFlight.decrementAndGet();
+                }
                 String errorCode = result.path("isError").asBoolean(false) ? errorCodeOf(result) : null;
                 audit(rid, auth.claims(), toolName, errorCode == null ? "ok" : "error", errorCode, started);
                 String accept = first(headers, "accept");

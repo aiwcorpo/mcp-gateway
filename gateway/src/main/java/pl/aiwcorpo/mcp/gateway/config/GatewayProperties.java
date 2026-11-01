@@ -153,9 +153,17 @@ public record GatewayProperties(
             /* How long one server has to answer the read of its tools/list for a client's list; a server that does not is skipped. */
             @DefaultValue("3000ms") Duration toolsListTimeout,
             /* Key of the HMAC on the cursor of tools/list, at least 16 bytes; every instance must have the same one (HA). */
-            String listCursorKey) {
+            String listCursorKey,
+            /* The most MCP requests served at the same time; more are refused with 503 and Retry-After. Sized to the pools behind it (database, Redis). */
+            @DefaultValue("128") int maxConcurrentRequests,
+            /* How long a request waits for a place before it is refused. */
+            @DefaultValue("100ms") Duration queueWait,
+            @DefaultValue("2") int shedRetryAfterSeconds) {
 
         public Mcp {
+            if (maxConcurrentRequests < 1 || shedRetryAfterSeconds < 1 || queueWait == null || queueWait.isNegative()) {
+                throw new IllegalArgumentException("gateway.mcp.max-concurrent-requests and shed-retry-after-seconds must be at least 1, queue-wait not negative");
+            }
             if (toolsListTimeout == null || toolsListTimeout.isNegative() || toolsListTimeout.isZero()) {
                 throw new IllegalArgumentException("gateway.mcp.tools-list-timeout (MCP_TOOLS_LIST_TIMEOUT, milliseconds) must be positive");
             }

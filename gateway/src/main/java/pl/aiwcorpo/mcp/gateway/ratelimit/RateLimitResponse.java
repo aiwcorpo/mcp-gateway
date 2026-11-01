@@ -33,4 +33,15 @@ public final class RateLimitResponse {
                 .header("X-Request-Id", requestId)
                 .body("{\"error\":\"upstream_unavailable\",\"message\":\"Request limits are temporarily unavailable. Try again in a few seconds.\"}");
     }
+
+    /** More requests in flight than the gateway serves at once: refused at the door with the code of C10 for a service that cannot answer now. */
+    public static ResponseEntity<String> overloaded(String requestId, int retryAfterSeconds) {
+        int seconds = Math.max(1, retryAfterSeconds);
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header("Content-Type", "application/json; charset=utf-8")
+                .header("Cache-Control", "no-store")
+                .header("Retry-After", Integer.toString(seconds))
+                .header("X-Request-Id", requestId)
+                .body("{\"error\":\"upstream_unavailable\",\"message\":\"The gateway is serving as many requests as it can. Try again in a few seconds.\"}");
+    }
 }

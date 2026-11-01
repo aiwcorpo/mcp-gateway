@@ -116,6 +116,11 @@ gateway:
     tools-list-timeout: ${MCP_TOOLS_LIST_TIMEOUT:3000}
     # HMAC key of the tools/list cursor (CC-181); the same on every instance, empty only in the dev stack (random per process).
     list-cursor-key: ${MCP_LIST_CURSOR_KEY:}
+    # The most MCP requests served at once; further ones wait queue-wait for a place and are then refused with 503 and Retry-After.
+    # Keep it near the pools behind it (database pool 10, Redis); every request in flight holds buffers on the heap.
+    max-concurrent-requests: ${MCP_MAX_CONCURRENT_REQUESTS:128}
+    queue-wait: ${MCP_CONCURRENCY_QUEUE_WAIT:100ms}
+    shed-retry-after-seconds: ${MCP_SHED_RETRY_AFTER_SECONDS:2}
   metrics:
     allowed-client-cns: ${MCP_METRICS_CLIENT_CNS:}
   tls:

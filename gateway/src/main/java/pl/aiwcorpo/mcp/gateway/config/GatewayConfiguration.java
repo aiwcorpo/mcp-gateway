@@ -54,6 +54,7 @@ import pl.aiwcorpo.mcp.gateway.broker.SystemsCheck;
 import pl.aiwcorpo.mcp.gateway.broker.TokenExchangeClient;
 import pl.aiwcorpo.mcp.gateway.edge.JsonErrorReportValveCustomizer;
 import pl.aiwcorpo.mcp.gateway.edge.PublicEdgeFilter;
+import pl.aiwcorpo.mcp.gateway.edge.ConcurrencyLimitFilter;
 import pl.aiwcorpo.mcp.gateway.edge.RemovedRouteFilter;
 import pl.aiwcorpo.mcp.gateway.edge.WellKnownGuard;
 import pl.aiwcorpo.mcp.gateway.jwt.InternalPortFilter;
@@ -138,6 +139,28 @@ public class GatewayConfiguration {
         FilterRegistrationBean<WellKnownGuard> registration = new FilterRegistrationBean<>(new WellKnownGuard(metadata));
         registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 2);
         return registration;
+    }
+
+    /** After the authentication (the security chain is at -100), so that only authenticated requests take a place. */
+    @Bean
+    FilterRegistrationBean<ConcurrencyLimitFilter> concurrencyLimitFilter(GatewayProperties properties, MeterRegistry meters) {
+        GatewayProperties.Mcp mcp = properties.mcp();
+        FilterRegistrationBean<ConcurrencyLimitFilter> registration = new FilterRegistrationBean<>(new ConcurrencyLimitFilter(
+                mcp.maxConcurrentRequests(), mcp.queueWait(), mcp.shedRetryAfterSeconds(), meters, System::nanoTime));
+        registration.setOrder(-50);
+        registration.setDispatcherTypes(DispatcherType.REQUEST);
+        return registration;
+    }
+
+    /**
+     * The queue of commands waiting for the shared Redis connection is bounded: when Redis answers slowly the commands of requests that
+     * wait for it would otherwise pile up without limit (Lettuce's default). A full queue fails the command at once, which the callers
+     * treat as an unavailable store (fail-closed).
+     */
+    @Bean
+    org.springframework.boot.data.redis.autoconfigure.LettuceClientConfigurationBuilderCustomizer boundedRedisRequestQueue(GatewayProperties properties) {
+        int size = Math.max(1024, properties.mcp().maxConcurrentRequests() * 16);
+        return builder -> builder.clientOptions(io.lettuce.core.ClientOptions.builder().requestQueueSize(size).build());
     }
 
     @Bean
