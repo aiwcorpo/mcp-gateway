@@ -120,6 +120,56 @@ class CredentialCacheTest {
     }
 
     @Test
+    void aFailedSweepDoesNotEndTheTimer() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        Clock failingOnce = new Clock() {
+            @Override
+            public Instant instant() {
+                if (calls.getAndIncrement() == 1) {
+                    throw new IllegalStateException("clock failure with secret-value");
+                }
+                return clock.instant();
+            }
+
+            @Override
+            public java.time.ZoneId getZone() {
+                return ZoneOffset.UTC;
+            }
+
+            @Override
+            public Clock withZone(java.time.ZoneId zone) {
+                return this;
+            }
+        };
+        try (CredentialCache timed = new CredentialCache(Duration.ofSeconds(60), failingOnce, Duration.ofMillis(20))) {
+            timed.put(key, credential(10, null), timed.generation());
+            clock.advance(Duration.ofSeconds(10));
+            long until = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (timed.size() > 0 && System.nanoTime() < until) {
+                Thread.sleep(10);
+            }
+            assertThat(calls.get()).as("the failing run happened").isGreaterThan(2);
+            assertThat(timed.size()).as("and later runs still sweep").isZero();
+        }
+    }
+
+    @Test
+    void theSweepIntervalIsTenSeconds() {
+        assertThat(CredentialCache.DEFAULT_SWEEP_INTERVAL).isEqualTo(Duration.ofSeconds(10));
+    }
+
+    @Test
+    void sizeAndRefusalsAreRegisteredWithoutTags() {
+        io.micrometer.core.instrument.simple.SimpleMeterRegistry meters = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        cache.bindTo(meters);
+        cache.put(key, credential(10, null), cache.generation());
+        assertThat(meters.get("mcp.gateway.credential.cache.size").gauge().value()).isEqualTo(1.0);
+        assertThat(meters.get("mcp.gateway.credential.cache.size").gauge().getId().getTags()).isEmpty();
+        assertThat(meters.get("mcp.gateway.credential.cache.refused").functionCounter().count()).isZero();
+        assertThat(meters.get("mcp.gateway.credential.cache.refused").functionCounter().getId().getTags()).isEmpty();
+    }
+
+    @Test
     void theLimitIsTenThousand() {
         assertThat(CredentialCache.MAX_ENTRIES).isEqualTo(10_000);
     }

@@ -255,9 +255,7 @@ public class GatewayConfiguration {
     @Bean
     CredentialCache credentialCache(GatewayProperties properties, Clock clock, MeterRegistry meters) {
         CredentialCache cache = new CredentialCache(properties.broker().maxCacheTtl(), clock);
-        meters.gauge("mcp.gateway.credential.cache.size", cache, CredentialCache::size);
-        io.micrometer.core.instrument.FunctionCounter.builder("mcp.gateway.credential.cache.refused", cache, CredentialCache::refusedWhenFull)
-                .register(meters);
+        cache.bindTo(meters);
         return cache;
     }
 

@@ -47,7 +47,8 @@ import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Saturation of one gateway on a small heap: far more callers than the gateway can serve, against a slow system. The gateway must
- * shed what it cannot serve at once with 503 and Retry-After (fail-closed) and stay inside its heap, never die of it. The system
+ * shed what it cannot serve at once with 503 and Retry-After (fail-closed) and stay alive. Pinned: the process lives, nothing but ok and 503 comes back and the system behind sees no more than the
+ * limit; no heap threshold is set. The default run is the production setting (limit 128, the heap of an image under 2 GiB at 60%). The system
  * properties {@code saturation.limit}, {@code saturation.callers}, {@code saturation.heap} and {@code saturation.seconds} scale the run
  * (for example a limit of 100000 shows what the same load does to a gateway that sheds nothing).
  */
@@ -56,7 +57,7 @@ class SaturationTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private static final List<String> GROUPS = List.of("mcp-jira-read", "mcp-jira-write");
     private static final int LIMIT = Integer.getInteger("saturation.limit", 128);
-    private static final int CALLERS = Integer.getInteger("saturation.callers", 500);
+    private static final int CALLERS = Integer.getInteger("saturation.callers", 1000);
     private static final int HEAP_MB = Integer.getInteger("saturation.heap", 1228);
     private static final Duration LOAD = Duration.ofSeconds(Integer.getInteger("saturation.seconds", 15));
     private static final boolean WITH_LIMIT = Boolean.parseBoolean(System.getProperty("saturation.limited", "true"));
@@ -84,6 +85,7 @@ class SaturationTest {
                 Duration.ZERO);
         broker = new BrokerStub(Tls.fromPkcs12(pki.issue("sat-broker.p12", "mcp-credential-broker", List.of("mcp-credential-broker.internal"),
                 true, false), pki.truststore(), TestPki.PASSWORD), keys);
+        assertThat(broker.servesInParallel()).as("a broker that serves one request at a time makes the first calls of %d users time out", 1000).isTrue();
         broker.grant("sat-pat", 60);
         jira = new TestMcpServer(new TestMcpServer.Config("mcp-jira", "/mcp", "https://mcp-gateway.internal", false, null, keys),
                 Tls.fromPkcs12(pki.issue("sat-jira.p12", "mcp-jira", List.of("mcp-jira.internal", "localhost"), true, false),
@@ -113,9 +115,7 @@ class SaturationTest {
         p.put("gateway.rate-limit.per-client", "1000000");
         p.put("gateway.rate-limit.per-tool", "1000000");
         p.put("gateway.rate-limit.destructive-per-tool", "1000000");
-        if (WITH_LIMIT) {
-            p.put("gateway.mcp.max-concurrent-requests", Integer.toString(LIMIT));
-        }
+        p.put("gateway.mcp.max-concurrent-requests", Integer.toString(WITH_LIMIT ? LIMIT : 1_000_000));
         gateway = GatewayProcess.start("saturated", dir, p, port, internal,
                 List.of("-Xmx" + HEAP_MB + "m", "-XX:+ExitOnOutOfMemoryError", "-XX:+HeapDumpOnOutOfMemoryError", "-XX:HeapDumpPath=" + dir));
     }

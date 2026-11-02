@@ -14,6 +14,7 @@ class InvalidationListenerEventsTest {
     @Test
     void anUnknownConnectionEventIsALostSubscriptionAndOnlyAbandonedOnesAreIgnored() throws Exception {
         CredentialCache cache = new CredentialCache(Duration.ofSeconds(60), java.time.Clock.systemUTC());
+        cache.close();
         InvalidationListener listener = new InvalidationListener(RedisURI.create("redis://localhost:1"), "credential.invalidated",
                 cache, JsonMapper.builder().build(), Duration.ofSeconds(5));
         var live = InvalidationListener.class.getDeclaredField("live");

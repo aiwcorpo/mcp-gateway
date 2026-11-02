@@ -83,6 +83,11 @@ public final class BrokerStub implements AutoCloseable {
         server.start();
     }
 
+    /** True when requests are served on threads of their own; the default executor of the server runs them one by one. */
+    public boolean servesInParallel() {
+        return server.getExecutor() != null;
+    }
+
     public int port() {
         return server.getAddress().getPort();
     }

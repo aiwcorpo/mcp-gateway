@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -30,6 +31,11 @@ class CredentialServiceTest {
     private final CredentialCache cache = new CredentialCache(Duration.ofSeconds(60), Clock.systemUTC());
     private final AtomicBoolean live = new AtomicBoolean(true);
     private final CredentialService service = new CredentialService(broker, exchange, cache, live::get, new SimpleMeterRegistry());
+    @AfterEach
+    void stopTimer() {
+        cache.close();
+    }
+
     private final GatewayUser user = new GatewayUser("sub-1", "alice", "claude-code", List.of(), "raw-idp-token");
     private final CredentialPolicy secretPolicy = new CredentialPolicy(true, Set.of("user-secret"), List.of(), false, "user-secret");
 
