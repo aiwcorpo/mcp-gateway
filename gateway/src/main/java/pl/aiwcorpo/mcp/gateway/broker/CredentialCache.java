@@ -6,15 +6,19 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * In-memory cache of resolved credentials, key (sub, system, scopes) (ws-05 item 8). An entry lives at most
- * {@code min(cacheTtlSeconds, maxTtl, expiresAt)}; {@code credential.invalidated} drops it at once. Every
- * invalidation bumps a generation counter so a resolve that was in flight while it happened cannot put the old
- * credential back.
+ * {@code min(cacheTtlSeconds, maxTtl, expiresAt)} and is not served after that; a timer removes expired entries from memory
+ * at most {@code sweepInterval} later whether or not they are read again, so a credential does not stay on the heap after its
+ * TTL (the timer stops in {@link #close()}). {@code credential.invalidated} drops an entry at once. Every invalidation bumps a
+ * generation counter so a resolve that was in flight while it happened cannot put the old credential back.
  */
-public final class CredentialCache {
+public final class CredentialCache implements AutoCloseable {
 
     public record Key(String sub, String system, List<String> scopes) {
     }
@@ -22,20 +26,50 @@ public final class CredentialCache {
     private record Entry(Credential credential, Instant expiresAt) {
     }
 
-    /** Upper bound of entries: an entry is dropped only when read again, so without it keys that are never read again stay forever. */
+    /** Upper bound of entries, a second line behind the timer: a burst of distinct keys within one TTL cannot grow the map. */
     static final int MAX_ENTRIES = 10_000;
+    private static final Duration DEFAULT_SWEEP_INTERVAL = Duration.ofSeconds(10);
 
     private final Map<Key, Entry> entries = new ConcurrentHashMap<>();
     private final AtomicLong generation = new AtomicLong();
     private final Duration maxTtl;
     private final Clock clock;
+    private final AtomicLong refusedWhenFull = new AtomicLong();
+    private final ScheduledExecutorService sweeper;
 
     public CredentialCache(Duration maxTtl, Clock clock) {
+        this(maxTtl, clock, DEFAULT_SWEEP_INTERVAL);
+    }
+
+    public CredentialCache(Duration maxTtl, Clock clock, Duration sweepInterval) {
         if (maxTtl.compareTo(Duration.ofSeconds(60)) > 0) {
             throw new IllegalStateException("credential cache TTL must not exceed 60 s (C4)");
         }
         this.maxTtl = maxTtl;
         this.clock = clock;
+        this.sweeper = Executors.newSingleThreadScheduledExecutor(task -> {
+            Thread thread = new Thread(task, "credential-cache-sweeper");
+            thread.setDaemon(true);
+            return thread;
+        });
+        long period = Math.max(1, sweepInterval.toMillis());
+        sweeper.scheduleWithFixedDelay(this::sweep, period, period, TimeUnit.MILLISECONDS);
+    }
+
+    /** Removes every expired entry; run by the timer, public for tests. */
+    void sweep() {
+        Instant now = Instant.now(clock);
+        entries.values().removeIf(entry -> !now.isBefore(entry.expiresAt()));
+    }
+
+    @Override
+    public void close() {
+        sweeper.shutdownNow();
+    }
+
+    /** Credentials not cached because the cache was full of live entries; no key and no user in it. */
+    public long refusedWhenFull() {
+        return refusedWhenFull.get();
     }
 
     public Credential get(Key key) {
@@ -75,6 +109,7 @@ public final class CredentialCache {
             if (entries.size() >= MAX_ENTRIES && !entries.containsKey(key)) {
                 entries.values().removeIf(entry -> !now.isBefore(entry.expiresAt()));
                 if (entries.size() >= MAX_ENTRIES) {
+                    refusedWhenFull.incrementAndGet();
                     return;
                 }
             }

@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 class CredentialCacheTest {
@@ -16,6 +17,11 @@ class CredentialCacheTest {
     private final MutableClock clock = new MutableClock();
     private final CredentialCache cache = new CredentialCache(Duration.ofSeconds(60), clock);
     private final CredentialCache.Key key = new CredentialCache.Key("sub-1", "jira", List.of());
+
+    @AfterEach
+    void stopTimer() {
+        cache.close();
+    }
 
     @Test
     void entryLivesAtMostTheBrokerTtl() {
@@ -65,6 +71,57 @@ class CredentialCacheTest {
         cache.put(late, credential(10, null), cache.generation());
         assertThat(cache.size()).as("expired entries made room").isEqualTo(1);
         assertThat(cache.get(late)).isNotNull();
+    }
+
+    @Test
+    void expiredEntriesLeaveTheMemoryWithoutBeingReadAndBelowTheLimit() {
+        for (int i = 0; i < 1000; i++) {
+            cache.put(new CredentialCache.Key("sub-" + i, "jira", List.of()), credential(60, null), cache.generation());
+        }
+        cache.sweep();
+        assertThat(cache.size()).as("live entries stay").isEqualTo(1000);
+        clock.advance(Duration.ofSeconds(60));
+        cache.sweep();
+        assertThat(cache.size()).isZero();
+    }
+
+    @Test
+    void theTimerSweepsOnItsOwnAndStopsOnClose() throws Exception {
+        try (CredentialCache timed = new CredentialCache(Duration.ofSeconds(60), clock, Duration.ofMillis(20))) {
+            timed.put(key, credential(10, null), timed.generation());
+            clock.advance(Duration.ofSeconds(10));
+            long until = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (timed.size() > 0 && System.nanoTime() < until) {
+                Thread.sleep(10);
+            }
+            assertThat(timed.size()).isZero();
+        }
+        CredentialCache closed = new CredentialCache(Duration.ofSeconds(60), clock, Duration.ofMillis(20));
+        closed.close();
+        closed.put(key, credential(10, null), closed.generation());
+        clock.advance(Duration.ofSeconds(10));
+        Thread.sleep(200);
+        assertThat(closed.size()).as("a stopped timer sweeps nothing").isEqualTo(1);
+    }
+
+    @Test
+    void refusalsWhenFullAreCountedAndAnExistingKeyIsStillRefreshed() {
+        for (int i = 0; i < CredentialCache.MAX_ENTRIES; i++) {
+            cache.put(new CredentialCache.Key("sub-" + i, "jira", List.of()), credential(10, null), cache.generation());
+        }
+        cache.put(new CredentialCache.Key("extra", "jira", List.of()), credential(10, null), cache.generation());
+        assertThat(cache.refusedWhenFull()).isEqualTo(1);
+        CredentialCache.Key existing = new CredentialCache.Key("sub-0", "jira", List.of());
+        clock.advance(Duration.ofSeconds(5));
+        cache.put(existing, credential(10, null), cache.generation());
+        assertThat(cache.refusedWhenFull()).isEqualTo(1);
+        clock.advance(Duration.ofSeconds(6));
+        assertThat(cache.get(existing)).as("refreshed entry outlives the others").isNotNull();
+    }
+
+    @Test
+    void theLimitIsTenThousand() {
+        assertThat(CredentialCache.MAX_ENTRIES).isEqualTo(10_000);
     }
 
     @Test

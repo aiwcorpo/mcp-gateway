@@ -79,6 +79,7 @@ public final class BrokerStub implements AutoCloseable {
             }
         });
         server.createContext("/v1/", this::handle);
+        server.setExecutor(java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor());
         server.start();
     }
 

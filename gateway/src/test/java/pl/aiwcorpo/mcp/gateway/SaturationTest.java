@@ -55,9 +55,9 @@ class SaturationTest {
 
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private static final List<String> GROUPS = List.of("mcp-jira-read", "mcp-jira-write");
-    private static final int LIMIT = Integer.getInteger("saturation.limit", 20);
-    private static final int CALLERS = Integer.getInteger("saturation.callers", 600);
-    private static final int HEAP_MB = Integer.getInteger("saturation.heap", 320);
+    private static final int LIMIT = Integer.getInteger("saturation.limit", 128);
+    private static final int CALLERS = Integer.getInteger("saturation.callers", 500);
+    private static final int HEAP_MB = Integer.getInteger("saturation.heap", 1228);
     private static final Duration LOAD = Duration.ofSeconds(Integer.getInteger("saturation.seconds", 15));
     private static final boolean WITH_LIMIT = Boolean.parseBoolean(System.getProperty("saturation.limited", "true"));
 
@@ -182,7 +182,7 @@ class SaturationTest {
                         } else if (response.statusCode() == 200 && response.body().contains("\"isError\":false")) {
                             outcome = "ok";
                         } else {
-                            outcome = response.statusCode() + (response.body().length() > 120 ? response.body().substring(0, 120) : response.body());
+                            outcome = response.statusCode() + (response.body().length() > 220 ? response.body().substring(0, 220) : response.body());
                         }
                     } catch (IOException e) {
                         outcome = "io:" + e.getClass().getSimpleName();

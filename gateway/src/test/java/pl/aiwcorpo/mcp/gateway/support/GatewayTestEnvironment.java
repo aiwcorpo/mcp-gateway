@@ -167,6 +167,11 @@ public final class GatewayTestEnvironment {
             tools.executeUpdate();
             servers.setString(1, serverId);
             servers.executeUpdate();
+        } catch (java.sql.SQLException e) {
+            // 42P01: no gateway has migrated this database yet (a test that runs alone), so there is nothing to forget.
+            if (!"42P01".equals(e.getSQLState())) {
+                throw e;
+            }
         }
     }
 
