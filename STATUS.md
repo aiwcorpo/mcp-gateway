@@ -64,7 +64,7 @@ Zmiana: ENTRYPOINT `-XX:+UseG1GC -XX:MaxRAMPercentage=60 -XX:G1PeriodicGCInterva
 
 Uwaga: 250 MB poza stertą to pomiar procesu na hoście (macOS), nie kontenera pod cgroup; `MaxDirectMemorySize` zostaje domyślne (równe stercie), więc to nie jest twarda gwarancja.
 
-Obraz: `mcp-gateway:m6-5b54dc6` po przeglądzie (poprzedni m6-c8ed816 zastąpiony; 702 testy zielone; zbudowany `ci/run.sh image`, pełne `verify` zielone; tag w skrypcie zmieniony z m5 na m6), nie wdrożony.
+Obraz: `mcp-gateway:m6-01c9f5a` po przeglądzie, runda 2 (poprzednie m6-c8ed816 i m6-5b54dc6 zastąpione; 705 testów zielone; zbudowany `ci/run.sh image`, pełne `verify` zielone; tag w skrypcie zmieniony z m5 na m6), nie wdrożony.
 
 Nie ustaliłem na żywym kontenerze: histogramu klas (obraz ma JRE bez `jcmd`; nie dodawałem narzędzi do kontenera) ani kształtu pamięci gatewaya-2 podczas samego testu 2026-11-01 (kontenery uruchomiono ponownie po nim). Zrzutów sterty ze stosu nie robiłem. 
 
