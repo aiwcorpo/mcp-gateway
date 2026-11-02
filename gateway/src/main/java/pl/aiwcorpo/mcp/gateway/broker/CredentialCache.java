@@ -22,6 +22,9 @@ public final class CredentialCache {
     private record Entry(Credential credential, Instant expiresAt) {
     }
 
+    /** Upper bound of entries: an entry is dropped only when read again, so without it keys that are never read again stay forever. */
+    static final int MAX_ENTRIES = 10_000;
+
     private final Map<Key, Entry> entries = new ConcurrentHashMap<>();
     private final AtomicLong generation = new AtomicLong();
     private final Duration maxTtl;
@@ -66,9 +69,16 @@ public final class CredentialCache {
             return;
         }
         synchronized (generation) {
-            if (generation.get() == generationAtLookup) {
-                entries.put(key, new Entry(credential, expiresAt));
+            if (generation.get() != generationAtLookup) {
+                return;
             }
+            if (entries.size() >= MAX_ENTRIES && !entries.containsKey(key)) {
+                entries.values().removeIf(entry -> !now.isBefore(entry.expiresAt()));
+                if (entries.size() >= MAX_ENTRIES) {
+                    return;
+                }
+            }
+            entries.put(key, new Entry(credential, expiresAt));
         }
     }
 

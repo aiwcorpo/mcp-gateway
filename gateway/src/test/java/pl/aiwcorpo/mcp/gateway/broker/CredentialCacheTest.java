@@ -52,6 +52,22 @@ class CredentialCacheTest {
     }
 
     @Test
+    void keysThatAreNeverReadAgainDoNotGrowTheCacheWithoutBound() {
+        for (int i = 0; i < CredentialCache.MAX_ENTRIES; i++) {
+            cache.put(new CredentialCache.Key("sub-" + i, "jira", List.of()), credential(10, null), cache.generation());
+        }
+        CredentialCache.Key late = new CredentialCache.Key("late", "jira", List.of());
+        cache.put(late, credential(10, null), cache.generation());
+        assertThat(cache.size()).as("full of live entries: the new one is not cached").isEqualTo(CredentialCache.MAX_ENTRIES);
+        assertThat(cache.get(late)).isNull();
+
+        clock.advance(Duration.ofSeconds(10));
+        cache.put(late, credential(10, null), cache.generation());
+        assertThat(cache.size()).as("expired entries made room").isEqualTo(1);
+        assertThat(cache.get(late)).isNotNull();
+    }
+
+    @Test
     void maxTtlAboveSixtySecondsIsRefused() {
         assertThatThrownBy(() -> new CredentialCache(Duration.ofSeconds(61), clock)).isInstanceOf(IllegalStateException.class);
     }

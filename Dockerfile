@@ -8,8 +8,10 @@ WORKDIR /app
 COPY --chown=root:root gateway/target/mcp-gateway.jar /app/app.jar
 
 USER gateway
+# Heap 60% of the container limit: the rest is for metaspace, threads, direct buffers and Cedar's native library (measured about 250 MB
+# outside the heap under 128 requests in flight); 75% left no room under a 2 GiB limit. The periodic GC lets G1 return heap after a peak.
 # 8080: MCP clients (C1, /s/<serverId>/mcp, /v/<slug>/mcp, RFC 9728); 8443: internal TLS (JWKS of C2, actuator, C5 admin API).
 # Cedar unpacks its native library into java.io.tmpdir: a read-only root file system needs a writable /tmp.
 # /app/state holds the rollback protection of the policy bundles (MCP_POLICY_STATE_DIR): mount a volume per instance.
 EXPOSE 8080 8443
-ENTRYPOINT ["java", "--enable-native-access=ALL-UNNAMED", "-XX:MaxRAMPercentage=75", "-XX:+ExitOnOutOfMemoryError", "-jar", "/app/app.jar"]
+ENTRYPOINT ["java", "--enable-native-access=ALL-UNNAMED", "-XX:MaxRAMPercentage=60", "-XX:G1PeriodicGCInterval=60000", "-XX:+ExitOnOutOfMemoryError", "-jar", "/app/app.jar"]
