@@ -7,7 +7,7 @@
 #   ci/run.sh                 verify (default)
 #   ci/run.sh verify          hygiene checks, then unit and integration tests of both modules (mvnw clean verify)
 #   ci/run.sh hygiene         only the text checks of the sources (non-ASCII quotes and spaces, tool traces)
-#   ci/run.sh image           verify, then build the container image mcp-gateway:m5-<short sha> from the jar
+#   ci/run.sh image           verify, then build the container image mcp-gateway:m6-<short sha> from the jar
 #                             (needs a clean checkout, so that the tag names the code it holds)
 #
 # Any failure of a step is the exit code of the script. An unknown step, no step at all and a build that ran no test are errors.
@@ -100,7 +100,7 @@ step_image() {
   fi
   step_verify || return 1
   local tag
-  tag="mcp-gateway:m5-$(git rev-parse --short HEAD)" || return 1
+  tag="mcp-gateway:m6-$(git rev-parse --short HEAD)" || return 1
   docker build -t "$tag" . || return 1
   echo "ci/run.sh: built $tag"
 }
