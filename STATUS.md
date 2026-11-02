@@ -62,6 +62,8 @@ Nienadzorowane struktury. `CredentialCache` usuwał wygasłe wpisy tylko przy po
 
 Zmiana: ENTRYPOINT `-XX:MaxRAMPercentage=60 -XX:G1PeriodicGCInterval=60000` (przy 2 GiB sterta 1,2 GiB, zapas około 750 MB na to, co poza stertą). Dla ws-01: nie ustawiać procentu w `JAVA_TOOL_OPTIONS` (opcje z ENTRYPOINT wygrywają, wpis w compose jest martwy; usunąć go albo zmienić ENTRYPOINT); `mem_limit` 2g zostaje. Przy mniejszym limicie niż 1 GiB sterta 60% może nie wystarczyć przy 128 żądaniach w toku (żywy zbiór do 560 MB), wtedy obniżyć `MCP_MAX_CONCURRENT_REQUESTS`.
 
+Obraz: `mcp-gateway:m6-c8ed816` (zbudowany `ci/run.sh image`, pełne `verify` zielone; tag w skrypcie zmieniony z m5 na m6), nie wdrożony.
+
 Nie ustaliłem na żywym kontenerze: histogramu klas (obraz ma JRE bez `jcmd`; nie dodawałem narzędzi do kontenera) ani kształtu pamięci gatewaya-2 podczas samego testu 2026-11-01 (kontenery uruchomiono ponownie po nim). Zrzutów sterty ze stosu nie robiłem. `SaturationTest` uruchomiony sam (bez klasy, która tworzy schemat) pada na `registry_tools does not exist` w `forgetRegistryOf` (regresja z b2e25ae, poza zakresem; uruchamiać razem z `GatewayIntegrationTest`).
 
 ## Niezrobione i uwagi
