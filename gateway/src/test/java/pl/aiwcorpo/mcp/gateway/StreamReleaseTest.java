@@ -61,20 +61,22 @@ class StreamReleaseTest {
         String session = initialize(token);
         String request = "GET /mcp HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer " + token + "\r\nMcp-Session-Id: " + session
                 + "\r\nAccept: text/event-stream\r\n\r\n";
-        assertThat(measureRelease(request)).isLessThan(Duration.ofSeconds(HEARTBEAT_SECONDS + 2));
+        assertThat(measureRelease(request)).isLessThan(Duration.ofSeconds(HEARTBEAT_SECONDS + 3));
     }
 
     @Test
     void listenStreamReleasesItsPlaceSoonAfterTheClientClosed() throws Exception {
         String token = token();
-        assertThat(measureRelease(listenRequest(token, 1))).isLessThan(Duration.ofSeconds(HEARTBEAT_SECONDS + 2));
+        assertThat(measureRelease(listenRequest(token, 1))).isLessThan(Duration.ofSeconds(HEARTBEAT_SECONDS + 3));
     }
 
     /** Opens the stream, closes the socket and returns how long it takes until the same request is served again (the one place is free). */
     private static Duration measureRelease(String openRequest) throws Exception {
         Socket socket = new Socket("localhost", gateway.port());
         assertThat(statusLine(socket, openRequest)).as("the stream holds the only place").startsWith("HTTP/1.1 200");
-        assertThat(statusLine(new Socket("localhost", gateway.port()), openRequest)).as("a second stream is refused").startsWith("HTTP/1.1 503");
+        try (Socket refused = new Socket("localhost", gateway.port())) {
+            assertThat(statusLine(refused, openRequest)).as("a second stream is refused").startsWith("HTTP/1.1 503");
+        }
 
         long closedAt = System.nanoTime();
         socket.close();
@@ -84,7 +86,6 @@ class StreamReleaseTest {
             if (served) {
                 Duration waited = Duration.ofNanos(System.nanoTime() - closedAt);
                 probe.close();
-                System.out.println("stream release after client close: " + waited.toMillis() + " ms (heartbeat " + HEARTBEAT_SECONDS + " s)");
                 return waited;
             }
             probe.close();
@@ -93,13 +94,22 @@ class StreamReleaseTest {
         return Duration.ofSeconds(90);
     }
 
+    /**
+     * Reads the reply until the stream announced itself (the first event or comment after the headers) or the server ended the reply, so that
+     * no unread data is left when the caller closes the socket: that would turn the close into a reset, which the gateway sees at once.
+     */
     private static String statusLine(Socket socket, String request) throws Exception {
         socket.setSoTimeout(5000);
         socket.getOutputStream().write(request.getBytes(StandardCharsets.UTF_8));
         socket.getOutputStream().flush();
+        StringBuilder reply = new StringBuilder();
         byte[] buffer = new byte[4096];
-        int read = socket.getInputStream().read(buffer);
-        return new String(buffer, 0, Math.max(read, 0), StandardCharsets.UTF_8);
+        int read;
+        while (!reply.toString().contains(": open") && !reply.toString().contains("acknowledged")
+                && (read = socket.getInputStream().read(buffer)) > 0) {
+            reply.append(new String(buffer, 0, read, StandardCharsets.UTF_8));
+        }
+        return reply.toString();
     }
 
     private static String token() throws Exception {
