@@ -1,18 +1,19 @@
-# Thin wrapper: all logic is in ci/run.sh. GitHub hands no secret to a pull request from a fork, and a pull request of the
-# repository itself should use a registry token that can only read. Repository secrets MCP_MAVEN_REPOSITORY_URL, MCP_MAVEN_REPOSITORY_USER and
-# MCP_MAVEN_REPOSITORY_PASSWORD point at the registry with the mcp-contracts artifacts.
+# Thin wrapper: all logic is in ci/run.sh. The pull request job needs no registry and no secret. The push job reads the
+# mcp-contracts artifacts from GitHub Packages with the GITHUB_TOKEN of the run (packages: read; the package must grant
+# access to this repository); no personal access token is stored.
 name: ci
 on:
   push:
     branches: [main]
   pull_request:
-permissions:
-  contents: read
+permissions: {}
 jobs:
   merge-request:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -25,10 +26,11 @@ jobs:
       - run: ci/run.sh hygiene
   verify:
     if: github.event_name == 'push'
-    # The secrets live in the Environment ci-main, which only the branch main may use (protection rule of the Environment).
-    environment: ci-main
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -40,6 +42,6 @@ jobs:
       - run: ci/self-test.sh
       - run: ci/run.sh verify
         env:
-          MCP_MAVEN_REPOSITORY_URL: ${{ secrets.MCP_MAVEN_REPOSITORY_URL }}
-          MCP_MAVEN_REPOSITORY_USER: ${{ secrets.MCP_MAVEN_REPOSITORY_USER }}
-          MCP_MAVEN_REPOSITORY_PASSWORD: ${{ secrets.MCP_MAVEN_REPOSITORY_PASSWORD }}
+          MCP_MAVEN_REPOSITORY_URL: https://maven.pkg.github.com/aiwcorpo/mcp-contracts
+          MCP_MAVEN_REPOSITORY_USER: ${{ github.actor }}
+          MCP_MAVEN_REPOSITORY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}

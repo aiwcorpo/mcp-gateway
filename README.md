@@ -536,7 +536,7 @@ system CI. GitLab: zmienne zapisu `MCP_MAVEN_REPOSITORY_USER/PASSWORD` są chron
 (`MCP_MAVEN_RO_*`), cache MR jest osobny i tylko do odczytu, a runner MR nie ma gniazda Dockera hosta. Jenkins: poświadczenia i agent z gniazdem
 Dockera (etykieta `docker-trusted`) tylko w zadaniu z `main`; zmiana dostaje hygiene i self-test bez gniazda (pełny przebieg po scaleniu);
 Jenkinsfile z gałęzi też jest kodem zmiany, więc obowiązuje to tylko, gdy Jenkins bierze Jenkinsfile z gałęzi domyślnej dla zadań z `main`
-(multibranch z zaufanym źródłem). GitHub: sekrety w Environment `ci-main`, dostępnym tylko dla `main`; PR ma zadanie bez sekretów. Reszta
+(multibranch z zaufanym źródłem). GitHub: rejestr z artefaktami `mcp-contracts` czyta `GITHUB_TOKEN` przebiegu (`packages: read`), bez PAT i bez sekretów; PR ma zadanie bez rejestru. Wydanie (`release.yml`) ma trzy joby: build (tylko odczyt), publish (`packages: write`, tylko `docker load` i `docker push`) i release (`contents: write`, tylko `gh release create`). Reszta
 izolacji runnerów to M6.
 
 ## Struktura
