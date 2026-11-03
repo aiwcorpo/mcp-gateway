@@ -123,6 +123,10 @@ gateway:
     shed-retry-after-seconds: ${MCP_SHED_RETRY_AFTER_SECONDS:2}
     # Retry-After of the 503 given when the store of the MCP sessions (Redis) does not answer.
     session-store-retry-after-seconds: ${MCP_SESSION_STORE_RETRY_AFTER_SECONDS:10}
+    # The most SSE streams (GET of a session and POST subscriptions/listen together) open on one instance; more get 503 with Retry-After. Not per user.
+    max-open-streams: ${MCP_MAX_OPEN_STREAMS:2000}
+    # Streams that compute their list at once after a change; the others wait.
+    stream-recompute-parallelism: ${MCP_STREAM_RECOMPUTE_PARALLELISM:4}
     # Comment line ": keepalive" on every open SSE stream (GET of a session, POST subscriptions/listen).
     sse-heartbeat-interval: ${MCP_SSE_HEARTBEAT_INTERVAL:15s}
     # How often an instance looks for registry and emergency switch changes made by another instance (a change reaches all within 5 s).

@@ -11,7 +11,9 @@ Moves to `mcp-contracts` 6.2.0. Behaviour that clients and other components see 
   `Accept: text/event-stream` opens a stream; `POST subscriptions/listen` is the stateless one. The reference of the
   comparison is the list of the user when the stream was opened; at most one `notifications/tools/list_changed` per
   second and session; heartbeat `: keepalive` every 15 s (`MCP_SSE_HEARTBEAT_INTERVAL`); streams are outside
-  `MCP_MAX_CONCURRENT_REQUESTS` and counted by `mcp_gateway_open_streams`. `GET` without a session is `405` with
+  `MCP_MAX_CONCURRENT_REQUESTS`, counted by `mcp_gateway_open_streams` and limited per instance by `MCP_MAX_OPEN_STREAMS`
+  (default 2000, 503 over it); opening one counts for the request limits of the user; lists are recomputed after a burst
+  of changes once per stream, a few at a time (`MCP_STREAM_RECOMPUTE_PARALLELISM`). `GET` without a session is `405` with
   `Allow: POST, DELETE, GET`.
 - Emergency switch of a server or a tool: table `kill_switches`, five C5 operations, checked after authorization and
   the filter, cache of at most 5 s, fail-closed, `disabledBy` in the catalog, audit reasons `kill_switch`,

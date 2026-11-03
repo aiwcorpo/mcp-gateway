@@ -166,11 +166,18 @@ public record GatewayProperties(
             /* How often every instance looks for changes made by another one: of the registry and of the emergency switches (CC-192, CC-194). */
             @DefaultValue("1s") Duration changePollInterval,
             /* The longest an instance trusts what it read of the emergency switches (CC-194, at most 5 s). */
-            @DefaultValue("5s") Duration killSwitchCacheTtl) {
+            @DefaultValue("5s") Duration killSwitchCacheTtl,
+            /* The most SSE streams open on one instance, both kinds together (decision of 2026-11-03); more are refused with 503 and Retry-After. No limit per user. */
+            @DefaultValue("2000") int maxOpenStreams,
+            /* How many streams compute their list at the same time after a change; the rest wait their turn, so a change does not stop the instance. */
+            @DefaultValue("4") int streamRecomputeParallelism) {
 
         public Mcp {
             if (maxConcurrentRequests < 1 || shedRetryAfterSeconds < 1 || sessionStoreRetryAfterSeconds < 1 || queueWait == null || queueWait.isNegative()) {
                 throw new IllegalArgumentException("gateway.mcp.max-concurrent-requests and shed-retry-after-seconds must be at least 1, queue-wait not negative");
+            }
+            if (maxOpenStreams < 1 || streamRecomputeParallelism < 1) {
+                throw new IllegalArgumentException("gateway.mcp.max-open-streams (MCP_MAX_OPEN_STREAMS) and stream-recompute-parallelism must be at least 1");
             }
             if (sseHeartbeatInterval == null || sseHeartbeatInterval.compareTo(Duration.ofSeconds(1)) < 0
                     || sseHeartbeatInterval.compareTo(Duration.ofSeconds(60)) > 0) {

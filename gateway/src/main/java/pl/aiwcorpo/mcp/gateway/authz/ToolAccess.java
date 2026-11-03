@@ -23,6 +23,8 @@ public final class ToolAccess implements AutoCloseable {
 
     private final ToolAuthorizer authorizer;
     private final ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
+    /** The decisions in progress at once in the whole process, lists and streams together: Cedar is CPU work, more threads than cores only queue. */
+    private final java.util.concurrent.Semaphore slots = new java.util.concurrent.Semaphore(Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
 
     public ToolAccess(ToolAuthorizer authorizer) {
         this.authorizer = authorizer;
@@ -36,7 +38,14 @@ public final class ToolAccess implements AutoCloseable {
             return out;
         }
         List<Future<Boolean>> decisions = new ArrayList<>(tools.size());
-        tools.forEach(tool -> decisions.add(workers.submit(() -> authorizer.mayCall(user, server, tool))));
+        tools.forEach(tool -> decisions.add(workers.submit(() -> {
+            slots.acquireUninterruptibly();
+            try {
+                return authorizer.mayCall(user, server, tool);
+            } finally {
+                slots.release();
+            }
+        })));
         for (Future<Boolean> decision : decisions) {
             try {
                 out.add(decision.get());

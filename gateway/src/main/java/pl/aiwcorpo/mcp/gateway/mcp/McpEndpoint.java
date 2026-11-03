@@ -69,6 +69,7 @@ public class McpEndpoint {
     private final String name;
     private final String version;
     private final int sessionStoreRetryAfter;
+    private final int shedRetryAfter;
     private final ToolStreams streams;
 
     public McpEndpoint(ServerRegistry servers, McpGatewayService service, ClientSessionStore sessions, UpstreamSessions upstream,
@@ -83,6 +84,7 @@ public class McpEndpoint {
         this.name = properties.componentId();
         this.version = properties.version();
         this.sessionStoreRetryAfter = properties.mcp().sessionStoreRetryAfterSeconds();
+        this.shedRetryAfter = properties.mcp().shedRetryAfterSeconds();
         this.streams = streams;
     }
 
@@ -217,10 +219,23 @@ public class McpEndpoint {
         if (refused != null) {
             return refused;
         }
-        ToolStreams.Stream stream = streams.open(ToolStreams.Kind.SESSION, user, sessionId, filter, token.getExpiresAt(), null, true);
+        // Opening a stream is a request like the others for the limits of the user and of the client (CC-135); the stream itself is not limited per user.
+        Optional<RateLimiter.Limited> limited = service.limitRequest(user, filter, requestId, clientRequestId);
+        if (limited.isPresent()) {
+            return limited.get().unavailable() ? RateLimitResponse.unavailable(requestId, limited.get().retryAfterSeconds())
+                    : RateLimitResponse.of(requestId, limited.get().retryAfterSeconds());
+        }
+        Optional<ToolStreams.Stream> opened = streams.open(ToolStreams.Kind.SESSION, user, sessionId, filter, token.getExpiresAt(), null, true);
+        if (opened.isEmpty()) {
+            return RateLimitResponse.overloaded(requestId, shedRetryAfter);
+        }
         count("GET", false);
-        startEventStream(response, requestId);
-        stream.serve(response.getOutputStream());
+        try {
+            startEventStream(response, requestId);
+            opened.get().serve(response.getOutputStream());
+        } finally {
+            opened.get().release();
+        }
         return null;
     }
 
@@ -232,15 +247,20 @@ public class McpEndpoint {
     private ResponseEntity<String> listen(HttpServletRequest request, HttpServletResponse response, Jwt token, GatewayUser user,
                                           EndpointFilter filter, JsonNode message, JsonNode id, String requestId) {
         boolean tools = message.path("params").path("notifications").path("toolsListChanged").asBoolean(false);
-        ToolStreams.Stream stream = streams.open(ToolStreams.Kind.LISTEN, user, null, filter, token.getExpiresAt(), id, tools);
+        Optional<ToolStreams.Stream> opened = streams.open(ToolStreams.Kind.LISTEN, user, null, filter, token.getExpiresAt(), id, tools);
+        if (opened.isEmpty()) {
+            return RateLimitResponse.overloaded(requestId, shedRetryAfter);
+        }
         if (request.getAttribute(ConcurrencyLimitFilter.RELEASE_ATTRIBUTE) instanceof Runnable release) {
             release.run();
         }
         try {
             startEventStream(response, requestId);
-            stream.serve(response.getOutputStream());
+            opened.get().serve(response.getOutputStream());
         } catch (IOException e) {
             log.debug("rid={}: the stream could not be started: {}", requestId, e.getClass().getName());
+        } finally {
+            opened.get().release();
         }
         return null;
     }

@@ -32,7 +32,7 @@ import tools.jackson.databind.node.ObjectNode;
  * response: it waits for a change, a heartbeat or the end of the token, so a slow client holds nobody else. A change (the registry, an
  * emergency switch, the policies, the definitions a server presents) wakes every stream; each computes the list of its user again and
  * tells its client when it differs from the one before. No stream counts for the limit of requests in flight; the number of open ones
- * is a metric. A stream ends when its token expires, when its session is deleted, when its user is purged and when the process stops;
+ * is a metric, and one instance holds at most {@code maxOpen} of them. A stream ends when its token expires, when its session is deleted, when its user is purged and when the process stops;
  * nothing is replayed (Last-Event-ID is ignored), because a client lists the tools again after it reconnects and every call is checked anyway.
  */
 public final class ToolStreams implements ApplicationListener<ContextClosedEvent> {
@@ -53,13 +53,19 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
     private final JsonMapper json;
     private final Set<Stream> open = ConcurrentHashMap.newKeySet();
     private final AtomicInteger openCount = new AtomicInteger();
+    private final int maxOpen;
+    private final Semaphore computing;
+    private final long debounceMillis;
 
     /**
      * @param sessionExists whether a legacy session is still there; a stream of a session that was deleted ends. It may throw when the
      *                      store does not answer, which ends the stream too (fail-closed)
      */
     public ToolStreams(UserToolLists lists, Duration heartbeat, Duration window, LongSupplier millis, MeterRegistry meters,
-                       Predicate<String> sessionExists, JsonMapper json) {
+                       Predicate<String> sessionExists, JsonMapper json, int maxOpen, int recomputeParallelism, Duration debounce) {
+        this.maxOpen = maxOpen;
+        this.computing = new Semaphore(recomputeParallelism);
+        this.debounceMillis = debounce.toMillis();
         this.lists = lists;
         this.heartbeat = heartbeat;
         this.windowMillis = window.toMillis();
@@ -72,19 +78,40 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
     }
 
     /**
-     * Opens a stream for a user. The list of the user at this moment is the reference of the first comparison (CC-207); {@code subscriptionId}
-     * is the id of the {@code subscriptions/listen} request, null for the stream of a session.
+     * Opens a stream for a user, or answers empty when this instance already holds {@code maxOpen} of them (the caller refuses with 503). The
+     * list of the user at this moment is the reference of the first comparison (CC-207); {@code subscriptionId} is the id of the
+     * {@code subscriptions/listen} request, null for the stream of a session. The caller must {@link Stream#release()} the stream
+     * whatever happens after this (serving it does).
      */
-    public Stream open(Kind kind, GatewayUser user, String sessionId, EndpointFilter filter, java.time.Instant tokenExpiresAt,
-                       JsonNode subscriptionId, boolean toolsListChanged) {
-        ListChangeTracker tracker = new ListChangeTracker(filter, lists.of(user), windowMillis);
-        Stream stream = new Stream(kind, user, sessionId, tracker, tokenExpiresAt == null ? Long.MAX_VALUE
-                : millis.getAsLong() + Math.max(0, Duration.between(java.time.Instant.now(), tokenExpiresAt).toMillis()), subscriptionId,
-                toolsListChanged);
-        open.add(stream);
-        openCount.incrementAndGet();
-        meters.counter("mcp_gateway_streams_opened_total", "kind", kind.name().toLowerCase()).increment();
-        return stream;
+    public java.util.Optional<Stream> open(Kind kind, GatewayUser user, String sessionId, EndpointFilter filter, java.time.Instant tokenExpiresAt,
+                                           JsonNode subscriptionId, boolean toolsListChanged) {
+        if (openCount.incrementAndGet() > maxOpen) {
+            openCount.decrementAndGet();
+            meters.counter("mcp_gateway_streams_refused_total").increment();
+            return java.util.Optional.empty();
+        }
+        try {
+            ListChangeTracker tracker = new ListChangeTracker(filter, listOf(user), windowMillis);
+            Stream stream = new Stream(kind, user, sessionId, tracker, tokenExpiresAt == null ? Long.MAX_VALUE
+                    : millis.getAsLong() + Math.max(0, Duration.between(java.time.Instant.now(), tokenExpiresAt).toMillis()), subscriptionId,
+                    toolsListChanged);
+            open.add(stream);
+            meters.counter("mcp_gateway_streams_opened_total", "kind", kind.name().toLowerCase()).increment();
+            return java.util.Optional.of(stream);
+        } catch (RuntimeException failure) {
+            openCount.decrementAndGet();
+            throw failure;
+        }
+    }
+
+    /** At most a few lists are computed at a time: after a change every stream wants one, and each costs a decision of Cedar per tool. */
+    private List<ListChangeTracker.Tool> listOf(GatewayUser user) {
+        computing.acquireUninterruptibly();
+        try {
+            return lists.of(user);
+        } finally {
+            computing.release();
+        }
     }
 
     /** Something that may change a list happened: every stream computes its list again. */
@@ -139,6 +166,7 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
         private final Semaphore wake = new Semaphore(0);
         private volatile boolean check;
         private volatile String closeReason;
+        private final java.util.concurrent.atomic.AtomicBoolean released = new java.util.concurrent.atomic.AtomicBoolean();
 
         private Stream(Kind kind, GatewayUser user, String sessionId, ListChangeTracker tracker, long expiresAtMillis, JsonNode subscriptionId,
                        boolean toolsListChanged) {
@@ -149,6 +177,14 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
             this.expiresAtMillis = expiresAtMillis;
             this.subscriptionId = subscriptionId;
             this.toolsListChanged = toolsListChanged;
+        }
+
+        /** Takes the stream out of the books; harmless a second time. */
+        public void release() {
+            if (released.compareAndSet(false, true)) {
+                open.remove(this);
+                openCount.decrementAndGet();
+            }
         }
 
         void wake() {
@@ -183,8 +219,7 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
             } catch (IOException e) {
                 reason = "client_closed";
             } finally {
-                open.remove(this);
-                openCount.decrementAndGet();
+                release();
             }
             meters.counter("mcp_gateway_streams_closed_total", "reason", reason).increment();
             return reason;
@@ -214,9 +249,21 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
                 }
                 List<Long> sends = List.of();
                 if (check) {
+                    // Changes come in bursts (an approval touches the registry, the switches and the readings): wait a moment so that one list is
+                    // computed for all of them.
+                    if (debounceMillis > 0) {
+                        try {
+                            Thread.sleep(debounceMillis);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            return "interrupted";
+                        }
+                    }
                     check = false;
+                    wake.drainPermits();
+                    now = millis.getAsLong();
                     try {
-                        sends = tracker.observe(now, lists.of(user));
+                        sends = tracker.observe(now, listOf(user));
                     } catch (RuntimeException e) {
                         log.warn("the list of a stream could not be computed: {}", e.getClass().getName());
                     }

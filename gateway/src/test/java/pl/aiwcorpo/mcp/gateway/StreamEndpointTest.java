@@ -242,6 +242,28 @@ class StreamEndpointTest extends GatewayTestBase {
     }
 
     @Test
+    void openingAStreamCountsForTheLimitsOfRequestsOfTheUserLikeAnyRequest() throws Exception {
+        pl.aiwcorpo.mcp.gateway.support.RateLimitTestConfiguration.use(pl.aiwcorpo.mcp.gateway.support.RateLimitTestConfiguration
+                .settings(4, 1_000_000, 1_000_000, 1_000_000, Map.of()));
+        try {
+            String sub = UUID.randomUUID().toString();
+            String token = token(sub);
+            String session = sessionOn(token, "/mcp");
+            assertThat(stream(token, "/mcp", session).status()).isEqualTo(200);
+            assertThat(stream(token, "/mcp", session).status()).isEqualTo(200);
+            assertThat(listen(token, "/mcp", 1, true).status()).isEqualTo(200);
+
+            SseClient fourth = stream(token, "/mcp", session);
+            assertThat(fourth.status()).as("the fourth request of the user in the window").isEqualTo(429);
+            assertThat(fourth.response().headers().firstValue("Retry-After")).isPresent();
+            SseClient fifth = listen(token, "/mcp", 2, true);
+            assertThat(fifth.status()).isEqualTo(429);
+        } finally {
+            pl.aiwcorpo.mcp.gateway.support.RateLimitTestConfiguration.restore();
+        }
+    }
+
+    @Test
     void noStreamTakesAPlaceOfTheLimitOfRequestsInFlight() throws Exception {
         double before = meters.get("mcp_gateway_open_streams").gauge().value();
         String token = token(UUID.randomUUID().toString());

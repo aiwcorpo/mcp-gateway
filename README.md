@@ -407,7 +407,9 @@ konfiguracji zatrzymuje start.
   włączone, bez wyłącznika, ostatni odczyt serwera nie przeczy hashowi, Cedar na poziomie narzędzia); porównanie po filtrze adresu według nazwy, ryzyka i hasha definicji; najwyżej jedno
   powiadomienie na sekundę (`ListChangeTracker`, wektory `list-changed-*`). Wyzwalacze: zmiana rejestru (także na innej instancji, licznik `registry_changes` w PostgreSQL czytany co
   `MCP_CHANGE_POLL_INTERVAL`, domyślnie 1 s), wyłącznik, nowa paczka polityk, inny wynik odczytu definicji serwera, zmiana grup w tokenie sesji z otwartym strumieniem. Strumień nie liczy
-  się do `MCP_MAX_CONCURRENT_REQUESTS` (żądanie oddaje miejsce, gdy okaże się strumieniem), nie ma limitu strumieni na użytkownika, a liczba otwartych to metryka. Heartbeat
+  się do `MCP_MAX_CONCURRENT_REQUESTS` (żądanie oddaje miejsce, gdy okaże się strumieniem), nie ma limitu strumieni na użytkownika, otwarcie strumienia liczy się do zwykłych limitów żądań
+  użytkownika i klienta (429), instancja trzyma najwyżej `MCP_MAX_OPEN_STREAMS` strumieni (domyślnie 2000, oba rodzaje razem; powyżej `503` jak przy przeciążeniu, z `Retry-After`,
+  metryka `mcp_gateway_streams_refused_total`), a liczba otwartych to metryka; po zmianie listy liczy się najwyżej `MCP_STREAM_RECOMPUTE_PARALLELISM` list naraz (domyślnie 4), a seria zmian to jedno przeliczenie na strumień. Heartbeat
   `: keepalive` co `MCP_SSE_HEARTBEAT_INTERVAL` (15 s). Koniec strumienia: wygaśnięcie tokenu, `DELETE` sesji, `purge` użytkownika (na tej instancji; na innych przy następnym
   heartbeacie sesji albo z tokenem), zatrzymanie procesu. Zdarzenia nie są odtwarzane. Granice: dostępność serwera i dryf jego definicji wyzwalają powiadomienie dopiero po odczycie
   przez ruch (`tools/list`, `tools/call`); zmiana grup strumienia bezstanowego dociera z nowym tokenem (nowy strumień).
@@ -439,6 +441,7 @@ konfiguracji zatrzymuje start.
 | `mcp_gateway_open_streams` | otwarte strumienie SSE na instancji (sesje i `subscriptions/listen` razem) |
 | `mcp_gateway_streams_opened_total{kind}` | otwarte strumienie, `kind` = `session` albo `listen` |
 | `mcp_gateway_streams_closed_total{reason}` | zamknięte strumienie (`token_expired`, `session_deleted`, `user_purged`, `shutdown`, `client_closed`, `interrupted`) |
+| `mcp_gateway_streams_refused_total` | strumienie odrzucone przez `MCP_MAX_OPEN_STREAMS` |
 | `mcp_gateway_stream_notifications_total` | wysłane `notifications/tools/list_changed` |
 | `mcp_gateway_kill_switches_active` | wyłączniki, które instancja ostatnio odczytała |
 | `mcp_gateway_kill_switches_unreadable` | 1, gdy instancja nie czyta wyłączników i odmawia wywołań |
