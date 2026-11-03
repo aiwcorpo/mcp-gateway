@@ -225,7 +225,7 @@ public class McpEndpoint {
             return limited.get().unavailable() ? RateLimitResponse.unavailable(requestId, limited.get().retryAfterSeconds())
                     : RateLimitResponse.of(requestId, limited.get().retryAfterSeconds());
         }
-        Optional<ToolStreams.Stream> opened = streams.open(ToolStreams.Kind.SESSION, user, sessionId, filter, token.getExpiresAt(), null, true);
+        Optional<ToolStreams.Stream> opened = streams.open(ToolStreams.Kind.SESSION, user, sessionId, filter, target.routeSystem(), token.getExpiresAt(), null, true);
         if (opened.isEmpty()) {
             return RateLimitResponse.overloaded(requestId, shedRetryAfter);
         }
@@ -245,9 +245,9 @@ public class McpEndpoint {
      * known to be a stream. The first message is the acknowledgement with the subset of the filter of the client that the gateway honours.
      */
     private ResponseEntity<String> listen(HttpServletRequest request, HttpServletResponse response, Jwt token, GatewayUser user,
-                                          EndpointFilter filter, JsonNode message, JsonNode id, String requestId) {
+                                          Target target, EndpointFilter filter, JsonNode message, JsonNode id, String requestId) {
         boolean tools = message.path("params").path("notifications").path("toolsListChanged").asBoolean(false);
-        Optional<ToolStreams.Stream> opened = streams.open(ToolStreams.Kind.LISTEN, user, null, filter, token.getExpiresAt(), id, tools);
+        Optional<ToolStreams.Stream> opened = streams.open(ToolStreams.Kind.LISTEN, user, null, filter, target.routeSystem(), token.getExpiresAt(), id, tools);
         if (opened.isEmpty()) {
             return RateLimitResponse.overloaded(requestId, shedRetryAfter);
         }
@@ -454,7 +454,7 @@ public class McpEndpoint {
         }
         if ("subscriptions/listen".equals(method)) {
             count(method, true);
-            return listen(request, response, token, user, filter, message, id, requestId);
+            return listen(request, response, token, user, target, filter, message, id, requestId);
         }
         return dispatch(ctx, message, method, id, true);
     }

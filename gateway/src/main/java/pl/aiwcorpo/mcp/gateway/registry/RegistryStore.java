@@ -93,12 +93,6 @@ public class RegistryStore {
                     + "ON CONFLICT (server_id, tool) DO UPDATE SET risk = EXCLUDED.risk").params(serverId, tool, risk).update();
         }
 
-        /** A tool of an adapter that left the manifest loses its classification, and with it the floor it set (CC-207). */
-        public void deleteFloor(String tool) {
-            wrote = true;
-            jdbc.sql("DELETE FROM registry_risk_floor WHERE server_id = ? AND tool = ?").params(serverId, tool).update();
-        }
-
         /** Raises the floors to these risks (ordinals); a floor is never lowered here. */
         public void raiseFloors(Map<String, Integer> risks) {
             wrote = true;

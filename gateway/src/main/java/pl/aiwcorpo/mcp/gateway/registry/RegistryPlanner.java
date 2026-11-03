@@ -36,7 +36,7 @@ public final class RegistryPlanner {
     /**
      * The registration of an adapter (CC-206, CC-207): nothing is approved by it. A tool whose hash is the approved one stays as it is, with
      * its classification; every other new or changed tool waits for an administrator with the source {@code adapter}, a tool that looks
-     * like a read included; a tool the manifest no longer has is removed, and its classification with it. There is no risk to compare, so
+     * like a read included; a tool the manifest no longer has is removed, and its classification with it (the floor of the risk stays). There is no risk to compare, so
      * no floor and no lowering here: the administrator classifies when approving.
      */
     public static Plan planAdapter(JsonNode manifest, String credentialJson, Map<String, RegisteredTool> existing) {

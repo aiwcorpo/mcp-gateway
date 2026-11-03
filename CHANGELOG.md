@@ -22,6 +22,9 @@ Moves to `mcp-contracts` 6.2.0. Behaviour that clients and other components see 
   (certificate `mcp-adapter-<serverId>`), `source: adapter`, classification (`risk`, `action`) by an administrator
   when approving, `classification_required`, `classification_not_allowed`, `classification_inconsistent`,
   `adapter_mode_mismatch`; the hash of an adapter entry does not cover `risk` and `action`.
+- Streams compute the list of an identity once and keep its Cedar decisions until the policies change; they use slots of their
+  own, apart from `tools/list`. A tool of an adapter that leaves the manifest loses its classification but not the floor of
+  the risk. `/s/<serverId>/mcp` streams compare the tools of that system only.
 - A forbid at the level of the tool is audited as `policy_forbid` (the client still gets `not_found_or_denied`).
 - Summaries of the audit throttle carry `suppressedTargets`.
 - `503` has `Retry-After`: 2 s when the gateway is busy, 10 s when the store of the sessions does not answer.

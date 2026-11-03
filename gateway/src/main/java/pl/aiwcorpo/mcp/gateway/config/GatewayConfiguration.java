@@ -230,7 +230,10 @@ public class GatewayConfiguration {
         registry.onChange(streams::changed);
         killSwitches.onChange(streams::changed);
         guard.onVerdictChange(streams::changed);
-        policies.onChange(streams::changed);
+        policies.onChange(() -> {
+            lists.policiesChanged();
+            streams.changed();
+        });
         return streams;
     }
 

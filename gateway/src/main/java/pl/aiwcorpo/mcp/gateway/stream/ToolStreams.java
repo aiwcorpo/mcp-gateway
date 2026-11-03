@@ -53,6 +53,7 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
     private final JsonMapper json;
     private final Set<Stream> open = ConcurrentHashMap.newKeySet();
     private final AtomicInteger openCount = new AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicLong changes = new java.util.concurrent.atomic.AtomicLong();
     private final int maxOpen;
     private final Semaphore computing;
     private final long debounceMillis;
@@ -83,19 +84,25 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
      * {@code subscriptions/listen} request, null for the stream of a session. The caller must {@link Stream#release()} the stream
      * whatever happens after this (serving it does).
      */
-    public java.util.Optional<Stream> open(Kind kind, GatewayUser user, String sessionId, EndpointFilter filter, java.time.Instant tokenExpiresAt,
-                                           JsonNode subscriptionId, boolean toolsListChanged) {
+    public java.util.Optional<Stream> open(Kind kind, GatewayUser user, String sessionId, EndpointFilter filter, String routeSystem,
+                                           java.time.Instant tokenExpiresAt, JsonNode subscriptionId, boolean toolsListChanged) {
         if (openCount.incrementAndGet() > maxOpen) {
             openCount.decrementAndGet();
             meters.counter("mcp_gateway_streams_refused_total").increment();
             return java.util.Optional.empty();
         }
         try {
-            ListChangeTracker tracker = new ListChangeTracker(filter, listOf(user), windowMillis);
+            long before = changes.get();
+            // A stream that announces nothing needs no reference and no list: it costs nothing at a change (and keeps its place for the limit).
+            ListChangeTracker tracker = toolsListChanged ? new ListChangeTracker(filter, routeSystem, listOf(user), windowMillis) : null;
             Stream stream = new Stream(kind, user, sessionId, tracker, tokenExpiresAt == null ? Long.MAX_VALUE
                     : millis.getAsLong() + Math.max(0, Duration.between(java.time.Instant.now(), tokenExpiresAt).toMillis()), subscriptionId,
                     toolsListChanged);
             open.add(stream);
+            if (changes.get() != before) {
+                // Something changed while the reference was computed: the stream must not wait for the next change to find out.
+                stream.wake();
+            }
             meters.counter("mcp_gateway_streams_opened_total", "kind", kind.name().toLowerCase()).increment();
             return java.util.Optional.of(stream);
         } catch (RuntimeException failure) {
@@ -116,6 +123,7 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
 
     /** Something that may change a list happened: every stream computes its list again. */
     public void changed() {
+        changes.incrementAndGet();
         open.forEach(Stream::wake);
     }
 
@@ -235,7 +243,10 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
                 if (now >= expiresAtMillis) {
                     return "token_expired";
                 }
-                long wakeAt = Math.min(nextBeat, Math.min(expiresAtMillis, tracker.nextDueAt()));
+                long wakeAt = Math.min(nextBeat, Math.min(expiresAtMillis, tracker == null ? Long.MAX_VALUE : tracker.nextDueAt()));
+                if (check) {
+                    wakeAt = Math.min(wakeAt, now + 1000);
+                }
                 try {
                     wake.tryAcquire(Math.max(1, wakeAt - now), TimeUnit.MILLISECONDS);
                 } catch (InterruptedException e) {
@@ -248,9 +259,9 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
                     return closeReason;
                 }
                 List<Long> sends = List.of();
-                if (check) {
+                if (check && tracker != null) {
                     // Changes come in bursts (an approval touches the registry, the switches and the readings): wait a moment so that one list is
-                    // computed for all of them.
+                    // computed for all of them. The wake-ups are taken before the flag is cleared, so that one that comes in between is not lost.
                     if (debounceMillis > 0) {
                         try {
                             Thread.sleep(debounceMillis);
@@ -259,16 +270,19 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
                             return "interrupted";
                         }
                     }
-                    check = false;
                     wake.drainPermits();
+                    check = false;
                     now = millis.getAsLong();
                     try {
                         sends = tracker.observe(now, listOf(user));
                     } catch (RuntimeException e) {
-                        log.warn("the list of a stream could not be computed: {}", e.getClass().getName());
+                        check = true;
+                        log.warn("the list of a stream could not be computed, it is tried again: {}", e.getClass().getName());
                     }
+                } else {
+                    check = false;
                 }
-                if (sends.isEmpty()) {
+                if (sends.isEmpty() && tracker != null) {
                     sends = tracker.advance(now);
                 }
                 for (int i = 0; i < sends.size(); i++) {

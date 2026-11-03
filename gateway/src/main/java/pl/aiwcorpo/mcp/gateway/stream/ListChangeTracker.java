@@ -20,13 +20,22 @@ public final class ListChangeTracker {
 
     private final EndpointFilter filter;
     private final long windowMillis;
+    private final String routeSystem;
     private List<String> previous;
     private long lastSent = Long.MIN_VALUE;
     private boolean pending;
 
-    /** @param opened the list of the user when the stream was opened: the reference of the first comparison */
     public ListChangeTracker(EndpointFilter filter, List<Tool> opened, long windowMillis) {
+        this(filter, null, opened, windowMillis);
+    }
+
+    /**
+     * @param routeSystem the system of the route ({@code /s/<serverId>/mcp}), whose tools alone make the list there; null on {@code /mcp}
+     * @param opened the list of the user when the stream was opened: the reference of the first comparison
+     */
+    public ListChangeTracker(EndpointFilter filter, String routeSystem, List<Tool> opened, long windowMillis) {
         this.filter = filter;
+        this.routeSystem = routeSystem;
         this.windowMillis = windowMillis;
         this.previous = entries(opened);
     }
@@ -71,7 +80,7 @@ public final class ListChangeTracker {
     private List<String> entries(List<Tool> tools) {
         List<String> out = new ArrayList<>();
         for (Tool tool : tools) {
-            if (filter.allows(tool.name(), tool.risk())) {
+            if ((routeSystem == null || tool.name().startsWith(routeSystem + "__")) && filter.allows(tool.name(), tool.risk())) {
                 out.add(tool.name() + " " + tool.risk() + " " + (tool.hash() == null ? "" : tool.hash()));
             }
         }

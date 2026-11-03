@@ -191,12 +191,9 @@ public final class RegistryService {
                 return new Written.Lowered(plan.lowered());
             }
             tx.saveServer(manifest, source);
-            existing.keySet().stream().filter(name -> !plan.tools().containsKey(name)).forEach(name -> {
-                tx.deleteTool(name);
-                if (adapterChannel) {
-                    tx.deleteFloor(name);
-                }
-            });
+            // The floor of the risk stays when a tool leaves (CC-167): a tool of an adapter that comes back is new and unclassified, and an
+            // administrator who classifies it lower than before needs acceptRiskLowering.
+            existing.keySet().stream().filter(name -> !plan.tools().containsKey(name)).forEach(tx::deleteTool);
             plan.tools().forEach((name, tool) -> {
                 if (!tool.equals(existing.get(name))) {
                     tx.saveTool(tool);

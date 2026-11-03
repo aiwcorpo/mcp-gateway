@@ -242,6 +242,35 @@ class StreamEndpointTest extends GatewayTestBase {
     }
 
     @Test
+    void aStreamOnTheRouteOfOneSystemHearsOnlyOfThatSystem() throws Exception {
+        String token = token(UUID.randomUUID().toString());
+        SseClient jira = stream(token, "/s/mcp-jira/mcp", sessionOn(token, "/s/mcp-jira/mcp"));
+        SseClient everything = stream(token, "/mcp", sessionOn(token, "/mcp"));
+        assertThat(jira.nextLine(Duration.ofSeconds(2))).isEqualTo(": open");
+
+        assertThat(asAdmin("PUT", "/admin/v1/registry/servers/mcp-gitlab/tools/get_issue/kill-switch", "{\"reason\":\"test\"}").statusCode()).isEqualTo(204);
+
+        assertThat(everything.nextMessage(FIVE_SECONDS)).as("the list of all systems changed").isNotNull();
+        assertThat(jira.nextMessage(Duration.ofMillis(2000))).as("the list of the route did not").isNull();
+    }
+
+    @Test
+    void aTokenWithOtherGroupsOnTheSessionChangesTheListOfItsStream() throws Exception {
+        String sub = UUID.randomUUID().toString();
+        String wide = env.idp.token(sub, "streamer", List.of("mcp-jira-read", "mcp-jira-write"));
+        String narrow = env.idp.token(sub, "streamer", List.of("mcp-jira-read"));
+        String session = sessionOn(wide, "/mcp");
+        SseClient stream = stream(wide, "/mcp", session);
+        assertThat(stream.nextLine(Duration.ofSeconds(2))).isEqualTo(": open");
+
+        HttpResponse<String> ping = send(narrow, "/mcp", "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"ping\"}",
+                Map.of("Mcp-Session-Id", session, "MCP-Protocol-Version", "2025-11-25"));
+        assertThat(ping.statusCode()).isEqualTo(200);
+
+        assertThat(stream.nextMessage(FIVE_SECONDS)).as("the user lost the write tools").isNotNull();
+    }
+
+    @Test
     void openingAStreamCountsForTheLimitsOfRequestsOfTheUserLikeAnyRequest() throws Exception {
         pl.aiwcorpo.mcp.gateway.support.RateLimitTestConfiguration.use(pl.aiwcorpo.mcp.gateway.support.RateLimitTestConfiguration
                 .settings(4, 1_000_000, 1_000_000, 1_000_000, Map.of()));

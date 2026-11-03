@@ -38,7 +38,7 @@ public class KillSwitchStore {
                 .list();
     }
 
-    /** A switch that is on stays on; only the reason (and who gave it) changes, the time of the first putting stays. */
+    /** A switch that is on stays on; only the reason changes, who put it first and when stay (the audit event has the actor of every putting). */
     public void put(String serverId, String tool, String setBy, String reason) {
         transactions.executeWithoutResult(status -> {
             jdbc.sql("INSERT INTO kill_switches (server_id, tool, set_by, reason) VALUES (?, ?, ?, ?) "

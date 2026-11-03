@@ -84,11 +84,13 @@ public final class KillSwitches {
         boolean ok;
         synchronized (refreshing) {
             Snapshot before = snapshot;
+            // The state is as of the start of the read, so that is when its age begins (a slow database must not make an old state young).
+            long startedNanos = nanoTime.getAsLong();
             try {
                 List<KillSwitchStore.Entry> entries = reader.get();
                 Set<String> keys = new HashSet<>();
                 entries.forEach(entry -> keys.add(key(entry.serverId(), entry.tool())));
-                snapshot = new Snapshot(List.copyOf(entries), Set.copyOf(keys), nanoTime.getAsLong());
+                snapshot = new Snapshot(List.copyOf(entries), Set.copyOf(keys), startedNanos);
                 failed = false;
                 changed = before == null || !before.keys().equals(keys);
                 ok = true;

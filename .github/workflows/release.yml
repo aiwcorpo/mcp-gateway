@@ -1,6 +1,6 @@
 # Release of the image to ghcr.io with its SBOM, on a version tag. Not run yet: the repository on GitHub does not exist
 # and publishing needs the decision of the owner (plan-wydanie.md). Only the two actions below are used, pinned to the
-# SHAs of ci.yml; docker and gh come with the runner.
+# same SHAs as in ci.yml; docker and gh come with the runner.
 # Secrets MCP_MAVEN_REPOSITORY_URL, _USER and _PASSWORD point at the registry with the mcp-contracts artifacts (Environment release).
 name: release
 on:

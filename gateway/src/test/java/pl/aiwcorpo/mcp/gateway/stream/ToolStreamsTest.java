@@ -35,7 +35,7 @@ class ToolStreamsTest {
     }
 
     private Optional<ToolStreams.Stream> open(ToolStreams streams) {
-        return streams.open(ToolStreams.Kind.SESSION, USER, "session", EndpointFilter.none(), null, null, true);
+        return streams.open(ToolStreams.Kind.SESSION, USER, "session", EndpointFilter.none(), null, null, null, true);
     }
 
     @Test
@@ -59,6 +59,20 @@ class ToolStreamsTest {
         org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, () -> open(streams));
 
         assertThat(streams.openCount()).isZero();
+    }
+
+    @Test
+    void aStreamThatAnnouncesNothingComputesNoList() {
+        ToolStreams streams = streams(10, 4, Duration.ZERO);
+        org.mockito.Mockito.clearInvocations(lists);
+
+        ToolStreams.Stream silent = streams.open(ToolStreams.Kind.LISTEN, USER, null, EndpointFilter.none(), null, null,
+                JsonMapper.builder().build().readTree("1"), false).orElseThrow();
+        streams.changed();
+
+        org.mockito.Mockito.verify(lists, org.mockito.Mockito.never()).of(any());
+        assertThat(streams.openCount()).isEqualTo(1);
+        silent.release();
     }
 
     @Test

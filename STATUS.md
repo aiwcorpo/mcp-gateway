@@ -21,6 +21,15 @@ Testy: `ci/run.sh verify` (822 testy gatewaya po tym etapie, zielone), vectory 6
 Decyzje i granice tego etapu:
 
 - **Narzędzie adaptera bez klasyfikacji** jest oceniane przez Cedar jak `DESTRUCTIVE` z akcją `admin` (zablokowane, `disabled`), więc `tool_disabled` zobaczy tylko użytkownik z prawem do takich narzędzi systemu, każdy inny `not_found_or_denied` (niezmiennik 8). W paczkach przykładowych nikt takiego prawa nie ma dla `opensearch`.
+- **Przegląd M6 e3 (H1, M1, M2, L1-L8).** H1: lista strumienia liczona raz na tożsamość z pamięcią decyzji Cedar (odcisk narzędzia, do zmiany paczki polityk), strumienie jednej tożsamości dzielą wynik,
+  osobny pas slotów Cedar dla strumieni (`ToolAccess.Lane.BACKGROUND`, rdzenie/2) obok pasa `tools/list`; wyłącznik, zmiana odczytu i zmiana jednego narzędzia nie wołają Cedara dla reszty.
+  Pomiar `StreamLoadTest` (`-Dstreams.load.identities=500 -Dstreams.load.perIdentity=4`, 12 rdzeni, 253 narzędzia): otwarcie 2000 strumieni 94 s (ok. 0,19 s na tożsamość), `tools/list` klienta 154 ms bez burzy i 142 ms w trakcie,
+  jeden wyłącznik: 2000 z 2000 powiadomionych w 322 ms, zmiana ryzyka jednego narzędzia w rejestrze: 2000 z 2000 w 685 ms, nowa paczka polityk: przeliczenie wszystkich 500 tożsamości 89 s.
+  Granica: 5 s trzyma przy 2000 strumieni dla zmian rejestru i wyłączników; dla zmiany polityk i dla otwarcia strumieni nowych tożsamości tempo to ok. 5 tożsamości na sekundę (5 s starcza na ok. 25 tożsamości),
+  na 2 rdzeniach kilkakrotnie mniej. Domyślny test w CI ma 60 tożsamości x 4. M1: podłoga ryzyka zostaje po usunięciu narzędzia adaptera (klasyfikacja przepada, podłoga nie; test). M2: procedura przejścia i cofnięcia w README.
+  L1 trasa systemu w trackerze, L2 zgubione wybudzenia (reorder, ponowienie po wyjątku, zmiana w trakcie liczenia odniesienia), L3 `listen` bez `toolsListChanged` nie liczy, L4 wiek kopii wyłączników od startu odczytu,
+  L5 anulowane decyzje nie liczą się, L6 `ci.yml` z SHA i `permissions`, `ci/Dockerfile` po digeście (`imagetools inspect`, bez pobierania), L7 komentarz `put`, L8 README i test grup sesji.
+  SHA akcji GitHub przepisane z `release.yml` brokera, nie sprawdzałem ich online.
 - **Limit strumieni (decyzja człowieka 2026-11-03) i przegląd bezpieczeństwa strumienia.** `MCP_MAX_OPEN_STREAMS` (2000 na instancję, `GET` sesji i `subscriptions/listen` razem, bez limitu na użytkownika);
   powyżej `503` z `Retry-After` (`MCP_SHED_RETRY_AFTER_SECONDS`) i tym samym ciałem co przeciążenie z CC-199, metryka `mcp_gateway_streams_refused_total` (`StreamLimitTest`, `ToolStreamsTest`).
   Otwarcie strumienia przechodzi przez `limitRequest` (limity użytkownika i klienta). Wpis strumienia jest zwalniany w `finally` (także gdy odpowiedź nie wystartuje); po zmianie przeliczenie listy

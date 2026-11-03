@@ -214,13 +214,28 @@ class RegistryAdapterTest extends GatewayTestBase {
 
         submit(adapterManifest("0.4.0", Tool.readOnly("get_issue")));
         assertThat(tool("update_issue")).isNull();
-        assertThat(store.floors(SERVER)).doesNotContainKey("update_issue");
+        assertThat(store.floors(SERVER)).as("the floor of the risk stays").containsEntry("update_issue", 1);
 
         submit(both);
         RegisteredTool back = tool("update_issue");
         assertThat(back.approved()).isNull();
         assertThat(back.pending().change()).isEqualTo("new");
         assertThat(adapterServers.find(SERVER).orElseThrow().tools()).doesNotContainKey("update_issue");
+    }
+
+    @Test
+    void aToolRemovedAndReturnedCannotBeClassifiedLowerWithoutTheFlag() {
+        ObjectNode both = adapterManifest("0.3.0", Tool.update("update_issue"), Tool.readOnly("get_issue"));
+        submit(both);
+        adapterService.approve(requestId, SERVER, "update_issue", hash(both, "update_issue"), false, new Classification("UPDATE", "update"), admin());
+        submit(adapterManifest("0.4.0", Tool.readOnly("get_issue")));
+        submit(both);
+        String hash = hash(both, "update_issue");
+
+        assertThat(adapterService.approve(requestId, SERVER, "update_issue", hash, false, new Classification("READ_ONLY", "read"), admin()))
+                .as("the floor of the risk outlives the classification (CC-167)").isInstanceOf(Approval.RiskLowered.class);
+        assertThat(adapterService.approve(requestId, SERVER, "update_issue", hash, true, new Classification("READ_ONLY", "read"), admin()))
+                .isEqualTo(new Approval.Approved(0));
     }
 
     @Test
@@ -359,7 +374,7 @@ class RegistryAdapterTest extends GatewayTestBase {
         assertThat(gone).isEqualTo(strings(expected.path("removed")));
         if (expected.has("classificationLost")) {
             TreeSet<String> lost = new TreeSet<>();
-            removed.stream().filter(name -> !store.floors(SERVER).containsKey(name)).forEach(lost::add);
+            removed.stream().filter(name -> service.registered(SERVER).orElseThrow().tools().get(name) == null).forEach(lost::add);
             assertThat(lost).isEqualTo(strings(expected.path("classificationLost")));
         }
     }

@@ -45,6 +45,12 @@ polityka `noeviction`, `appendonly yes`), IdP z OIDC (Keycloak lub Entra), broke
   Zmiany rejestru i wyłączników dochodzą do pozostałych instancji w ciągu sekundy (`MCP_CHANGE_POLL_INTERVAL`), skutek wyłącznika najpóźniej po 5 s.
 - *Aktualizacja:* nowy obraz z tym samym `MCP_*`, migracje Flyway idą przy starcie; kolejno po jednej instancji. Strumienie SSE kończą się przy zatrzymaniu
   instancji (klient otwiera nowy).
+- *Przejście z M5 (obraz `m6-01c9f5a` i starsze) na M6 i cofnięcie.* Migracje V8 i V9 są addytywne i działają przy dwóch instancjach (blokada Flyway), a stara wersja
+  uruchomi się na bazie po V9 (ignoruje nowe migracje), ale **nie zna wyłączników awaryjnych**: stara instancja ich nie sprawdza, a `PUT`/`DELETE .../kill-switch` skierowane do niej dają `404`.
+  Dlatego: (1) przy aktualizacji kroczącej nie wyłączaj niczego wyłącznikiem, dopóki wszystkie instancje nie są na M6 (w oknie wyłącznik działa tylko na nowych); (2) przed cofnięciem
+  do M5 zdejmij ruch do serwerów z aktywnym wyłącznikiem (`MCP_SERVER_<SYSTEM>_ENABLED=false` w konfiguracji, albo nie cofaj), bo po cofnięciu wyłączniki przestają działać po cichu;
+  (3) serwer za adapterem (`source: adapter`, wpisy bez `risk`) stara wersja wyłączy (manifest nie przechodzi jej walidacji, fail-closed); stara wersja nie wstanie też z serwerem
+  adaptera bez wpisów `tools` w konfiguracji.
 - *Wyłącznik awaryjny:* portal (administrator `mcp-platform-admin`) albo `PUT/DELETE /admin/v1/registry/servers/{serverId}[/tools/{tool}]/kill-switch`; lista `GET /admin/v1/kill-switches`;
   alert na zdarzenie `admin_change` z powodem `kill_switch_set` oraz na metrykę `mcp_gateway_kill_switches_unreadable` = 1.
 - *Nowy obcy serwer:* `MCP_SERVER_<SYSTEM>_ADAPTER=true`, certyfikat adaptera `mcp-adapter-<serverId>`; adapter wysyła manifest przy starcie, administrator klasyfikuje
@@ -410,8 +416,7 @@ konfiguracji zatrzymuje start.
   się do `MCP_MAX_CONCURRENT_REQUESTS` (żądanie oddaje miejsce, gdy okaże się strumieniem), nie ma limitu strumieni na użytkownika, otwarcie strumienia liczy się do zwykłych limitów żądań
   użytkownika i klienta (429), instancja trzyma najwyżej `MCP_MAX_OPEN_STREAMS` strumieni (domyślnie 2000, oba rodzaje razem; powyżej `503` jak przy przeciążeniu, z `Retry-After`,
   metryka `mcp_gateway_streams_refused_total`), a liczba otwartych to metryka; po zmianie listy liczy się najwyżej `MCP_STREAM_RECOMPUTE_PARALLELISM` list naraz (domyślnie 4), a seria zmian to jedno przeliczenie na strumień. Heartbeat
-  `: keepalive` co `MCP_SSE_HEARTBEAT_INTERVAL` (15 s). Koniec strumienia: wygaśnięcie tokenu, `DELETE` sesji, `purge` użytkownika (na tej instancji; na innych przy następnym
-  heartbeacie sesji albo z tokenem), zatrzymanie procesu. Zdarzenia nie są odtwarzane. Granice: dostępność serwera i dryf jego definicji wyzwalają powiadomienie dopiero po odczycie
+  `: keepalive` co `MCP_SSE_HEARTBEAT_INTERVAL` (15 s). Koniec strumienia: wygaśnięcie tokenu, `DELETE` sesji, `purge` użytkownika (na tej instancji; na innej strumień sesji kończy się przy następnym heartbeacie, najwyżej po 15 s, bo sesji już nie ma, a bezstanowy dopiero z wygaśnięciem tokenu, najwyżej po 60 min), zatrzymanie procesu. Zdarzenia nie są odtwarzane. Lista strumienia jest liczona raz na tożsamość (sub, nazwa, klient, grupy): decyzje Cedar są pamiętane do następnej paczki polityk i dotyczą narzędzi o tym samym odcisku (serwer, nazwa, ryzyko, akcja, typ poświadczenia, `resourceRefs`), więc wyłącznik, zmiana odczytu serwera i zmiana jednego narzędzia nie kosztują decyzji dla reszty, a strumienie jednej tożsamości dzielą wynik; strumienie liczą w osobnej, małej puli (nie dzielą slotów z `tools/list` klientów). Strumień sesji na `/s/<serverId>/mcp` porównuje tylko narzędzia tego systemu; `subscriptions/listen` bez `toolsListChanged` nie liczy list. Zmiana grup w tokenie sesji z otwartym strumieniem zmienia jego listę przy następnym żądaniu tej sesji. Granice: dostępność serwera i dryf jego definicji wyzwalają powiadomienie dopiero po odczycie
   przez ruch (`tools/list`, `tools/call`); zmiana grup strumienia bezstanowego dociera z nowym tokenem (nowy strumień).
 - **Wyłącznik awaryjny (CC-194, A9).** Tabela `kill_switches` (Flyway V8), operacje C5 `putServerKillSwitch`, `deleteServerKillSwitch`, `putToolKillSwitch`, `deleteToolKillSwitch`,
   `listKillSwitches` (administrator `mcp-platform-admin`, `mcp-portal-bff`); włączenie bez MFA, bez wygasania. Sprawdzany w `tools/call` po `mayCall` i po filtrze adresu, przed
@@ -431,6 +436,9 @@ konfiguracji zatrzymuje start.
   ograniczania zdarzeń mają `suppressedTargets`; `503` przy przeciążeniu ma `Retry-After: 2` (`MCP_SHED_RETRY_AFTER_SECONDS`), `503` przy niedostępnym magazynie sesji `Retry-After: 10`
   (`MCP_SESSION_STORE_RETRY_AFTER_SECONDS`); `cursor: ""` w `tools/list` to `-32602`; claimy tokenu IdP spoza znanych (w tym `vs`, `vsc`) są ignorowane i nigdy nie trafiają do JWT C2;
   gateway nie ponawia sam `tools/call` o ryzyku `UPDATE` ani `DESTRUCTIVE` (po utracie sesji przez serwer klient dostaje `upstream_unavailable` i decyduje).
+- **Skala strumieni (pomiar w STATUS.md).** 2000 strumieni 500 tożsamości, 253 narzędzia, 12 rdzeni: powiadomienie o wyłączniku do wszystkich w 0,3 s, o zmianie jednego narzędzia w 0,7 s,
+  `tools/list` klienta w czasie burzy bez zmiany (ok. 140 ms). Nowa paczka polityk i otwarcie strumienia nowej tożsamości kosztują pełne przeliczenie (ok. 0,18 s na tożsamość, 5 tożsamości na sekundę),
+  więc dla polityk nie ma obietnicy 5 s przy setkach tożsamości.
 - **Koszt `tools/list`.** Decyzje Cedar o narzędziach jednego serwera liczą się równolegle (`ToolAccess`) i raz na narzędzie; 253 narzędzia: 883 ms po kolei, 162 ms równolegle
   na 12 rdzeniach, 493 ms na 2 rdzeniach (`ToolsListCostTest`). Jedna decyzja to ok. 3,4 ms, prawie w całości wywołanie natywnej biblioteki Cedar.
 
