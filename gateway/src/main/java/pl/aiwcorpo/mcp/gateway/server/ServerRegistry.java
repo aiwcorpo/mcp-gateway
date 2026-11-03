@@ -11,6 +11,7 @@ import java.util.regex.Pattern;
 import pl.aiwcorpo.mcp.gateway.config.GatewayProperties;
 import pl.aiwcorpo.mcp.gateway.registry.RegisteredTool;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ObjectNode;
 
 /**
  * The servers behind the gateway. {@code serverId -> system, internalUrl}, the credential policy and the enabled switch come
@@ -36,6 +37,7 @@ public final class ServerRegistry {
     private volatile Map<String, McpServer> servers;
     /** Tools that have only a pending entry (never approved): known to the registry, answered with tool_disabled (CC-178). */
     private volatile Map<String, Map<String, ToolDefinition>> unapproved = Map.of();
+    private volatile io.micrometer.core.instrument.MeterRegistry meters;
 
     public ServerRegistry(Map<String, GatewayProperties.Server> config, String defaultMode) {
         if (!Set.of(MODE_REQUIRED, MODE_STATIC).contains(defaultMode)) {
@@ -60,6 +62,11 @@ public final class ServerRegistry {
         this.servers = Map.copyOf(built);
     }
 
+    /** Entries that are not served for a reason of their own are counted here (fail-closed, with a log line). */
+    public void bindTo(io.micrometer.core.instrument.MeterRegistry registry) {
+        this.meters = registry;
+    }
+
     public Optional<McpServer> find(String serverId) {
         return Optional.ofNullable(servers.get(serverId));
     }
@@ -72,7 +79,8 @@ public final class ServerRegistry {
     public Map<String, Integer> configuredMinimumRisks(String serverId) {
         GatewayProperties.Server configured = config.get(serverId);
         Map<String, Integer> minimum = new LinkedHashMap<>();
-        if (configured != null) {
+        // The tools of an adapter are read only and the foreign server is not the one the configuration describes: nothing there is a minimum.
+        if (configured != null && !configured.adapter()) {
             configured.tools().forEach((name, tool) -> {
                 try {
                     minimum.put(name, Risk.valueOf(tool.risk()).ordinal());
@@ -121,6 +129,19 @@ public final class ServerRegistry {
                 return;
             }
             Risk risk = Risk.valueOf(entry.path("risk").asString());
+            if (current.adapter() && risk != Risk.READ_ONLY) {
+                // A tool of an adapter is read only (CC-227). An entry stored with a write classification (by an instance that still takes it)
+                // is not served, whatever the registry holds: it waits as unclassified.
+                log.error("{}: tool {} of an adapter is approved as {}; adapters are read only, it is not served", serverId, name, risk);
+                if (meters != null) {
+                    meters.counter("mcp_gateway_registry_entries_refused_total", "reason", "adapter_not_read_only").increment();
+                }
+                ObjectNode unclassified = ((ObjectNode) entry).deepCopy();
+                unclassified.remove("risk");
+                unclassified.remove("action");
+                waiting.put(name, waitingTool(name, unclassified));
+                return;
+            }
             if (risk.ordinal() < minimum.getOrDefault(name, 0)) {
                 // The manifest says less than the configuration or an earlier approval: the tool is left out until it says enough.
                 log.error("{}: tool {} is approved with a risk below the minimum; it is not served", serverId, name);
@@ -212,6 +233,9 @@ public final class ServerRegistry {
         }
         if (!SEMVER.matcher(server.version()).matches()) {
             throw new IllegalStateException("gateway.servers." + serverId + ".version must be a SemVer");
+        }
+        if (server.adapter() && server.tools().values().stream().anyMatch(tool -> !"READ_ONLY".equals(tool.risk()))) {
+            log.warn("gateway.servers.{}.tools: the risks above READ_ONLY are ignored, a server behind an adapter is read only (CC-227)", serverId);
         }
         if (server.tools().isEmpty() && !server.adapter()) {
             throw new IllegalStateException("gateway.servers." + serverId + ".tools is empty: list the tools of the server and their risks");

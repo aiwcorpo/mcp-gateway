@@ -117,7 +117,7 @@ class RegistryAdapterTest extends GatewayTestBase {
             assertThat(pending.entry().has("risk")).isFalse();
             assertThat(tool(name).approved()).isNull();
         }
-        assertThat(Contracts.gatewayAdminErrors("RegistryServer", pl.aiwcorpo.mcp.gateway.admin.RegistryViews.server(JSON, accepted.server(), false))).isEmpty();
+        assertThat(Contracts.gatewayAdminErrors("RegistryServer", pl.aiwcorpo.mcp.gateway.admin.RegistryViews.server(JSON, accepted.server(), false, java.util.Map.of()))).isEmpty();
         assertThat(auditReasons(output, requestId)).containsExactlyInAnyOrder("definition_submitted", "definition_submitted");
         assertThat(adapterServers.resolveForCall("jira__get_issue")).as("known, disabled, judged as the most dangerous kind").isPresent();
         assertThat(adapterServers.resolveForCall("jira__get_issue").orElseThrow().tool().disabled()).isTrue();
@@ -218,21 +218,29 @@ class RegistryAdapterTest extends GatewayTestBase {
     }
 
     @Test
-    void theMigrationVoidsAStoredWriteClassificationAndKeepsTheFloor(@Autowired javax.sql.DataSource dataSource) throws Exception {
-        ObjectNode manifest = adapterManifest("0.3.0", Tool.readOnly("update_issue"), Tool.readOnly("get_issue"));
+    void theMigrationVoidsStoredWriteClassificationsAndMakesTheFloorOutOfThem(@Autowired javax.sql.DataSource dataSource) throws Exception {
+        ObjectNode manifest = adapterManifest("0.3.0", Tool.readOnly("update_issue"), Tool.readOnly("get_issue"), Tool.readOnly("delete_issue"),
+                Tool.readOnly("waiting_issue"));
         submit(manifest);
-        // The state an earlier version could leave: UPDATE and READ_ONLY classifications of an adapter, approved.
-        for (String name : List.of("update_issue", "get_issue")) {
+        // The state an earlier version could leave: classifications of an adapter, approved, with no floor written by anyone but the approval.
+        for (String name : List.of("update_issue", "get_issue", "delete_issue", "waiting_issue")) {
             ObjectNode entry = ((ObjectNode) Manifests.tool(manifest, name)).deepCopy();
-            entry.put("risk", "update_issue".equals(name) ? "UPDATE" : "READ_ONLY");
-            entry.put("action", "update_issue".equals(name) ? "update" : "read");
+            String risk = switch (name) {
+                case "update_issue", "waiting_issue" -> "UPDATE";
+                case "delete_issue" -> "DESTRUCTIVE";
+                default -> "READ_ONLY";
+            };
+            entry.put("risk", risk);
+            entry.put("action", "UPDATE".equals(risk) ? "update" : "DESTRUCTIVE".equals(risk) ? "delete" : "read");
+            RegisteredTool.Pending newer = "waiting_issue".equals(name) ? tool(name).pending() : null;
             store.locked(SERVER, tx -> {
-                tx.saveTool(new RegisteredTool(name, new RegisteredTool.Approved(entry, hash(manifest, name), "0.3.0", tool(name).pending().credentialJson(),
-                        "old-admin", java.time.Instant.now()), null));
+                tx.saveTool(new RegisteredTool(name, new RegisteredTool.Approved(entry, hash(manifest, name), "0.2.0", tool(name).pending().credentialJson(),
+                        "old-admin", java.time.Instant.now()), newer == null ? null : new RegisteredTool.Pending(newer.entry(), "sha256:" + "a".repeat(64),
+                        "0.3.0", "changed", "adapter", newer.credentialJson())));
                 return null;
             });
         }
-        voidedUpdateClassification("update_issue");
+        long counter = changeCounter();
 
         try (java.sql.Connection connection = dataSource.getConnection()) {
             org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,
@@ -240,16 +248,47 @@ class RegistryAdapterTest extends GatewayTestBase {
         }
         adapterService.reloadChanged();
 
+        assertThat(changeCounter()).as("the instances that run read the registry again").isGreaterThan(counter);
         RegisteredTool voided = tool("update_issue");
         assertThat(voided.approved()).isNull();
         assertThat(voided.pending().source()).isEqualTo("adapter");
+        assertThat(voided.pending().change()).isEqualTo("new");
+        assertThat(voided.pending().riskLowered()).isTrue();
         assertThat(voided.pending().hash()).isEqualTo(hash(manifest, "update_issue"));
         assertThat(voided.pending().entry().has("risk")).isFalse();
-        assertThat(store.floors(SERVER)).containsEntry("update_issue", 1);
+        assertThat(store.floors(SERVER)).containsEntry("update_issue", 1).containsEntry("delete_issue", 2).doesNotContainKey("get_issue");
         assertThat(tool("get_issue").approved().entry().path("risk").asString()).as("a read stays classified").isEqualTo("READ_ONLY");
+        assertThat(tool("waiting_issue").pending().hash()).as("a waiting entry stays as it is").isEqualTo("sha256:" + "a".repeat(64));
+        assertThat(tool("waiting_issue").pending().change()).as("there is no approved entry any more").isEqualTo("new");
         assertThat(adapterServers.find(SERVER).orElseThrow().tools()).containsOnlyKeys("get_issue");
         assertThat(adapterService.approve(requestId, SERVER, "update_issue", hash(manifest, "update_issue"), false,
                 new Classification("READ_ONLY", "read"), admin())).isInstanceOf(Approval.RiskLowered.class);
+    }
+
+    @Test
+    void anEntryWithAWriteClassificationThatAnotherInstanceStoredIsNotServed() {
+        ObjectNode manifest = adapterManifest("0.3.0", Tool.readOnly("update_issue"));
+        submit(manifest);
+        io.micrometer.core.instrument.simple.SimpleMeterRegistry meters = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        adapterServers.bindTo(meters);
+        ObjectNode entry = ((ObjectNode) Manifests.tool(manifest, "update_issue")).deepCopy();
+        entry.put("risk", "UPDATE");
+        entry.put("action", "update");
+        store.locked(SERVER, tx -> {
+            tx.saveTool(new RegisteredTool("update_issue", new RegisteredTool.Approved(entry, hash(manifest, "update_issue"), "0.3.0",
+                    tool("update_issue").pending().credentialJson(), "old-admin", java.time.Instant.now()), null));
+            return null;
+        });
+
+        adapterService.reloadChanged();
+
+        assertThat(adapterServers.find(SERVER).orElseThrow().tools()).as("fail-closed: not served whatever the registry holds").isEmpty();
+        assertThat(adapterServers.resolveForCall("jira__update_issue").orElseThrow().tool().disabled()).isTrue();
+        assertThat(meters.get("mcp_gateway_registry_entries_refused_total").counter().count()).isEqualTo(1.0);
+    }
+
+    private long changeCounter() {
+        return jdbc.sql("SELECT version FROM registry_changes WHERE id = 1").query(Long.class).single();
     }
 
     @Test

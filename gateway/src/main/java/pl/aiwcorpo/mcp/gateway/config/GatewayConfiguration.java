@@ -96,8 +96,10 @@ public class GatewayConfiguration {
 
     @Bean
     @DependsOn("devstackGuard")
-    ServerRegistry serverRegistry(GatewayProperties properties) {
-        return new ServerRegistry(properties.servers(), properties.registry().mode());
+    ServerRegistry serverRegistry(GatewayProperties properties, MeterRegistry meters) {
+        ServerRegistry registry = new ServerRegistry(properties.servers(), properties.registry().mode());
+        registry.bindTo(meters);
+        return registry;
     }
 
     @Bean

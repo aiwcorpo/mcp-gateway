@@ -309,6 +309,11 @@ public final class RegistryService {
         return result;
     }
 
+    /** The highest risk ever reported or classified per tool of a server (ordinals), as the approval compares with it. */
+    public Map<String, Integer> floors(String serverId) {
+        return store.floors(serverId);
+    }
+
     public Optional<PendingView> pending(String serverId, String tool) {
         RegisteredServer server = held.get(serverId);
         RegisteredTool registered = server == null ? null : server.tools().get(tool);

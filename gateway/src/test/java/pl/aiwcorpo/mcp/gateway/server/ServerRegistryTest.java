@@ -73,4 +73,14 @@ class ServerRegistryTest {
                 new GatewayProperties.Credential(true, List.of("user-secret"), List.of(), false, null),
                 Map.of(tool, new GatewayProperties.Tool(risk, "Description.", null, action, false, List.of())), false)), "static");
     }
+
+    @Test
+    void theRisksOfTheConfigurationOfAnAdapterServerAreNotMinimums() {
+        ServerRegistry registry = new ServerRegistry(Map.of("mcp-jira", new GatewayProperties.Server("jira",
+                URI.create("https://mcp-jira.internal:8443/mcp"), "1.0.0", true, "required",
+                new GatewayProperties.Credential(true, List.of("user-secret"), List.of(), false, null),
+                Map.of("update_issue", new GatewayProperties.Tool("UPDATE", "Description.", null, null, false, List.of())), true)), "required");
+
+        assertThat(registry.configuredMinimumRisks("mcp-jira")).as("an adapter is read only: nothing there can be approved above that").isEmpty();
+    }
 }

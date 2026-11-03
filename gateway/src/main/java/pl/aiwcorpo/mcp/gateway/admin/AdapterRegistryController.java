@@ -56,7 +56,7 @@ public class AdapterRegistryController {
             return answers.error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
         }
         return switch (registry.submitAdapter(requestId, serverId, manifest)) {
-            case RegistryService.Result.Accepted accepted -> answers.ok(requestId, RegistryViews.server(json, accepted.server(), true));
+            case RegistryService.Result.Accepted accepted -> answers.ok(requestId, RegistryViews.server(json, accepted.server(), true, registry.floors(serverId)));
             case RegistryService.Result.Rejected rejected -> answers.error(HttpStatus.UNPROCESSABLE_ENTITY, requestId, "manifest_rejected",
                     rejected.reason(), rejected.message());
             case RegistryService.Result.UnknownServer unknown -> answers.error(HttpStatus.UNPROCESSABLE_ENTITY, requestId, "manifest_rejected",

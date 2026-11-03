@@ -34,6 +34,10 @@ Decyzje i granice tego etapu:
   (wpis do `pending_approval`, podłoga zostaje; test na kopii skryptu `RegistryAdapterTest`). CC-226: `mcp_risk` i `mcp_action` w JWT tylko dla serwera w trybie adaptera, tylko zgodna para, tylko z `tool`
   (`InternalTokenIssuer`, test i `AdapterChannelTest`; `test-server` ma tryb odbiorcy adaptera i odrzuca claimy jako serwer natywny). CC-223 (wektor `streams-limit-reached`), CC-224 (katalog `503`, wektor `store-unreadable-catalog`),
   CC-225 (`cursor: null`), CC-228 (README) zgodne z wektorami. Pytania 2 i 3 z poprzedniego raportu są tym samym rozstrzygnięte kontraktem.
+- **Przegląd przejścia na 6.3.2 (gateway).** `riskLowered` dla wpisu adaptera z podłogą powyżej `READ_ONLY` jest liczone z podłogi (lista rejestru, diff, odpowiedź kanału adaptera) i ustawiane w V10;
+  V10 podbija `registry_changes` i ustawia `pending_change = new`; `ServerRegistry.apply` nie serwuje wpisu adaptera z ryzykiem innym niż `READ_ONLY` (log, `mcp_gateway_registry_entries_refused_total{reason}`);
+  ryzyka z konfiguracji narzędzi serwera adaptera nie są minimami (WARN przy starcie, domyślna konfiguracja Jiry ma narzędzia zapisu i musi dać się włączyć jako adapter), bo inaczej narzędzia nie dałoby się zatwierdzić nawet z `acceptRiskLowering`.
+  Test V10 bez wstawiania podłogi przed skryptem (UPDATE, DESTRUCTIVE, odczyt, wpis już oczekujący). Brak zdarzenia audytu o unieważnieniu (zmiana tylko w SQL).
 - **Limit strumieni (decyzja człowieka 2026-11-03) i przegląd bezpieczeństwa strumienia.** `MCP_MAX_OPEN_STREAMS` (2000 na instancję, `GET` sesji i `subscriptions/listen` razem, bez limitu na użytkownika);
   powyżej `503` z `Retry-After` (`MCP_SHED_RETRY_AFTER_SECONDS`) i tym samym ciałem co przeciążenie z CC-199, metryka `mcp_gateway_streams_refused_total` (`StreamLimitTest`, `ToolStreamsTest`).
   Otwarcie strumienia przechodzi przez `limitRequest` (limity użytkownika i klienta). Wpis strumienia jest zwalniany w `finally` (także gdy odpowiedź nie wystartuje); po zmianie przeliczenie listy

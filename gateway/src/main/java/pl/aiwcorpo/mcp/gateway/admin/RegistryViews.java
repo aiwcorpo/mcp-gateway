@@ -15,11 +15,19 @@ public final class RegistryViews {
     }
 
     /**
+     * Whether approving the pending entry lowers the risk: the entry says so, or it is the entry of an adapter, which is read only (CC-227) and
+     * lies below the floor that a voided classification, or one from before the tool left the manifest, left behind (CC-167).
+     */
+    public static boolean lowers(RegisteredTool.Pending pending, int floor, int approvedRisk) {
+        return pending.riskLowered() || ("adapter".equals(pending.source()) && Math.max(floor, approvedRisk) > 0);
+    }
+
+    /**
      * One row per tool. A tool with a pending entry shows that entry (status pending_approval, with the change and its source); the
      * definition in force is available through the pending endpoint for the diff. An adapter does not see who classified a tool and when:
      * that is the identity of administrators and none of its business.
      */
-    public static ObjectNode server(JsonMapper json, RegisteredServer server, boolean forAdapter) {
+    public static ObjectNode server(JsonMapper json, RegisteredServer server, boolean forAdapter, java.util.Map<String, Integer> floors) {
         ObjectNode view = json.createObjectNode();
         view.put("serverId", server.serverId());
         view.put("system", server.system());
@@ -33,7 +41,7 @@ public final class RegistryViews {
                 entry.put("status", "pending_approval");
                 entry.put("change", pending.change());
                 entry.put("source", pending.source());
-                if (pending.riskLowered()) {
+                if (lowers(pending, floors.getOrDefault(tool.name(), 0), tool.approvedRisk())) {
                     entry.put("riskLowered", true);
                 }
             } else {

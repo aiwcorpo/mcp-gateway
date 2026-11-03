@@ -155,6 +155,18 @@ class AdapterChannelTest extends GatewayTestBase {
         String hash = listing.path("definitionHash").asString();
 
         String approve = "/admin/v1/registry/servers/mcp-opensearch/tools/get_issue/approve";
+        // A floor above READ_ONLY (a voided classification, or one from before the tool left the manifest): the views say that approving lowers the risk.
+        jdbc.sql("INSERT INTO registry_risk_floor (server_id, tool, risk) VALUES ('mcp-opensearch', 'get_issue', 1) ON CONFLICT (server_id, tool) DO UPDATE SET risk = 1").update();
+        assertThat(registryEntry("get_issue").path("riskLowered").asBoolean(false)).as("the list of the registry").isTrue();
+        JsonNode lowering = JSON.readTree(asAdmin("GET", "/admin/v1/registry/servers/mcp-opensearch/tools/get_issue/pending", null).body());
+        assertThat(lowering.path("riskLowered").asBoolean(false)).as("the diff").isTrue();
+        assertThat(Contracts.gatewayAdminErrors("PendingTool", lowering)).isEmpty();
+        HttpResponse<String> withoutFlag = asAdmin("POST", approve, "{\"definitionHash\":\"" + hash + "\",\"risk\":\"READ_ONLY\",\"action\":\"read\"}");
+        assertThat(withoutFlag.statusCode()).isEqualTo(422);
+        assertThat(JSON.readTree(withoutFlag.body()).path("reason").asString()).isEqualTo("risk_lowered");
+        jdbc.sql("DELETE FROM registry_risk_floor WHERE server_id = 'mcp-opensearch' AND tool = 'get_issue'").update();
+        assertThat(registryEntry("get_issue").path("riskLowered").asBoolean(false)).as("no floor, no lowering").isFalse();
+
         HttpResponse<String> required = asAdmin("POST", approve, "{\"definitionHash\":\"" + hash + "\"}");
         assertThat(required.statusCode()).isEqualTo(422);
         assertThat(JSON.readTree(required.body()).path("reason").asString()).isEqualTo("classification_required");

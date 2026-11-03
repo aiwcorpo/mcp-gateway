@@ -25,6 +25,7 @@ import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
 import pl.aiwcorpo.mcp.gateway.registry.RegisteredServer;
 import pl.aiwcorpo.mcp.gateway.registry.RegisteredTool;
 import pl.aiwcorpo.mcp.gateway.registry.RegistryService;
+import pl.aiwcorpo.mcp.gateway.server.Risk;
 import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
@@ -77,7 +78,7 @@ public class RegistryController {
             return error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
         }
         return switch (registry.register(requestId, serverId, manifest, "ci")) {
-            case RegistryService.Result.Accepted accepted -> ok(requestId, RegistryViews.server(json, accepted.server(), false));
+            case RegistryService.Result.Accepted accepted -> ok(requestId, RegistryViews.server(json, accepted.server(), false, registry.floors(serverId)));
             case RegistryService.Result.Rejected rejected -> error(HttpStatus.UNPROCESSABLE_ENTITY, requestId, "manifest_rejected",
                     rejected.reason(), rejected.message());
             case RegistryService.Result.UnknownServer unknown -> error(HttpStatus.UNPROCESSABLE_ENTITY, requestId, "manifest_rejected",
@@ -96,7 +97,7 @@ public class RegistryController {
             ObjectNode item;
             Optional<RegisteredServer> registered = registry.registered(server.serverId());
             if (registered.isPresent()) {
-                item = RegistryViews.server(json, registered.get(), false);
+                item = RegistryViews.server(json, registered.get(), false, registry.floors(server.serverId()));
             } else {
                 item = json.createObjectNode();
                 item.put("serverId", server.serverId());
@@ -137,7 +138,8 @@ public class RegistryController {
         body.put("pendingHash", waiting.hash());
         body.put("pendingVersion", waiting.version());
         body.put("source", waiting.source());
-        if (waiting.riskLowered()) {
+        if (RegistryViews.lowers(waiting, registry.floors(serverId).getOrDefault(tool, 0), approved == null ? 0
+                : Risk.valueOf(approved.entry().path("risk").asString("READ_ONLY")).ordinal())) {
             body.put("riskLowered", true);
         }
         return ok(requestId, body);
