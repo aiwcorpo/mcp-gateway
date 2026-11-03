@@ -31,7 +31,7 @@ class GatewayAuthenticationVectorsTest {
     @TestFactory
     List<DynamicTest> everyVector() {
         List<Vectors.Vector> vectors = Vectors.of("gateway-authentication");
-        assertThat(vectors).hasSize(18);
+        assertThat(vectors).hasSize(20);
         return vectors.stream().map(v -> DynamicTest.dynamicTest(v.name(), () -> check(v.document()))).toList();
     }
 
@@ -55,6 +55,10 @@ class GatewayAuthenticationVectorsTest {
             response.setStatus(refused.getStatusCode().value());
             refused.getHeaders().forEach((name, values) -> response.setHeader(name, values.getFirst()));
             response.getWriter().write(refused.getBody());
+        } else if ("overloaded".equals(input.path("reason").asString())) {
+            write(response, RateLimitResponse.overloaded("0192d1b2-7c3a-7d4e-8f10-2a3b4c5d6e7f", 2));
+        } else if ("session_store_unavailable".equals(input.path("reason").asString())) {
+            write(response, RateLimitResponse.sessionStoreUnavailable("0192d1b2-7c3a-7d4e-8f10-2a3b4c5d6e7f", 10));
         } else if ("rate_limited".equals(input.path("reason").asString())) {
             // The wait is a decimal in a vector (0.2 s): the limiter rounds up to whole seconds, at least one.
             int seconds = (int) Math.max(1, Math.ceil(input.path("retryAfterSeconds").asDouble()));
@@ -84,6 +88,12 @@ class GatewayAuthenticationVectorsTest {
             assertThat(Contracts.schemaErrors("schemas/tool-error.schema.json#/$defs/UpstreamUnavailable",
                     JSON.readTree(response.getContentAsString()))).isEmpty();
         }
+    }
+
+    private static void write(MockHttpServletResponse response, org.springframework.http.ResponseEntity<String> answer) throws Exception {
+        response.setStatus(answer.getStatusCode().value());
+        answer.getHeaders().forEach((name, values) -> response.setHeader(name, values.getFirst()));
+        response.getWriter().write(answer.getBody());
     }
 
     private static AuthenticationException failure(String reason, int retryAfter) {

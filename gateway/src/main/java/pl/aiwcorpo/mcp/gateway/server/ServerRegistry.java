@@ -48,10 +48,13 @@ public final class ServerRegistry {
             if (!Set.of(MODE_REQUIRED, MODE_STATIC).contains(mode)) {
                 throw new IllegalStateException("gateway.servers." + serverId + ".manifest must be required or static");
             }
+            if (server.adapter() && !MODE_REQUIRED.equals(mode)) {
+                throw new IllegalStateException("gateway.servers." + serverId + ".adapter needs manifest required: an adapter submits a manifest");
+            }
             McpServer fromConfig = build(serverId, server);
             built.put(serverId, MODE_REQUIRED.equals(mode)
                     ? new McpServer(fromConfig.serverId(), fromConfig.system(), fromConfig.internalUrl(), fromConfig.version(),
-                            fromConfig.enabled(), fromConfig.credential(), Map.of(), true)
+                            fromConfig.enabled(), fromConfig.credential(), Map.of(), true, server.adapter())
                     : fromConfig);
         });
         this.servers = Map.copyOf(built);
@@ -131,7 +134,7 @@ public final class ServerRegistry {
         this.unapproved = Map.copyOf(nextUnapproved);
         Map<String, McpServer> next = new LinkedHashMap<>(servers);
         next.put(serverId, new McpServer(current.serverId(), current.system(), current.internalUrl(), version,
-                config.get(serverId).enabled() && manifestAccepted, current.credential(), Map.copyOf(tools), true));
+                config.get(serverId).enabled() && manifestAccepted, current.credential(), Map.copyOf(tools), true, current.adapter()));
         this.servers = Map.copyOf(next);
     }
 
@@ -197,6 +200,9 @@ public final class ServerRegistry {
         if (!SEMVER.matcher(server.version()).matches()) {
             throw new IllegalStateException("gateway.servers." + serverId + ".version must be a SemVer");
         }
+        if (server.tools().isEmpty() && !server.adapter()) {
+            throw new IllegalStateException("gateway.servers." + serverId + ".tools is empty: list the tools of the server and their risks");
+        }
         Map<String, ToolDefinition> tools = new LinkedHashMap<>();
         server.tools().forEach((name, tool) -> {
             if (!TOOL_NAME.matcher(name).matches() || name.length() > 64) {
@@ -220,7 +226,7 @@ public final class ServerRegistry {
         return new McpServer(serverId, server.system(), server.internalUrl(), server.version(), server.enabled(),
                 new CredentialPolicy(credential.required(), Set.copyOf(accepted), List.copyOf(credential.scopes()),
                         credential.tokenExchange(), credentialType(serverId, credential, accepted)),
-                Map.copyOf(tools));
+                Map.copyOf(tools), false, server.adapter());
     }
 
     /** The one type of the system for context.credentialType; ambiguous configuration is an error (fail-closed at start). */

@@ -29,7 +29,13 @@ import pl.aiwcorpo.mcp.gateway.activity.ActivityStore;
 import pl.aiwcorpo.mcp.gateway.admin.ActivityController;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
 import pl.aiwcorpo.mcp.gateway.admin.RegistryController;
+import pl.aiwcorpo.mcp.gateway.registry.ChangeCounter;
+import pl.aiwcorpo.mcp.gateway.registry.ChangeWatcher;
 import pl.aiwcorpo.mcp.gateway.registry.DefinitionCheck;
+import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitchHealth;
+import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitchStore;
+import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitches;
+import pl.aiwcorpo.mcp.gateway.admin.KillSwitchController;
 import pl.aiwcorpo.mcp.gateway.registry.DefinitionGuard;
 import pl.aiwcorpo.mcp.gateway.registry.ManifestFetcher;
 import pl.aiwcorpo.mcp.gateway.registry.ManifestValidator;
@@ -172,8 +178,39 @@ public class GatewayConfiguration {
 
     @Bean
     AdminController adminController(ServerRegistry registry, ToolAuthorizer authorizer, JsonMapper gatewayJson,
-                                    GatewayProperties properties, DefinitionGuard definitionGuard) {
-        return new AdminController(registry, authorizer, gatewayJson, properties.componentId(), definitionGuard);
+                                    GatewayProperties properties, DefinitionGuard definitionGuard, KillSwitches killSwitches) {
+        return new AdminController(registry, authorizer, gatewayJson, properties.componentId(), definitionGuard, killSwitches);
+    }
+
+    @Bean
+    ChangeCounter changeCounter(JdbcClient jdbc) {
+        return new ChangeCounter(jdbc);
+    }
+
+    @Bean
+    KillSwitchStore killSwitchStore(JdbcClient jdbc, PlatformTransactionManager transactions, ChangeCounter changes) {
+        return new KillSwitchStore(jdbc, transactions, changes);
+    }
+
+    @Bean
+    KillSwitches killSwitches(KillSwitchStore store, GatewayProperties properties, MeterRegistry meters) {
+        return new KillSwitches(store::all, properties.mcp().killSwitchCacheTtl(), System::nanoTime, meters);
+    }
+
+    @Bean
+    KillSwitchHealth killSwitchHealth(KillSwitches killSwitches) {
+        return new KillSwitchHealth(killSwitches);
+    }
+
+    @Bean
+    KillSwitchController killSwitchController(KillSwitchStore store, KillSwitches killSwitches, ServerRegistry servers, AuditLog audit,
+                                              GatewayProperties properties, JsonMapper gatewayJson) {
+        return new KillSwitchController(store, killSwitches, servers, audit, properties.componentId(), gatewayJson, killSwitches::refresh);
+    }
+
+    @Bean
+    ChangeWatcher changeWatcher(ChangeCounter counter, RegistryService registry, KillSwitches killSwitches, GatewayProperties properties) {
+        return new ChangeWatcher(counter, registry, killSwitches, properties.mcp().changePollInterval(), java.util.List.of());
     }
 
     /** Created before anything that uses a relaxed setting: the start is refused here, not after a bundle was pulled over http. */
@@ -432,10 +469,11 @@ public class GatewayConfiguration {
                                         RegistryService registryService, DefinitionGuard definitionGuard,
                                         pl.aiwcorpo.mcp.gateway.ratelimit.RateLimiter rateLimiter,
                                         pl.aiwcorpo.mcp.gateway.ratelimit.RateLimitAuditThrottle rateLimitAudit,
-                                        EndpointAuditThrottle endpointAudit, ToolsListCursor listCursor, Clock clock) {
+                                        EndpointAuditThrottle endpointAudit, ToolsListCursor listCursor, KillSwitches killSwitches,
+                                        Clock clock) {
         return new McpGatewayService(registry, urls, upstream, credentials, authorizer, audit, errors, gatewayJson, meters,
                 properties.componentId(), confirmations, registryService, definitionGuard, rateLimiter, rateLimitAudit, endpointAudit, listCursor,
-                properties.mcp().toolsListTimeout(), clock);
+                killSwitches, properties.mcp().toolsListTimeout(), clock);
     }
 
     @Bean
@@ -459,8 +497,8 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    RegistryStore registryStore(JdbcClient jdbc, JsonMapper gatewayJson, PlatformTransactionManager transactions) {
-        return new RegistryStore(jdbc, gatewayJson, transactions);
+    RegistryStore registryStore(JdbcClient jdbc, JsonMapper gatewayJson, PlatformTransactionManager transactions, ChangeCounter changes) {
+        return new RegistryStore(jdbc, gatewayJson, transactions, changes);
     }
 
     @Bean

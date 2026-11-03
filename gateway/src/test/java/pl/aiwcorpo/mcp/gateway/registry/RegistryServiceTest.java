@@ -65,7 +65,7 @@ class RegistryServiceTest extends GatewayTestBase {
     private ServerRegistry registry(String credentialType, Map<String, GatewayProperties.Tool> tools) {
         return new ServerRegistry(Map.of(SERVER, new GatewayProperties.Server("jira", URI.create("https://mcp-jira.internal:8443/mcp"), "1.0.0", true,
                 "required", new GatewayProperties.Credential(true, List.of(credentialType), List.of(), "token-exchange".equals(credentialType), null),
-                tools.isEmpty() ? Map.of("get_issue", new GatewayProperties.Tool("READ_ONLY", "Gets.", null, null, false, List.of())) : tools)),
+                tools.isEmpty() ? Map.of("get_issue", new GatewayProperties.Tool("READ_ONLY", "Gets.", null, null, false, List.of())) : tools, false)),
                 "static");
     }
 

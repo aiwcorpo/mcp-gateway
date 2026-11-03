@@ -21,7 +21,7 @@ import pl.aiwcorpo.mcp.gateway.redis.KeyHash;
 
 /**
  * Keeps the audit from being flooded by a client that repeats refusals (CC-190, CC-191): {@code invalid_filter}, {@code filter_mismatch},
- * {@code invalid_cursor} and a {@code tools/call} answered {@code not_found_or_denied} for {@code not_granted} or {@code filter_scope}.
+ * {@code invalid_cursor} and a {@code tools/call} answered {@code not_found_or_denied} for {@code not_granted}, {@code policy_forbid} or {@code filter_scope}.
  * One event per user, reason and target in an interval; the rest only in {@code mcp_audit_endpoint_suppressed_total{reason}}. A timer
  * closes the window of a user and reason, whether or not more requests come, and writes one summary event with {@code suppressedCount};
  * a controlled shutdown writes the summaries of the open windows. State is in the memory of the instance: with two instances the windows
@@ -109,7 +109,7 @@ public final class EndpointAuditThrottle implements AutoCloseable {
                 case "filter_mismatch" -> event.outcome("denied");
                 default -> event.outcome("denied", "not_found_or_denied");
             }
-            audit.emit(event.suppressedCount(summary.suppressedCount()));
+            audit.emit(event.suppressedCount(summary.suppressedCount()).suppressedTargets(summary.suppressedTargets()));
             summaryTargets.record(summary.suppressedTargets());
         }
     }

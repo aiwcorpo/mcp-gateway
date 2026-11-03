@@ -13,6 +13,7 @@ import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 
+import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitches;
 import pl.aiwcorpo.mcp.gateway.server.ToolRoute;
 import pl.aiwcorpo.mcp.gateway.support.Vectors;
 import pl.aiwcorpo.mcp.manifest.EndpointFilter;
@@ -41,12 +42,12 @@ class EndpointVectorsTest {
         for (Vectors.Vector vector : vectors) {
             String kind = vector.document().path("kind").asString();
             kinds.add(kind);
-            if (kind.equals("error-response")) {
+            if (kind.equals("error-response") || kind.equals("stream-open")) {
                 continue;
             }
             tests.add(DynamicTest.dynamicTest(vector.name(), () -> endpointFilter(kind, vector.document().path("input"), vector.document().path("expected"))));
         }
-        assertThat(kinds).containsExactly("apply", "call", "call-state", "error-response", "parse", "route", "session", "session-order");
+        assertThat(kinds).containsExactly("apply", "call", "call-state", "error-response", "parse", "route", "session", "session-order", "stream-open");
         return tests;
     }
 
@@ -110,7 +111,7 @@ class EndpointVectorsTest {
         String tool = input.path("tool").asString();
         List<String> mayCall = strings(input.path("mayCall"));
         CallOrder.Verdict verdict = CallOrder.decide(mayCall.contains(tool), visible(filter, input.path("tools")).contains(tool),
-                () -> true, () -> true, () -> true, () -> true);
+                () -> KillSwitches.Status.OFF, () -> true, () -> true, () -> true, () -> true);
         assertThat(verdict.passes()).isEqualTo("allowed".equals(expected.path("outcome").asString()));
         if (!verdict.passes()) {
             assertThat(verdict.errorCode()).isEqualTo(expected.path("errorCode").asString());
@@ -127,6 +128,7 @@ class EndpointVectorsTest {
         int[] asked = {0};
         CallOrder.Verdict verdict = CallOrder.decide(strings(input.path("mayCall")).contains(tool),
                 visible(filter, input.path("tools")).contains(tool),
+                () -> { asked[0]++; return state.path("killSwitch").asBoolean(false) ? KillSwitches.Status.ON : KillSwitches.Status.OFF; },
                 () -> { asked[0]++; return state.path("toolEnabled").asBoolean(true); },
                 () -> { asked[0]++; return state.path("serverAvailable").asBoolean(true); },
                 () -> true,
@@ -202,7 +204,7 @@ class EndpointVectorsTest {
                 default -> { }
             }
         }
-        assertThat(kinds).containsExactly("audit-throttle", "availability", "cursor", "legacy-route", "list", "list-changed", "page", "routing");
+        assertThat(kinds).containsExactly("audit-throttle", "availability", "cursor", "legacy-route", "list", "list-changed", "list-changed-sequence", "list-changed-stateless", "page", "routing");
         return tests;
     }
 
@@ -259,6 +261,7 @@ class EndpointVectorsTest {
         String presented = switch (input.path("mutation").asString()) {
             case "tampered" -> cursor.substring(0, cursor.length() - 2) + (cursor.endsWith("AA") ? "BB" : "AA");
             case "malformed" -> "not-a-cursor";
+            case "empty-string" -> "";
             default -> cursor;
         };
         if ("not-a-string".equals(input.path("mutation").asString())) {

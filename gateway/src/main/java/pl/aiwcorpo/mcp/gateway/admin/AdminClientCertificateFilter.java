@@ -49,7 +49,7 @@ public final class AdminClientCertificateFilter extends OncePerRequestFilter {
             return new Rule(method, PARSER.parse(pattern), Set.copyOf(names));
         }
 
-        boolean covers(String requestMethod, PathContainer path) {
+        public boolean covers(String requestMethod, PathContainer path) {
             return (method == null || method.equals(requestMethod)) && pattern.matches(path);
         }
 

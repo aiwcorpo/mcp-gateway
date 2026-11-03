@@ -159,6 +159,17 @@ public final class AuditEvent {
         return this;
     }
 
+    /** On the same summary: how many different targets those refusals had (CC-195). */
+    public AuditEvent suppressedTargets(int value) {
+        fields.put("suppressedTargets", Math.max(1, value));
+        return this;
+    }
+
+    /** Cedar action of a classification of an adapter tool, on the admin_change that approves it (CC-193, CC-206). */
+    public AuditEvent action(String action) {
+        return put("action", action);
+    }
+
     public AuditEvent argsLength(int value) {
         fields.put("argsLength", Math.max(0, value));
         return this;

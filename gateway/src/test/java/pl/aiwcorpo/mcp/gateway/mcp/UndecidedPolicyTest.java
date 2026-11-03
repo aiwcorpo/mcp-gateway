@@ -66,7 +66,8 @@ class UndecidedPolicyTest {
                 "mcp-gateway", mock(ConfirmationService.class), mock(RegistryService.class), mock(DefinitionGuard.class), limiter,
                 new RateLimitAuditThrottle(Duration.ofSeconds(10), System::nanoTime, meters),
                 new EndpointAuditThrottle(Duration.ofSeconds(10), 50, System::currentTimeMillis, meters, audit, "mcp-gateway", () -> null),
-                new ToolsListCursor("0123456789abcdef".getBytes(), JSON), Duration.ofSeconds(3), Clock.systemUTC());
+                new ToolsListCursor("0123456789abcdef".getBytes(), JSON), mock(pl.aiwcorpo.mcp.gateway.killswitch.KillSwitches.class),
+                Duration.ofSeconds(3), Clock.systemUTC());
         GatewayUser user = new GatewayUser("sub-1", "alice", "claude-code", List.of("mcp-jira-read"), "token");
         CallContext ctx = new CallContext("01a19307-c3cb-77bb-8622-b2c6b6d53779", null, user, Target.aggregate(), EndpointFilter.none(),
                 "2026-07-28", "m|sub-1|claude-code|mcp");
@@ -92,6 +93,6 @@ class UndecidedPolicyTest {
     @Test
     void aDenialThatIsTheUsersIsNotFoundOrDenied() throws Exception {
         assertThat(answer(ToolDecision.deny("not_granted", List.of("mcp-jira-read")), "not_granted")).isEqualTo("not_found_or_denied");
-        assertThat(answer(ToolDecision.deny("policy_forbid", List.of()), "not_granted")).isEqualTo("not_found_or_denied");
+        assertThat(answer(ToolDecision.deny("policy_forbid", List.of()), "policy_forbid")).as("a forbid is audited as one (CC-198)").isEqualTo("not_found_or_denied");
     }
 }

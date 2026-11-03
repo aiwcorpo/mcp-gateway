@@ -63,7 +63,7 @@ class ServerRegistryTest {
     private static String withCredential(GatewayProperties.Credential credential) {
         return new ServerRegistry(Map.of("mcp-jira", new GatewayProperties.Server("jira",
                 URI.create("https://mcp-jira.internal:8443/mcp"), "1.0.0", true, "static", credential,
-                Map.of("t", new GatewayProperties.Tool("READ_ONLY", "Description.", null, null, false, List.of())))), "static")
+                Map.of("t", new GatewayProperties.Tool("READ_ONLY", "Description.", null, null, false, List.of())), false)), "static")
                 .find("mcp-jira").orElseThrow().credential().type();
     }
 
@@ -71,6 +71,6 @@ class ServerRegistryTest {
         return new ServerRegistry(Map.of("mcp-jira", new GatewayProperties.Server("jira",
                 URI.create("https://mcp-jira.internal:8443/mcp"), version, true, "static",
                 new GatewayProperties.Credential(true, List.of("user-secret"), List.of(), false, null),
-                Map.of(tool, new GatewayProperties.Tool(risk, "Description.", null, action, false, List.of())))), "static");
+                Map.of(tool, new GatewayProperties.Tool(risk, "Description.", null, action, false, List.of())), false)), "static");
     }
 }

@@ -153,9 +153,11 @@ public class SecurityConfiguration {
     SecurityFilterChain registryPipelineFilterChain(HttpSecurity http, GatewayProperties properties,
                                                     ClientCertificateVerifier certificates, AuthenticationAudit authenticationAudit)
             throws Exception {
-        org.springframework.security.web.util.matcher.RequestMatcher certificateOnly =
-                request -> ("PUT".equals(request.getMethod()) && request.getServletPath().startsWith("/admin/v1/registry/servers/"))
-                        || ("POST".equals(request.getMethod()) && request.getServletPath().startsWith("/admin/v1/users/"));
+        // The same patterns as the rules below: the emergency switches are PUT under /registry/servers/ too, and they carry a user token.
+        org.springframework.security.web.util.matcher.RequestMatcher certificateOnly = request -> {
+            org.springframework.http.server.PathContainer path = org.springframework.http.server.PathContainer.parsePath(request.getServletPath());
+            return AdminOperations.certificateOnly(properties.admin().offboardingClientCns()).stream().anyMatch(rule -> rule.covers(request.getMethod(), path));
+        };
         http.securityMatcher(certificateOnly)
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))

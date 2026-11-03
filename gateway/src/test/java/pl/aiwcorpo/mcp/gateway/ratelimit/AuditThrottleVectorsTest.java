@@ -20,7 +20,7 @@ class AuditThrottleVectorsTest {
     List<DynamicTest> everyVector() {
         List<Vectors.Vector> vectors = Vectors.of("endpoint-aggregate").stream()
                 .filter(v -> "audit-throttle".equals(v.document().path("kind").asString())).toList();
-        assertThat(vectors).hasSize(11);
+        assertThat(vectors).hasSize(12);
         return vectors.stream().map(v -> DynamicTest.dynamicTest(v.name(), () -> check(v.document()))).toList();
     }
 
@@ -58,9 +58,9 @@ class AuditThrottleVectorsTest {
         assertThat(suppressed).isEqualTo(wantSuppressed);
         List<String> want = new ArrayList<>();
         expected.path("summaries").forEach(s -> want.add(s.path("t").asLong() + " " + s.path("sub").asString() + " " + s.path("reason").asString()
-                + " " + s.path("suppressedCount").asInt()));
+                + " " + s.path("suppressedCount").asInt() + " " + s.path("suppressedTargets").asInt()));
         List<String> got = new ArrayList<>();
-        summaries.forEach(s -> got.add(s.closedAtMillis() / 1000 + " " + s.sub() + " " + s.reason() + " " + s.suppressedCount()));
+        summaries.forEach(s -> got.add(s.closedAtMillis() / 1000 + " " + s.sub() + " " + s.reason() + " " + s.suppressedCount() + " " + s.suppressedTargets()));
         assertThat(got).isEqualTo(want);
     }
 }

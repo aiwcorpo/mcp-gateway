@@ -57,10 +57,12 @@ public class UpstreamSessions {
 
     /**
      * Sends one JSON-RPC request (with id) and returns the server's response message. {@code tool} is set only
-     * for tools/call; {@code credential} only when the tool needs one.
+     * for tools/call; {@code credential} only when the tool needs one. A request that is answered 404 because the server lost the session is
+     * sent again on a new session only when {@code repeatable}: a call that may change something is never repeated by the gateway
+     * (CC-204); the client decides, and the next request starts a new session.
      */
     public JsonNode call(McpServer server, String conversationKey, GatewayUser user, String requestId, ObjectNode message,
-                         String tool, Credential credential) throws UpstreamException {
+                         String tool, Credential credential, boolean repeatable) throws UpstreamException {
         sweep();
         StreamableHttpClient client = client(server);
         String key = key(server, conversationKey);
@@ -69,9 +71,14 @@ public class UpstreamSessions {
             UpstreamResponse response = client.post(new UpstreamRequest(
                     tokens.forUser(server.serverId(), user, tool, requestId), requestId, session.sessionId(),
                     session.protocolVersion(), credential, json.writeValueAsString(message)), message.get("id"));
-            if (response.status() == 404 && session.sessionId() != null && attempt == 0) {
+            if (response.status() == 404 && session.sessionId() != null) {
                 sessions.remove(key, session);
-                continue;
+                if (attempt == 0 && repeatable) {
+                    continue;
+                }
+                if (!repeatable) {
+                    throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE, server.serverId() + " lost the session; the call is not repeated");
+                }
             }
             check(response, server);
             if (response.message() == null) {

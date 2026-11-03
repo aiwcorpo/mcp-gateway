@@ -36,7 +36,7 @@ public final class ActivityAggregator {
             Map.entry("credential_required", "credential_required"), Map.entry("rate_limited", "rate_limited"),
             Map.entry("rate_limited_user", "rate_limited"), Map.entry("rate_limited_client", "rate_limited"),
             Map.entry("rate_limited_tool", "rate_limited"), Map.entry("step_up_required", "step_up_required"),
-            Map.entry("exchange_denied", "denied_not_granted"));
+            Map.entry("exchange_denied", "denied_not_granted"), Map.entry("kill_switch", "tool_disabled"));
     private static final Map<String, String> CONFIRMATION_RESULTS = Map.of("superseded", "superseded",
             "attempts_exhausted", "confirmation_failed", "pending_exists", "blocked_by_pending", "cancelled_by_owner", "cancelled");
 
@@ -118,11 +118,11 @@ public final class ActivityAggregator {
             if ("ok".equals(last.path("outcome").asString())) {
                 result = confirmed ? "confirmed" : "ok";
             } else {
-                result = reason != null && DENIED_RESULTS.containsKey(reason) ? DENIED_RESULTS.get(reason) : "error";
+                result = reason != null && DENIED_RESULTS.containsKey(reason) ? resultOfReason(reason, last.path("errorCode").asString(null)) : "error";
                 errorCode = last.path("errorCode").asString(null);
             }
         } else {
-            result = DENIED_RESULTS.getOrDefault(reason == null ? "" : reason, "error");
+            result = reason == null ? "error" : Optional.ofNullable(resultOfReason(reason, last.path("errorCode").asString(null))).orElse("error");
             errorCode = last.path("errorCode").asString(null);
         }
         // A result written by a 4.x gateway is read as the one that replaced it (CC-188); the stored events stay as they are.
@@ -133,6 +133,17 @@ public final class ActivityAggregator {
             row.put("errorCode", errorCode);
         }
         return row;
+    }
+
+    /**
+     * A forbid at the level of the tool is answered not_found_or_denied: the row of the user does not tell it from a missing grant
+     * (invariant 8, CC-198). A forbid on the resource of the arguments (access_denied) stays denied_policy.
+     */
+    private static String resultOfReason(String reason, String errorCode) {
+        if ("policy_forbid".equals(reason) && "not_found_or_denied".equals(errorCode)) {
+            return "denied_not_granted";
+        }
+        return DENIED_RESULTS.get(reason);
     }
 
     /** A denied call has a policy_decision and a tool_call that both say deny; only the first is kept. */

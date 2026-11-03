@@ -17,6 +17,7 @@ import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
 import pl.aiwcorpo.mcp.gateway.authz.ToolAuthorizer;
 import pl.aiwcorpo.mcp.gateway.authz.ToolDecision;
 import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
+import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitches;
 import pl.aiwcorpo.mcp.gateway.registry.DefinitionGuard;
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
 import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
@@ -42,19 +43,27 @@ public class AdminController {
     private final JsonMapper json;
     private final String componentId;
     private final DefinitionGuard definitionGuard;
+    private final KillSwitches killSwitches;
 
     public AdminController(ServerRegistry registry, ToolAuthorizer authorizer, JsonMapper json, String componentId,
-                           DefinitionGuard definitionGuard) {
+                           DefinitionGuard definitionGuard, KillSwitches killSwitches) {
         this.registry = registry;
         this.authorizer = authorizer;
         this.json = json;
         this.componentId = componentId;
         this.definitionGuard = definitionGuard;
+        this.killSwitches = killSwitches;
     }
 
     @GetMapping("/catalog")
     public ResponseEntity<String> catalog(@AuthenticationPrincipal Jwt token, HttpServletRequest request) {
         GatewayUser user = GatewayUser.from(token);
+        // Without the state of the switches the catalog could show a switched tool as available (fail-closed, CC-194).
+        if (!killSwitches.readable()) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).header("X-Request-Id", requestId(request))
+                    .header("Retry-After", "10").cacheControl(CacheControl.noStore()).contentType(MediaType.APPLICATION_JSON)
+                    .body("{\"error\":\"upstream_unavailable\"}");
+        }
         ObjectNode body = json.createObjectNode();
         ArrayNode servers = body.putArray("servers");
         for (McpServer server : registry.all()) {
@@ -75,8 +84,15 @@ public class AdminController {
                 item.put("action", tool.action());
                 item.put("access", decision.allowed() ? "granted" : "denied");
                 item.set("requiredEntitlements", json.valueToTree(authorizer.requiredEntitlements(server, tool)));
-                item.put("disabled", (!decision.allowed() && "tool_disabled".equals(decision.reason()))
-                        || (server.approvalRequired() && !definitionGuard.lastKnownIntact(server.serverId(), tool.name())));
+                // The first reason of the list wins when several apply (CC-194): an emergency switch, a definition waiting for approval,
+                // the configuration or an overrides policy.
+                String disabledBy = killSwitches.status(server.serverId(), tool.name()) == KillSwitches.Status.ON ? "kill_switch"
+                        : server.approvalRequired() && !definitionGuard.lastKnownIntact(server.serverId(), tool.name()) ? "approval"
+                        : !decision.allowed() && "tool_disabled".equals(decision.reason()) ? "configuration" : null;
+                item.put("disabled", disabledBy != null);
+                if (disabledBy != null) {
+                    item.put("disabledBy", disabledBy);
+                }
                 item.put("requiresConfirmation", tool.requiresConfirmation());
             }
         }

@@ -34,6 +34,7 @@ import pl.aiwcorpo.mcp.gateway.confirm.ConfirmationService;
 import pl.aiwcorpo.mcp.gateway.confirm.OperationDescription;
 import pl.aiwcorpo.mcp.gateway.confirm.PendingCall;
 import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
+import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitches;
 import pl.aiwcorpo.mcp.gateway.ratelimit.EndpointAuditThrottle;
 import pl.aiwcorpo.mcp.gateway.ratelimit.RateLimitAuditThrottle;
 import pl.aiwcorpo.mcp.gateway.ratelimit.RateLimiter;
@@ -80,6 +81,7 @@ public class McpGatewayService {
     private final RateLimitAuditThrottle rateLimitAudit;
     private final EndpointAuditThrottle endpointAudit;
     private final ToolsListCursor listCursor;
+    private final KillSwitches killSwitches;
     private final Duration toolsListTimeout;
     private final Clock clock;
     private final ExecutorService listReaders = Executors.newVirtualThreadPerTaskExecutor();
@@ -88,8 +90,8 @@ public class McpGatewayService {
                              CredentialService credentials, ToolAuthorizer authorizer, AuditLog audit, ToolErrors errors,
                              JsonMapper json, MeterRegistry meters, String componentId, ConfirmationService confirmations,
                              RegistryService registryService, DefinitionGuard definitionGuard, RateLimiter rateLimiter,
-                             RateLimitAuditThrottle rateLimitAudit, EndpointAuditThrottle endpointAudit, ToolsListCursor listCursor, Duration toolsListTimeout,
-                             Clock clock) {
+                             RateLimitAuditThrottle rateLimitAudit, EndpointAuditThrottle endpointAudit, ToolsListCursor listCursor,
+                             KillSwitches killSwitches, Duration toolsListTimeout, Clock clock) {
         this.registry = registry;
         this.urls = urls;
         this.upstream = upstream;
@@ -107,6 +109,7 @@ public class McpGatewayService {
         this.rateLimitAudit = rateLimitAudit;
         this.endpointAudit = endpointAudit;
         this.listCursor = listCursor;
+        this.killSwitches = killSwitches;
         this.toolsListTimeout = toolsListTimeout;
         this.clock = clock;
     }
@@ -243,7 +246,8 @@ public class McpGatewayService {
 
     private ListedTools.Candidate candidate(CallContext ctx, McpServer server, ToolDefinition tool, boolean served,
                                             boolean definitionMatches) {
-        boolean enabled = server.enabled() && !tool.disabled();
+        // An emergency switch hides the tool; a store that cannot be read hides everything (fail-closed, CC-194).
+        boolean enabled = server.enabled() && !tool.disabled() && killSwitches.status(server.serverId(), tool.name()) == KillSwitches.Status.OFF;
         return new ListedTools.Candidate(server.qualifiedName(tool), tool.risk().name(), true, enabled, served, definitionMatches,
                 enabled && authorizer.mayCall(ctx.user(), server, tool));
     }
@@ -367,6 +371,8 @@ public class McpGatewayService {
     /** What the checks of the call learned on the way, kept for the events. */
     private static final class CallState {
         boolean keepCredential = true;
+        /** The refusal at the level of the tool came from a forbid, not from a missing grant: the audit says so (CC-198). */
+        boolean forbidden;
         Verdict definition;
         Resolution resolution;
     }
@@ -423,7 +429,9 @@ public class McpGatewayService {
         }
         CallState state = new CallState();
         state.keepCredential = !tool.requiresConfirmation() || arguments.has("confirmation_code");
+        state.forbidden = !mayCall && "policy_forbid".equals(toolLevel.reason());
         CallOrder.Verdict verdict = CallOrder.decide(mayCall, throughEndpoint(ctx, server, tool),
+                () -> killSwitches.status(server.serverId(), tool.name()),
                 () -> server.enabled() && !tool.disabled(),
                 () -> readDefinitions(ctx, server, tool, state),
                 () -> state.definition == null || state.definition == Verdict.INTACT,
@@ -478,7 +486,8 @@ public class McpGatewayService {
         upstreamParams.set("arguments", arguments);
         JsonNode response;
         try {
-            response = upstream.call(server, ctx.conversationKey(), ctx.user(), ctx.requestId(), request, tool.name(), credential);
+            response = upstream.call(server, ctx.conversationKey(), ctx.user(), ctx.requestId(), request, tool.name(), credential,
+                    tool.risk() == pl.aiwcorpo.mcp.gateway.server.Risk.READ_ONLY);
         } catch (UpstreamException e) {
             log.warn("tools/call rid={} to {} failed: {} {}", ctx.requestId(), server.serverId(), e.kind(), e.getMessage());
             String code = e.kind() == UpstreamException.Kind.UNAVAILABLE ? "upstream_unavailable" : "internal_error";
@@ -538,7 +547,10 @@ public class McpGatewayService {
         if ("tool_disabled".equals(reason) && state.definition != null && state.definition != Verdict.INTACT) {
             reason = state.definition.reason();
         }
-        if (("not_granted".equals(reason) || "filter_scope".equals(reason))
+        if ("not_granted".equals(reason) && state.forbidden) {
+            reason = "policy_forbid";
+        }
+        if (("not_granted".equals(reason) || "policy_forbid".equals(reason) || "filter_scope".equals(reason))
                 && !endpointAudit.admit(ctx.user(), reason, server.qualifiedName(tool))) {
             count(server, tool, "denied", "not_found_or_denied", System.nanoTime() - started);
             return errors.error("not_found_or_denied", ToolErrors.NOT_FOUND_OR_DENIED_MESSAGE);
@@ -723,7 +735,7 @@ public class McpGatewayService {
     private JsonNode callUpstream(CallContext ctx, McpServer server, ObjectNode request, String tool, Credential credential)
             throws RpcFailure {
         try {
-            return upstream.call(server, ctx.conversationKey(), ctx.user(), ctx.requestId(), request, tool, credential);
+            return upstream.call(server, ctx.conversationKey(), ctx.user(), ctx.requestId(), request, tool, credential, true);
         } catch (UpstreamException e) {
             log.warn("{} rid={} to {} failed: {} {}", request.path("method").asString(), ctx.requestId(),
                     server.serverId(), e.kind(), e.getMessage());

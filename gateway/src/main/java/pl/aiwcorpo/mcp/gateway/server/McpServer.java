@@ -10,12 +10,18 @@ import java.util.Optional;
  * keeps its tools in the catalog but none of them can be listed or called.
  */
 public record McpServer(String serverId, String system, URI internalUrl, String version, boolean enabled,
-                        CredentialPolicy credential, Map<String, ToolDefinition> tools, boolean approvalRequired) {
+                        CredentialPolicy credential, Map<String, ToolDefinition> tools, boolean approvalRequired, boolean adapter) {
+
+    /** A server with a manifest of the pipeline (or the static configuration): not an adapter. */
+    public McpServer(String serverId, String system, URI internalUrl, String version, boolean enabled, CredentialPolicy credential,
+                     Map<String, ToolDefinition> tools, boolean approvalRequired) {
+        this(serverId, system, internalUrl, version, enabled, credential, tools, approvalRequired, false);
+    }
 
     /** A server whose tools come from the static configuration. */
     public McpServer(String serverId, String system, URI internalUrl, String version, boolean enabled, CredentialPolicy credential,
                      Map<String, ToolDefinition> tools) {
-        this(serverId, system, internalUrl, version, enabled, credential, tools, false);
+        this(serverId, system, internalUrl, version, enabled, credential, tools, false, false);
     }
 
     public String tlsName() {

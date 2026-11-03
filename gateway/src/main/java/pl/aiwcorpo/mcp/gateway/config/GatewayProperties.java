@@ -158,11 +158,31 @@ public record GatewayProperties(
             @DefaultValue("128") int maxConcurrentRequests,
             /* How long a request waits for a place before it is refused. */
             @DefaultValue("100ms") Duration queueWait,
-            @DefaultValue("2") int shedRetryAfterSeconds) {
+            @DefaultValue("2") int shedRetryAfterSeconds,
+            /* Retry-After of the 503 given when the store of the MCP sessions does not answer (CC-199). */
+            @DefaultValue("10") int sessionStoreRetryAfterSeconds,
+            /* Comment line (: keepalive) on every open SSE stream, so that an intermediary does not close an idle one (CC-207). */
+            @DefaultValue("15s") Duration sseHeartbeatInterval,
+            /* How often every instance looks for changes made by another one: of the registry and of the emergency switches (CC-192, CC-194). */
+            @DefaultValue("1s") Duration changePollInterval,
+            /* The longest an instance trusts what it read of the emergency switches (CC-194, at most 5 s). */
+            @DefaultValue("5s") Duration killSwitchCacheTtl) {
 
         public Mcp {
-            if (maxConcurrentRequests < 1 || shedRetryAfterSeconds < 1 || queueWait == null || queueWait.isNegative()) {
+            if (maxConcurrentRequests < 1 || shedRetryAfterSeconds < 1 || sessionStoreRetryAfterSeconds < 1 || queueWait == null || queueWait.isNegative()) {
                 throw new IllegalArgumentException("gateway.mcp.max-concurrent-requests and shed-retry-after-seconds must be at least 1, queue-wait not negative");
+            }
+            if (sseHeartbeatInterval == null || sseHeartbeatInterval.compareTo(Duration.ofSeconds(1)) < 0
+                    || sseHeartbeatInterval.compareTo(Duration.ofSeconds(60)) > 0) {
+                throw new IllegalArgumentException("gateway.mcp.sse-heartbeat-interval (MCP_SSE_HEARTBEAT_INTERVAL) must be between 1 s and 60 s");
+            }
+            if (changePollInterval == null || changePollInterval.compareTo(Duration.ofMillis(100)) < 0
+                    || changePollInterval.compareTo(Duration.ofSeconds(4)) > 0) {
+                throw new IllegalArgumentException("gateway.mcp.change-poll-interval (MCP_CHANGE_POLL_INTERVAL) must be between 100 ms and 4 s: a change has to reach every instance within 5 s");
+            }
+            if (killSwitchCacheTtl == null || killSwitchCacheTtl.isNegative() || killSwitchCacheTtl.isZero()
+                    || killSwitchCacheTtl.compareTo(Duration.ofSeconds(5)) > 0) {
+                throw new IllegalArgumentException("gateway.mcp.kill-switch-cache-ttl (MCP_KILL_SWITCH_CACHE_TTL) must be between 1 ms and 5 s (CC-194)");
             }
             if (toolsListTimeout == null || toolsListTimeout.isNegative() || toolsListTimeout.isZero()) {
                 throw new IllegalArgumentException("gateway.mcp.tools-list-timeout (MCP_TOOLS_LIST_TIMEOUT, milliseconds) must be positive");
@@ -278,7 +298,13 @@ public record GatewayProperties(
             /* required or static; empty = gateway.registry.mode. */
             String manifest,
             @Valid @NotNull Credential credential,
-            @Valid @NotEmpty Map<String, Tool> tools) {
+            @Valid @NotNull Map<String, Tool> tools,
+            /*
+             * The server is a foreign MCP server behind an adapter (CC-193, CC-206): its manifest comes from the adapter on its own channel
+             * (submitAdapterManifest), never from the pipeline, and an administrator classifies its tools. Needs manifest "required".
+             * The tools listed here are only minimum risks for tools of the same name; a server built on the starter lists them all.
+             */
+            @DefaultValue("false") boolean adapter) {
     }
 
     public record Credential(

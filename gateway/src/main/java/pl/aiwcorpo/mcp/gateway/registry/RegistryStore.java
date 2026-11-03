@@ -30,6 +30,7 @@ public class RegistryStore {
     /** The state of one server inside a locked transaction. */
     public final class Tx {
         private final String serverId;
+        private boolean wrote;
 
         private Tx(String serverId) {
             this.serverId = serverId;
@@ -48,6 +49,7 @@ public class RegistryStore {
         }
 
         public void saveServer(JsonNode manifest, String source) {
+            wrote = true;
             jdbc.sql("INSERT INTO registry_servers (server_id, manifest, source) VALUES (?, ?::jsonb, ?) "
                             + "ON CONFLICT (server_id) DO UPDATE SET manifest = EXCLUDED.manifest, source = EXCLUDED.source, "
                             + "registered_at = now()")
@@ -55,38 +57,51 @@ public class RegistryStore {
         }
 
         public void saveTool(RegisteredTool tool) {
+            wrote = true;
             RegisteredTool.Approved a = tool.approved();
             RegisteredTool.Pending p = tool.pending();
             jdbc.sql("INSERT INTO registry_tools (server_id, tool, approved_entry, approved_hash, approved_version, approved_credential, "
-                            + "pending_entry, pending_hash, pending_version, pending_change, pending_source, pending_credential, pending_risk_lowered) "
-                            + "VALUES (?, ?, ?::jsonb, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?, ?::jsonb, ?) "
+                            + "pending_entry, pending_hash, pending_version, pending_change, pending_source, pending_credential, pending_risk_lowered, "
+                            + "classified_by, classified_at) "
+                            + "VALUES (?, ?, ?::jsonb, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?, ?::jsonb, ?, ?, ?) "
                             + "ON CONFLICT (server_id, tool) DO UPDATE SET approved_entry = EXCLUDED.approved_entry, "
                             + "approved_hash = EXCLUDED.approved_hash, approved_version = EXCLUDED.approved_version, "
                             + "approved_credential = EXCLUDED.approved_credential, pending_entry = EXCLUDED.pending_entry, "
                             + "pending_hash = EXCLUDED.pending_hash, pending_version = EXCLUDED.pending_version, "
                             + "pending_change = EXCLUDED.pending_change, pending_source = EXCLUDED.pending_source, "
-                            + "pending_credential = EXCLUDED.pending_credential, pending_risk_lowered = EXCLUDED.pending_risk_lowered")
+                            + "pending_credential = EXCLUDED.pending_credential, pending_risk_lowered = EXCLUDED.pending_risk_lowered, "
+                            + "classified_by = EXCLUDED.classified_by, classified_at = EXCLUDED.classified_at")
                     .params(serverId, tool.name(),
                             a == null ? null : json.writeValueAsString(a.entry()), a == null ? null : a.hash(),
                             a == null ? null : a.version(), a == null ? null : a.credentialJson(),
                             p == null ? null : json.writeValueAsString(p.entry()), p == null ? null : p.hash(),
                             p == null ? null : p.version(), p == null ? null : p.change(), p == null ? null : p.source(),
-                            p == null ? null : p.credentialJson(), p != null && p.riskLowered())
+                            p == null ? null : p.credentialJson(), p != null && p.riskLowered(),
+                            a == null ? null : a.classifiedBy(), a == null || a.classifiedAt() == null ? null : java.sql.Timestamp.from(a.classifiedAt()))
                     .update();
         }
 
         public void deleteTool(String name) {
+            wrote = true;
             jdbc.sql("DELETE FROM registry_tools WHERE server_id = ? AND tool = ?").params(serverId, name).update();
         }
 
         /** Sets the floor of a tool to this risk, lower or not: only the approval of a lowering by an administrator does it (CC-167). */
         public void setFloor(String tool, int risk) {
+            wrote = true;
             jdbc.sql("INSERT INTO registry_risk_floor (server_id, tool, risk) VALUES (?, ?, ?) "
                     + "ON CONFLICT (server_id, tool) DO UPDATE SET risk = EXCLUDED.risk").params(serverId, tool, risk).update();
         }
 
+        /** A tool of an adapter that left the manifest loses its classification, and with it the floor it set (CC-207). */
+        public void deleteFloor(String tool) {
+            wrote = true;
+            jdbc.sql("DELETE FROM registry_risk_floor WHERE server_id = ? AND tool = ?").params(serverId, tool).update();
+        }
+
         /** Raises the floors to these risks (ordinals); a floor is never lowered here. */
         public void raiseFloors(Map<String, Integer> risks) {
+            wrote = true;
             RegistryStore.this.raiseFloors(serverId, risks);
         }
     }
@@ -94,17 +109,25 @@ public class RegistryStore {
     private final JdbcClient jdbc;
     private final JsonMapper json;
     private final TransactionTemplate transactions;
+    private final ChangeCounter changes;
 
-    public RegistryStore(JdbcClient jdbc, JsonMapper json, PlatformTransactionManager transactionManager) {
+    public RegistryStore(JdbcClient jdbc, JsonMapper json, PlatformTransactionManager transactionManager, ChangeCounter changes) {
         this.jdbc = jdbc;
         this.json = json;
         this.transactions = new TransactionTemplate(transactionManager);
+        this.changes = changes;
     }
 
+    /** Runs {@code work} under the lock of the server; when it wrote anything the change counter is raised in the same transaction. */
     public <T> T locked(String serverId, Function<Tx, T> work) {
         return transactions.execute(status -> {
             jdbc.sql("SELECT pg_advisory_xact_lock(hashtextextended(?, 1))").param("registry:" + serverId).query().singleRow();
-            return work.apply(new Tx(serverId));
+            Tx tx = new Tx(serverId);
+            T result = work.apply(tx);
+            if (tx.wrote) {
+                changes.raise();
+            }
+            return result;
         });
     }
 
@@ -123,7 +146,7 @@ public class RegistryStore {
         jdbc.sql("SELECT tool, approved_entry::text AS approved_entry, approved_hash, approved_version, "
                         + "approved_credential::text AS approved_credential, pending_entry::text AS pending_entry, pending_hash, "
                         + "pending_version, pending_change, pending_source, pending_credential::text AS pending_credential, "
-                        + "pending_risk_lowered FROM registry_tools WHERE server_id = ? ORDER BY tool")
+                        + "pending_risk_lowered, classified_by, classified_at FROM registry_tools WHERE server_id = ? ORDER BY tool")
                 .param(serverId).query((rs, row) -> tools.put(rs.getString("tool"), tool(rs))).list();
         return tools;
     }
@@ -149,7 +172,8 @@ public class RegistryStore {
     private RegisteredTool tool(ResultSet rs) throws SQLException {
         RegisteredTool.Approved approved = rs.getString("approved_entry") == null ? null
                 : new RegisteredTool.Approved(json.readTree(rs.getString("approved_entry")), rs.getString("approved_hash"),
-                        rs.getString("approved_version"), rs.getString("approved_credential"));
+                        rs.getString("approved_version"), rs.getString("approved_credential"), rs.getString("classified_by"),
+                        rs.getTimestamp("classified_at") == null ? null : rs.getTimestamp("classified_at").toInstant());
         RegisteredTool.Pending pending = rs.getString("pending_entry") == null ? null
                 : new RegisteredTool.Pending(json.readTree(rs.getString("pending_entry")), rs.getString("pending_hash"),
                         rs.getString("pending_version"), rs.getString("pending_change"), rs.getString("pending_source"),

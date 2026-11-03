@@ -121,6 +121,14 @@ gateway:
     max-concurrent-requests: ${MCP_MAX_CONCURRENT_REQUESTS:128}
     queue-wait: ${MCP_CONCURRENCY_QUEUE_WAIT:100ms}
     shed-retry-after-seconds: ${MCP_SHED_RETRY_AFTER_SECONDS:2}
+    # Retry-After of the 503 given when the store of the MCP sessions (Redis) does not answer.
+    session-store-retry-after-seconds: ${MCP_SESSION_STORE_RETRY_AFTER_SECONDS:10}
+    # Comment line ": keepalive" on every open SSE stream (GET of a session, POST subscriptions/listen).
+    sse-heartbeat-interval: ${MCP_SSE_HEARTBEAT_INTERVAL:15s}
+    # How often an instance looks for registry and emergency switch changes made by another instance (a change reaches all within 5 s).
+    change-poll-interval: ${MCP_CHANGE_POLL_INTERVAL:1s}
+    # How long an instance trusts the emergency switches it read (at most 5 s); an unreadable store is never trusted past it.
+    kill-switch-cache-ttl: ${MCP_KILL_SWITCH_CACHE_TTL:5s}
   metrics:
     allowed-client-cns: ${MCP_METRICS_CLIENT_CNS:}
   tls:

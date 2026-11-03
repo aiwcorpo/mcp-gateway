@@ -4,12 +4,12 @@ package pl.aiwcorpo.mcp.gateway.confirm;
  * The forbidden character set of CC-121 (README "Higiena tekstu"), used here only to escape what the owner is shown:
  * a control or bidirectional character in an argument must not reshape the preview or the description.
  */
-final class TextHygiene {
+public final class TextHygiene {
 
     private TextHygiene() {
     }
 
-    static boolean forbidden(int cp) {
+    public static boolean forbidden(int cp) {
         if (cp < 0x20) {
             return cp != '\t' && cp != '\n' && cp != '\r';
         }

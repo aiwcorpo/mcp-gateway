@@ -107,12 +107,20 @@ class PolicyDistributionTest extends GatewayTestBase {
     }
 
     @Test
-    void anEmergencyForbidFromTheOverridesBundleStopsACallWithinSeconds() throws Exception {
+    void anEmergencyForbidFromTheOverridesBundleStopsACallWithinSeconds(org.springframework.boot.test.system.CapturedOutput output) throws Exception {
         String overridesRevision = TestBundles.revision(NEXT.getAndIncrement());
         env.policies.publishOverrides(TestBundles.overrides(overridesRevision, Map.of("emergency.cedar", NO_GET_ISSUE)));
         try {
             await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
                     assertThat(toolError(getIssue()).path("error").asString()).isEqualTo("not_found_or_denied"));
+            // The client learns nothing, the audit says that a forbid did it, and the row of the user is a missing grant (CC-198).
+            // Another user: the audit of a refusal a client can repeat is limited per user, reason and tool.
+            String requestId = callGetIssue(env.idp.token(UUID.randomUUID().toString(), "fresh", ALICE_GROUPS)).headers()
+                    .firstValue("X-Request-Id").orElseThrow();
+            List<JsonNode> events = auditEvents(output, requestId);
+            assertThat(events).isNotEmpty().allSatisfy(e -> assertThat(e.path("reason").asString()).isEqualTo("policy_forbid"));
+            assertThat(new pl.aiwcorpo.mcp.gateway.activity.ActivityAggregator(JSON)
+                    .aggregate(events, System.currentTimeMillis()).path("result").asString()).isEqualTo("denied_not_granted");
         } finally {
             env.policies.publishOverrides(TestBundles.overrides(TestBundles.revision(NEXT.getAndIncrement()),
                     Map.of("emergency.cedar", "@id(\"test-nothing\") forbid (principal, action == Action::\"call\", resource is Tool)"

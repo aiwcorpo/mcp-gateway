@@ -42,6 +42,17 @@ public final class RateLimitResponse {
                 .header("Cache-Control", "no-store")
                 .header("Retry-After", Integer.toString(seconds))
                 .header("X-Request-Id", requestId)
-                .body("{\"error\":\"upstream_unavailable\",\"message\":\"The gateway is serving as many requests as it can. Try again in a few seconds.\"}");
+                .body("{\"error\":\"upstream_unavailable\",\"message\":\"The gateway is busy. Try again in a few seconds.\"}");
+    }
+
+    /** The store of the MCP sessions does not answer: the session is not unknown, it cannot be read, so not a 404 (CC-199). */
+    public static ResponseEntity<String> sessionStoreUnavailable(String requestId, int retryAfterSeconds) {
+        int seconds = Math.max(1, retryAfterSeconds);
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header("Content-Type", "application/json; charset=utf-8")
+                .header("Cache-Control", "no-store")
+                .header("Retry-After", Integer.toString(seconds))
+                .header("X-Request-Id", requestId)
+                .body("{\"error\":\"upstream_unavailable\",\"message\":\"Sessions are temporarily unavailable. Try again in a few seconds.\"}");
     }
 }

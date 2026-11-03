@@ -64,6 +64,7 @@ public class McpEndpoint {
     private final List<String> allowedOrigins;
     private final String name;
     private final String version;
+    private final int sessionStoreRetryAfter;
 
     public McpEndpoint(ServerRegistry servers, McpGatewayService service, ClientSessionStore sessions, UpstreamSessions upstream,
                        JsonMapper json, MeterRegistry meters, GatewayProperties properties) {
@@ -76,6 +77,7 @@ public class McpEndpoint {
         this.allowedOrigins = properties.allowedOrigins();
         this.name = properties.componentId();
         this.version = properties.version();
+        this.sessionStoreRetryAfter = properties.mcp().sessionStoreRetryAfterSeconds();
     }
 
     @PostMapping("/mcp")
@@ -229,9 +231,7 @@ public class McpEndpoint {
         log.error("session store unavailable rid={}: {}", requestId, failure.getClass().getName());
         meters.counter("mcp.gateway.requests.store_unavailable").increment();
         service.auditRefusedRequest(user, requestId, clientRequestId, "upstream_unavailable", "error", null, null);
-        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).header(HttpHeaders.RETRY_AFTER, "5")
-                .header("X-Request-Id", requestId).contentType(MediaType.APPLICATION_JSON)
-                .body("{\"error\":\"upstream_unavailable\",\"message\":\"The session store is temporarily unavailable. Try again in a few seconds.\"}");
+        return RateLimitResponse.sessionStoreUnavailable(requestId, sessionStoreRetryAfter);
     }
 
     /** The filter of the query as the client wrote it, not decoded: a {@code %} is not part of its alphabet (CC-170). */
