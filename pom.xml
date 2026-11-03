@@ -16,6 +16,26 @@
     <version>0.1.0-SNAPSHOT</version>
     <packaging>pom</packaging>
     <name>MCP Gateway :: Parent</name>
+    <description>The single entry point of the MCP platform for AI clients: authentication, authorization of every tool call, credentials from the broker, audit.</description>
+    <url>https://github.com/aiwcorpo/mcp-gateway</url>
+    <licenses>
+        <license>
+            <name>Apache-2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+    <scm>
+        <url>https://github.com/aiwcorpo/mcp-gateway</url>
+        <connection>scm:git:https://github.com/aiwcorpo/mcp-gateway.git</connection>
+    </scm>
+    <distributionManagement>
+        <repository>
+            <id>github</id>
+            <name>GitHub Packages of aiwcorpo/mcp-gateway</name>
+            <url>https://maven.pkg.github.com/aiwcorpo/mcp-gateway</url>
+        </repository>
+    </distributionManagement>
 
     <modules>
         <module>test-server</module>

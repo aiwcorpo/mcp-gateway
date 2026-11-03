@@ -1,8 +1,32 @@
 # Status ws-05 (mcp-gateway)
 
-Kamień: **M5** (fala z 2026-10-31) na kontraktach `mcp-contracts` **5.1.2**, kod na gałęzi `main`. Pod spodem M4 i starsze (sekcje niżej, wiersze
+Kamień: **M6, etap 3** (2026-11-03) na kontraktach `mcp-contracts` **6.2.0**, kod na gałęzi `main` (sekcja "M6 etap 3" niżej; wiersze M5 o `listChanged: false`, `GET` 405 i powodzie `not_granted` dla `forbid` są nią zastąpione).
+Pod spodem M5 (fala z 2026-10-31). Pod spodem M4 i starsze (sekcje niżej, wiersze
 zastąpione w M5 są oznaczone). PoC `poc/mcp-query` był materiałem: klasa `ToolFilter`, trasa `/f/` i `access=write` jako READ_ONLY+UPDATE nie weszły,
 filtr to `EndpointFilter` z kontraktów.
+
+## M6 etap 3: kontrakty 6.2.0 i porządki do wydania
+
+| Punkt | Stan |
+| --- | --- |
+| `list_changed` (CC-192, CC-207) | `ToolStreams` (strumień `GET` sesji i `POST subscriptions/listen`), `ListChangeTracker` (okno 1 s, wektory `list-changed-*`), `UserToolLists` (lista użytkownika bez pytania serwerów); punkt odniesienia z chwili otwarcia; poza `MCP_MAX_CONCURRENT_REQUESTS` (filtr oddaje miejsce, gdy żądanie okaże się strumieniem); heartbeat 15 s; koniec przy wygaśnięciu tokenu, `DELETE` sesji, `purge`, zatrzymaniu; metryka `mcp_gateway_open_streams`; zmiany z innych instancji przez licznik `registry_changes` (Flyway V8) czytany co sekundę, wyłącznik i rejestr do 5 s (`HighAvailabilityTest`, dwa procesy) |
+| Wyłącznik awaryjny (CC-194) | tabela `kill_switches` (V8), pięć operacji C5, `KillSwitches` (pamięć do 5 s, nieczytelny stan = odmowa, pusta lista, `503` katalogu, brak gotowości), po `mayCall` i filtrze (`CallOrder`), `disabledBy` w katalogu, audyt `kill_switch`, `kill_switch_set`, `kill_switch_cleared`; wektory `kill-switch/` (17) i `call-state-kill-switch-*` |
+| Rejestr adaptera (CC-193, CC-206, CC-207) | `gateway.servers.<id>.adapter`, `PUT /admin/v1/registry/adapters/{serverId}` (CN `mcp-adapter-<serverId>`, kolejność 403, 400, 422), planer bez zatwierdzania, `approve` z `risk` i `action` (`classification_required`, `classification_not_allowed`, `classification_inconsistent`, obniżenie z `acceptRiskLowering`), hash bez `risk` i `action` (`DefinitionCheck`), usunięcie narzędzia kasuje klasyfikację i podłogę, wpis z odczytu serwera adaptera to `source: adapter`, `classifiedBy`/`classifiedAt` (V9); wektory `adapter-registry/` (13), `registry-approval/` (13) |
+| Audyt i odpowiedzi | `policy_forbid` w audycie (wiersz aktywności `denied_not_granted`), `suppressedTargets`, `Retry-After` 2 s (shed) i 10 s (magazyn sesji, `MCP_SESSION_STORE_RETRY_AFTER_SECONDS`), kursor `""` to `-32602`, claimy IdP ignorowane (`IdpTokenClaimsTest`), bez ponowień `UPDATE`/`DESTRUCTIVE` po utracie sesji przez serwer (`NoRepeatOfWritesTest`) |
+| Koszt `tools/list` | decyzje Cedar równolegle (`ToolAccess`) i raz na narzędzie: 253 narzędzia 883 ms po kolei, 162 ms na 12 rdzeniach, 493 ms na 2 rdzeniach (`ToolsListCostTest`, `-DargLine=-XX:ActiveProcessorCount=2`). Pojedyncza decyzja to 3,4 ms prawie w całości w `isAuthorized` (budowa encji 80 us); dalsze skrócenie wymagałoby zmiany sposobu podawania schematu i polityk do biblioteki Cedar, nie ruszałem walidacji żądania |
+| Porządki (plan-wydanie) | LICENSE Apache-2.0, NOTICE, SECURITY.md, CONTRIBUTING.md, CHANGELOG.md, `<licenses>`, `<scm>`, `distributionManagement` (GitHub Packages), profil `release` z SBOM CycloneDX, `.github/workflows/release.yml` (ghcr.io, nie uruchomiony), README z odbiorcą i sekcją instalacji i obsługi, bez ścieżek Homebrew, prefiks tagu obrazu `MCP_IMAGE_STAGE` (domyślnie `m6`). Gałąź `poc/mcp-query` zostaje |
+
+Testy: `ci/run.sh verify` (822 testy gatewaya po tym etapie, zielone), vectory 6.2.0 w całości (`kill-switch`, `adapter-registry`, `registry-approval`, `endpoint-aggregate/list-changed-*`, `endpoint-filter/stream-open-*`, `idp-token-claims`, `activity-calls`, `audit-events`, `gateway-authentication`). Nie dotyczą gatewaya: `balancer-errors/` (nginx, ws-01).
+
+Decyzje i granice tego etapu:
+
+- **Narzędzie adaptera bez klasyfikacji** jest oceniane przez Cedar jak `DESTRUCTIVE` z akcją `admin` (zablokowane, `disabled`), więc `tool_disabled` zobaczy tylko użytkownik z prawem do takich narzędzi systemu, każdy inny `not_found_or_denied` (niezmiennik 8). W paczkach przykładowych nikt takiego prawa nie ma dla `opensearch`.
+- **Dostępność serwera i dryf definicji na żywo** wyzwalają `list_changed` dopiero po odczycie przez ruch; nie ma odpytywania serwerów w tle (sesje do serwerów są per użytkownik).
+- **`purge`** zamyka strumienie tylko na instancji, która go obsłużyła; strumień sesji na innej kończy się przy następnym heartbeacie (sesji już nie ma), bezstanowy z tokenem (najwyżej 60 min).
+- **Katalog przy nieczytelnych wyłącznikach** to `503 upstream_unavailable` z `Retry-After` (kontrakt opisuje to `503` dla operacji wyłączników; dla katalogu to moja decyzja, do potwierdzenia).
+- **`cursor: null`** w `tools/list` jest odrzucany jak każdy kursor niebędący napisem (`-32602`); kontrakt tego nie rozstrzyga.
+
+Nazwy dla ws-01 (konfiguracja i metryki): `MCP_SERVER_<JIRA|CONFLUENCE|GITLAB|SERVICEDESK|OPENSEARCH>_ADAPTER`, `MCP_SSE_HEARTBEAT_INTERVAL` (15s), `MCP_CHANGE_POLL_INTERVAL` (1s, najwyżej 4s), `MCP_KILL_SWITCH_CACHE_TTL` (5s, najwyżej 5s), `MCP_SESSION_STORE_RETRY_AFTER_SECONDS` (10), `MCP_SHED_RETRY_AFTER_SECONDS` (2, bez zmian), `MCP_IMAGE_STAGE` (tylko `ci/run.sh image`); metryki `mcp_gateway_open_streams`, `mcp_gateway_streams_opened_total{kind}`, `mcp_gateway_streams_closed_total{reason}`, `mcp_gateway_stream_notifications_total`, `mcp_gateway_kill_switches_active`, `mcp_gateway_kill_switches_unreadable`; certyfikat adaptera CN `mcp-adapter-<serverId>`; nginx dla `/mcp` i `/s/`: `proxy_buffering off`, `proxy_read_timeout` >= 60s (odpowiedź strumienia ma też `X-Accel-Buffering: no`); alert na `admin_change` z `kill_switch_set` i na `suppressedTargets`. Obraz: tag w raporcie koordynatora (`mcp-gateway:m6-<sha>` z `ci/run.sh image`).
 
 ## M5: zakres z zadania
 

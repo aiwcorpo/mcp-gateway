@@ -131,4 +131,35 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- The SBOM of a release: mvn -Prelease package writes gateway/target/mcp-gateway-<version>-sbom.json -->
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.cyclonedx</groupId>
+                        <artifactId>cyclonedx-maven-plugin</artifactId>
+                        <version>2.9.1</version>
+                        <configuration>
+                            <projectType>application</projectType>
+                            <schemaVersion>1.6</schemaVersion>
+                            <outputFormat>json</outputFormat>
+                            <outputName>mcp-gateway-${project.version}-sbom</outputName>
+                            <includeTestScope>false</includeTestScope>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>makeBom</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

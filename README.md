@@ -5,10 +5,54 @@ tokenem z IdP (C1), pobiera z brokera poświadczenie użytkownika do systemu (C4
 i przekazuje wywołanie do serwera MCP po mTLS z nagłówkami C3. Każde wywołanie narzędzia zostawia zdarzenia
 audytu C8 z jednym `requestId`.
 
-Stan: kamień M5 (jeden adres `/mcp` z filtrem w query zamiast zapisanych linków, HA dwóch instancji, CI w `ci/run.sh`; sekcja "Co dochodzi w M5") na M4 (przypinanie definicji w rejestrze, offboarding, limity zapytań, typ poświadczenia w Cedar, tryb dev tylko ze
+Dla kogo: produkt dla operatorów platformy (komponent wdrażany jako obraz kontenera `mcp-gateway`, nie biblioteka). Instalacja i codzienna obsługa
+całej platformy: repozytorium `mcp-docs` (w przygotowaniu); tutaj sekcja "Instalacja i obsługa" dla samego gatewaya. Licencja: Apache-2.0
+([LICENSE](LICENSE), [NOTICE](NOTICE)); zgłaszanie podatności: [SECURITY.md](SECURITY.md); zmiany: [CHANGELOG.md](CHANGELOG.md); udział w pracach: [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Stan: kamień M6, etap 3 (wyłącznik awaryjny, kanał adaptera i klasyfikacja narzędzi obcych serwerów, `list_changed` w obu postaciach protokołu;
+sekcja "Co dochodzi w M6") na M5 (jeden adres `/mcp` z filtrem w query zamiast zapisanych linków, HA dwóch instancji, CI w `ci/run.sh`; sekcja "Co dochodzi w M5") na M4 (przypinanie definicji w rejestrze, offboarding, limity zapytań, typ poświadczenia w Cedar, tryb dev tylko ze
 stosem dev) na M3 (potwierdzenia TOTP akcji DESTRUCTIVE, Cedar z podpisanych paczek, `/activity/calls`), M2 (wirtualne serwery,
 API C5 dla BFF, jedna domena) i M1 (OAuth RS, broker, C2/C3, audyt). Co działa, czego nie ma i odstępstwa: [STATUS.md](STATUS.md).
-Kontrakty: `mcp-contracts` 5.1.2.
+Kontrakty: `mcp-contracts` 6.2.0.
+
+## Instalacja i obsługa
+
+Gateway to jeden obraz kontenera (`mcp-gateway:<wersja>`, JRE 25 na glibc, użytkownik bez uprawnień, porty `8080` i `8443`). Potrzebuje działających:
+PostgreSQL (rejestr, wyłączniki, aktywność; schemat zakłada Flyway przy starcie), Redis z kontem `gateway` (sesje, potwierdzenia, limity;
+polityka `noeviction`, `appendonly yes`), IdP z OIDC (Keycloak lub Entra), brokera `mcp-credential-broker`, serwera polityk z podpisanymi paczkami
+(`mcp-policies`) i serwerów MCP po mTLS z jednego wewnętrznego CA. Stos do próby na jednej maszynie: `mcp-platform-dev` (nie do produkcji).
+
+**Wymagane zmienne** (reszta ma wartości domyślne, patrz `application.yml`):
+
+| Zmienna | Znaczenie |
+| --- | --- |
+| `MCP_PUBLIC_URL` | publiczny origin (RFC 9728, `connectUrl`); nigdy z nagłówka `Host` |
+| `MCP_OIDC_ISSUER`, `MCP_OIDC_JWKS_URI` | wystawca i klucze IdP; `MCP_OIDC_CLIENT_ID/SECRET/TOKEN_URI` tylko dla systemów `token-exchange` |
+| `MCP_DB_URL`, `MCP_DB_USER`, `MCP_DB_PASSWORD` | PostgreSQL |
+| `MCP_REDIS_HOST`, `MCP_REDIS_USER`, `MCP_REDIS_PASSWORD` | Redis (`MCP_REDIS_WAIT_REPLICAS` > 0 przy replikach) |
+| `MCP_TLS_KEYSTORE`, `MCP_TLS_TRUSTSTORE`, `MCP_TLS_STORE_PASSWORD` | certyfikat gatewaya (CN `mcp-gateway`) i wewnętrzne CA |
+| `MCP_BROKER_URL`, `MCP_BROKER_TLS_NAME` | broker |
+| `MCP_POLICY_MAIN_URL`, `MCP_POLICY_MAIN_KEY_ID`, `MCP_POLICY_MAIN_KEY_FILE`, `MCP_POLICY_STATE_DIR` | paczki polityk; katalog stanu osobny dla instancji (wolumen) |
+| `MCP_INTERNAL_JWT_KEYS_FILE`, `MCP_INTERNAL_JWT_ACTIVE_KID` | klucze C2, wspólne dla instancji |
+| `MCP_LIST_CURSOR_KEY`, `MCP_ACTIVITY_CURSOR_KEY` | klucze HMAC kursorów, wspólne dla instancji |
+| `MCP_SERVER_<SYSTEM>_MCP_URL`, `MCP_SERVER_<SYSTEM>_ADAPTER` | adres serwera systemu; `true` dla obcego serwera za adapterem |
+
+**Codzienna obsługa.**
+
+- *Gotowość:* `GET https://<gateway>:8443/actuator/health` z certyfikatem z wewnętrznego CA. Instancja, która nie czyta wyłączników awaryjnych, nie jest gotowa.
+- *Dwie instancje i więcej:* wspólny Redis i PostgreSQL, ten sam plik kluczy C2 i te same klucze kursorów, osobny `MCP_POLICY_STATE_DIR` na instancję. Balancer:
+  `proxy_next_upstream error timeout` bez `non_idempotent`, `proxy_buffering off` i `proxy_read_timeout` co najmniej 60 s dla `/mcp` i `/s/` (strumienie).
+  Zmiany rejestru i wyłączników dochodzą do pozostałych instancji w ciągu sekundy (`MCP_CHANGE_POLL_INTERVAL`), skutek wyłącznika najpóźniej po 5 s.
+- *Aktualizacja:* nowy obraz z tym samym `MCP_*`, migracje Flyway idą przy starcie; kolejno po jednej instancji. Strumienie SSE kończą się przy zatrzymaniu
+  instancji (klient otwiera nowy).
+- *Wyłącznik awaryjny:* portal (administrator `mcp-platform-admin`) albo `PUT/DELETE /admin/v1/registry/servers/{serverId}[/tools/{tool}]/kill-switch`; lista `GET /admin/v1/kill-switches`;
+  alert na zdarzenie `admin_change` z powodem `kill_switch_set` oraz na metrykę `mcp_gateway_kill_switches_unreadable` = 1.
+- *Nowy obcy serwer:* `MCP_SERVER_<SYSTEM>_ADAPTER=true`, certyfikat adaptera `mcp-adapter-<serverId>`; adapter wysyła manifest przy starcie, administrator klasyfikuje
+  i zatwierdza narzędzia w portalu. Do czasu zatwierdzenia narzędzia są niewidoczne.
+- *Diagnostyka:* zdarzenia audytu C8 są na stdout (logger `AUDIT`), jedna linia JSON; po `requestId` z odpowiedzi składa się ślad wywołania z gatewaya, brokera i serwera.
+  Metryki: sekcja "Metryki" poniżej. Najczęstsze objawy: `503` z `Retry-After` (przeciążenie albo magazyn sesji), `tool_disabled` z powodem `kill_switch` albo `definition_changed`
+  w audycie, `upstream_unavailable` przy nieczytelnym stanie wyłączników.
+- *Kopie zapasowe:* PostgreSQL (rejestr, wyłączniki, aktywność). Redis jest stanem krótkim; po jego utracie użytkownicy inicjują sesje ponownie.
 
 ## Moduły
 
@@ -24,7 +68,7 @@ Kontrakty: `mcp-contracts` 5.1.2.
     `Mcp-Name` sprawdzane względem treści (`-32020`), nieobsługiwana wersja `-32022` z listą wersji,
     `server/discover`, wyniki z `resultType`;
   - era 2025-03-26 .. 2025-11-25: `initialize`, `Mcp-Session-Id` (Redis, `gw:session:*`, sesja związana z
-    `sub` tokenu; obcy `sub` -> 404 jak sesja nieznana), `DELETE` kończy sesję, `GET` -> 405;
+    `sub` tokenu; obcy `sub` -> 404 jak sesja nieznana), `DELETE` kończy sesję, `GET` z `Accept: text/event-stream` otwiera strumień sesji (od M6), inny `GET` -> 405;
   - metody: `tools/list`, `tools/call`, `ping`; nazwy narzędzi dla klienta `<system>__<tool>` (C5).
 - **OAuth RS (C1):** JWT z JWKS IdP, `iss`, `aud` zawiera `mcp-gateway`, wymagane `sub`, `azp`,
   `preferred_username` (każde najwyżej 255 znaków, `sub` bez prefiksu `system:`), `iat`, czas życia
@@ -353,12 +397,59 @@ gateway:
 `serverId` musi być `mcp-<system>`, adres tylko `https`, nazwy narzędzi według `ToolName` z kontraktu; błąd
 konfiguracji zatrzymuje start.
 
+## Co dochodzi w M6 (etap 3, kontrakty 6.2.0)
+
+- **`list_changed` (CC-192, CC-207).** `capabilities.tools.listChanged: true` w obu postaciach protokołu. Strumień sesji: `GET` na `/mcp` albo `/s/<serverId>/mcp` z `Mcp-Session-Id` i
+  `Accept: text/event-stream`, kontrole w kolejności CC-184 (token, składnia query `400`, właściciel sesji `404`, trasa i filtr `404` ze zdarzeniem `filter_mismatch`); bez sesji albo bez
+  tego `Accept` to `405` z `Allow: POST, DELETE, GET`. Postać bezstanowa: `POST subscriptions/listen` (filtr z tego żądania, bez sesji, bez `filter_mismatch`); pierwsza wiadomość to
+  `notifications/subscriptions/acknowledged` z podzbiorem filtra klienta, który gateway spełnia (`toolsListChanged`), potem puste `notifications/tools/list_changed` z `subscriptionId`;
+  przy końcu z inicjatywy serwera odpowiedź `resultType: complete` na żądanie. Punkt odniesienia to lista użytkownika z chwili otwarcia strumienia (`UserToolLists`: zatwierdzone,
+  włączone, bez wyłącznika, ostatni odczyt serwera nie przeczy hashowi, Cedar na poziomie narzędzia); porównanie po filtrze adresu według nazwy, ryzyka i hasha definicji; najwyżej jedno
+  powiadomienie na sekundę (`ListChangeTracker`, wektory `list-changed-*`). Wyzwalacze: zmiana rejestru (także na innej instancji, licznik `registry_changes` w PostgreSQL czytany co
+  `MCP_CHANGE_POLL_INTERVAL`, domyślnie 1 s), wyłącznik, nowa paczka polityk, inny wynik odczytu definicji serwera, zmiana grup w tokenie sesji z otwartym strumieniem. Strumień nie liczy
+  się do `MCP_MAX_CONCURRENT_REQUESTS` (żądanie oddaje miejsce, gdy okaże się strumieniem), nie ma limitu strumieni na użytkownika, a liczba otwartych to metryka. Heartbeat
+  `: keepalive` co `MCP_SSE_HEARTBEAT_INTERVAL` (15 s). Koniec strumienia: wygaśnięcie tokenu, `DELETE` sesji, `purge` użytkownika (na tej instancji; na innych przy następnym
+  heartbeacie sesji albo z tokenem), zatrzymanie procesu. Zdarzenia nie są odtwarzane. Granice: dostępność serwera i dryf jego definicji wyzwalają powiadomienie dopiero po odczycie
+  przez ruch (`tools/list`, `tools/call`); zmiana grup strumienia bezstanowego dociera z nowym tokenem (nowy strumień).
+- **Wyłącznik awaryjny (CC-194, A9).** Tabela `kill_switches` (Flyway V8), operacje C5 `putServerKillSwitch`, `deleteServerKillSwitch`, `putToolKillSwitch`, `deleteToolKillSwitch`,
+  `listKillSwitches` (administrator `mcp-platform-admin`, `mcp-portal-bff`); włączenie bez MFA, bez wygasania. Sprawdzany w `tools/call` po `mayCall` i po filtrze adresu, przed
+  `tool_disabled` z konfiguracji (powód audytu `kill_switch`, kod `tool_disabled`; użytkownik bez prawa do narzędzia albo z filtrem, który je wycina, dostaje `not_found_or_denied`).
+  Pamięć podręczna instancji nie starsza niż `MCP_KILL_SWITCH_CACHE_TTL` (5 s) i nigdy nie wydłużana po nieudanym odczycie; nieczytelny stan to `upstream_unavailable` dla wywołania,
+  pusta `tools/list`, `503` katalogu i brak gotowości. Katalog pokazuje `disabledBy` (`kill_switch`, `approval`, `configuration`). Oczekujące potwierdzenie narzędzia z wyłącznikiem
+  kończy się przy ponowieniu z kodem odmową `tool_disabled`. `PUT` dla narzędzia nieznanego rejestrowi to `404`, `DELETE` przełącznika narzędzia usuniętego z manifestu to `204`.
+- **Kanał adaptera i klasyfikacja (CC-193, CC-206, CC-207).** `gateway.servers.<id>.adapter: true` (`MCP_SERVER_<SYSTEM>_ADAPTER`) oznacza serwer za adapterem; jego manifest (`source: adapter`,
+  wpisy bez `risk` i `action`) przychodzi na `PUT /admin/v1/registry/adapters/{serverId}` z certyfikatem `mcp-adapter-<serverId>`; kolejność odpowiedzi: certyfikat (`403`), `serverId` ciała
+  względem ścieżki (`400`), tryb i `source` (`422 adapter_mode_mismatch`, także dla pipeline'u na serwerze adaptera), kontrole każdego manifestu (`422`). Wywołanie niczego nie zatwierdza:
+  każde nowe lub zmienione narzędzie jest `pending_approval` ze `source: adapter`, narzędzie nieobecne w manifeście jest usuwane razem z klasyfikacją i podłogą ryzyka. `approve`
+  przyjmuje `risk` i `action` (wymagane dla wpisu adaptera: `classification_required`, zabronione dla innych: `classification_not_allowed`, zgodne ze sobą: `classification_inconsistent`);
+  obniżenie klasyfikacji wymaga `acceptRiskLowering`; hash wpisu adaptera nie obejmuje `risk` ani `action`; zdarzenie `admin_change` niesie `risk` i `action`. Narzędzie bez klasyfikacji jest
+  oceniane jak najbardziej niebezpieczne (DESTRUCTIVE, `admin`), więc tylko użytkownik z takim prawem w ogóle widzi je jako `tool_disabled`. Różnica znaleziona przy odczycie działającego
+  serwera adaptera to wpis `source: adapter`, nigdy `server`.
+- **Audyt i odpowiedzi.** Zakaz `forbid` na poziomie narzędzia to w audycie `policy_forbid` (klient: `not_found_or_denied`, wiersz aktywności: `denied_not_granted`); podsumowania
+  ograniczania zdarzeń mają `suppressedTargets`; `503` przy przeciążeniu ma `Retry-After: 2` (`MCP_SHED_RETRY_AFTER_SECONDS`), `503` przy niedostępnym magazynie sesji `Retry-After: 10`
+  (`MCP_SESSION_STORE_RETRY_AFTER_SECONDS`); `cursor: ""` w `tools/list` to `-32602`; claimy tokenu IdP spoza znanych (w tym `vs`, `vsc`) są ignorowane i nigdy nie trafiają do JWT C2;
+  gateway nie ponawia sam `tools/call` o ryzyku `UPDATE` ani `DESTRUCTIVE` (po utracie sesji przez serwer klient dostaje `upstream_unavailable` i decyduje).
+- **Koszt `tools/list`.** Decyzje Cedar o narzędziach jednego serwera liczą się równolegle (`ToolAccess`) i raz na narzędzie; 253 narzędzia: 883 ms po kolei, 162 ms równolegle
+  na 12 rdzeniach, 493 ms na 2 rdzeniach (`ToolsListCostTest`). Jedna decyzja to ok. 3,4 ms, prawie w całości wywołanie natywnej biblioteki Cedar.
+
+### Metryki M6
+
+| Metryka | Znaczenie |
+| --- | --- |
+| `mcp_gateway_open_streams` | otwarte strumienie SSE na instancji (sesje i `subscriptions/listen` razem) |
+| `mcp_gateway_streams_opened_total{kind}` | otwarte strumienie, `kind` = `session` albo `listen` |
+| `mcp_gateway_streams_closed_total{reason}` | zamknięte strumienie (`token_expired`, `session_deleted`, `user_purged`, `shutdown`, `client_closed`, `interrupted`) |
+| `mcp_gateway_stream_notifications_total` | wysłane `notifications/tools/list_changed` |
+| `mcp_gateway_kill_switches_active` | wyłączniki, które instancja ostatnio odczytała |
+| `mcp_gateway_kill_switches_unreadable` | 1, gdy instancja nie czyta wyłączników i odmawia wywołań |
+| `mcp_gateway_requests_in_flight`, `mcp_gateway_requests_shed_total` | bez zmian: żądania w toku (bez strumieni) i odrzucone przez limit |
+
 ## Budowanie i testy
 
 Wymaga JDK 25 i Dockera (Testcontainers: Redis z ACL jak w `mcp-platform-dev` i PostgreSQL 18.6).
 
 ```bash
-export JAVA_HOME=/opt/homebrew/Cellar/openjdk@25/25.0.4.1/libexec/openjdk.jdk/Contents/Home
+# JDK 25 w PATH albo w JAVA_HOME; na Windows przez WSL2
 ./mvnw -B install                                    # testy + jary obu modułów
 docker build -t mcp-gateway:dev .
 docker build -t mcp-gateway-test-server:dev -f test-server/Dockerfile .
@@ -394,7 +485,6 @@ procesy na hoście, bez zmian w kontenerach środowiska. Gateway: `http://localh
 brokera `https://localhost:18703`.
 
 ```bash
-export JAVA_HOME=/opt/homebrew/Cellar/openjdk@25/25.0.4.1/libexec/openjdk.jdk/Contents/Home
 ./mvnw -B install -DskipTests
 scripts/run-dev-host.sh &                       # gateway, PostgreSQL gateway-owa baza zakladana przez Flyway
 scripts/run-test-server-host.sh &               # w miejscu mcp-jira
@@ -424,7 +514,7 @@ w M2 nie uruchamiałem (STATUS.md).
 ## CI (`ci/run.sh`, M5-5)
 
 Cała logika jest w `ci/run.sh` (`make ci` wywołuje `verify`): `verify` (kontrola tekstu, `mvnw clean verify` obu modułów, błąd przy zerze
-uruchomionych testów), `hygiene`, `image` (obraz `mcp-gateway:m5-<sha>` z czystego drzewa). Błąd kroku to kod wyjścia skryptu, nieznany lub
+uruchomionych testów), `hygiene`, `image` (obraz `mcp-gateway:<MCP_IMAGE_STAGE>-<sha>` z czystego drzewa, domyślnie `m6`). Błąd kroku to kod wyjścia skryptu, nieznany lub
 pusty krok to błąd (2); `ci/self-test.sh` sprawdza to atrapą `mvnw`, która kończy się błędem. `ci/Dockerfile` daje obraz do uruchomienia
 bez JDK. Artefakty kontraktów na czystym runnerze: `MCP_MAVEN_REPOSITORY_URL`, `_USER`, `_PASSWORD` (`.ci/settings.xml`). Testy startują
 kontenery (PostgreSQL, Redis), więc potrzebny jest dostęp do Dockera.
@@ -448,7 +538,9 @@ pl.aiwcorpo.mcp.gateway
 ├── policy/    PolicyService, BundleFetcher: paczki polityk C7
 ├── confirm/   C11: ConfirmationRules, ConfirmationService, RedisConfirmationStore
 ├── activity/  /activity/calls: ActivityStore, ActivityAggregator, ActivityCursor
-├── registry/  zatwierdzone manifesty C6, DefinitionCheck, RegistryStore
+├── registry/  zatwierdzone manifesty C6, DefinitionCheck, RegistryStore, licznik zmian
+├── killswitch/ wyłącznik awaryjny: tabela, pamięć podręczna do 5 s, stan gotowości
+├── stream/    strumienie SSE: ToolStreams, ListChangeTracker, UserToolLists
 ├── edge/      jedna domena: PublicEdgeFilter, WellKnownGuard, błędy tylko JSON
 ├── audit/     zdarzenia C8 na loggerze AUDIT
 ├── broker/    C4: BrokerClient, cache, credential.invalidated, token exchange, kontrola /v1/systems
@@ -460,7 +552,7 @@ pl.aiwcorpo.mcp.gateway
 └── upstream/  klient Streamable HTTP do serwerów, sesje per użytkownik
 ```
 
-Zostaje na po M5: `list_changed` i strumień `GET` (M6), testy obciążeniowe (`mcp-load-tests`).
+Testy obciążeniowe są w `mcp-load-tests`.
 
 ## Audyt odrzuconych tokenów: ryzyko zalewu
 

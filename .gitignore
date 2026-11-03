@@ -13,3 +13,4 @@ target/
 *.env
 *.log
 /keys/
+.DS_Store
