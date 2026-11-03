@@ -30,7 +30,7 @@ public final class DefinitionCheck {
             return Optional.empty();
         }
         try {
-            return Optional.of(DefinitionHash.compute(json.writeValueAsString(live), json.writeValueAsString(entryOf(approved)),
+            return Optional.of(DefinitionHash.compute(json.writeValueAsString(live), json.writeValueAsString(entryOf(server, approved)),
                     server.system(), approved.credentialJson()));
         } catch (RuntimeException e) {
             return Optional.empty();
@@ -42,11 +42,16 @@ public final class DefinitionCheck {
         return hashOf(server, approved, live).filter(approved.definitionHash()::equals).isPresent();
     }
 
-    /** The entry a live definition is hashed and listed with: the approved risk, action and references, never the server's. */
-    public ObjectNode entryOf(ToolDefinition approved) {
+    /**
+     * The entry a live definition is hashed and listed with: the approved risk, action and references, never the server's. The entry of
+     * an adapter has neither risk nor action in the hash (CC-206): the classification of the administrator is data of the registry.
+     */
+    public ObjectNode entryOf(McpServer server, ToolDefinition approved) {
         ObjectNode entry = json.createObjectNode();
-        entry.put("risk", approved.risk().name());
-        entry.put("action", approved.action());
+        if (!server.adapter()) {
+            entry.put("risk", approved.risk().name());
+            entry.put("action", approved.action());
+        }
         ArrayNode refs = entry.putArray("resourceRefs");
         approved.resourceRefs().forEach(ref -> refs.addObject().put("argument", ref.argument()).put("type", ref.type()));
         return entry;

@@ -34,6 +34,7 @@ public final class DefinitionGuard {
     private final Map<String, java.util.concurrent.atomic.AtomicLong> generations = new ConcurrentHashMap<>();
     private final Clock clock;
     private final Duration ttl;
+    private volatile Runnable onVerdictChange = () -> { };
 
     public DefinitionGuard(Clock clock, Duration ttl) {
         if (ttl.isNegative() || ttl.isZero() || ttl.compareTo(Duration.ofSeconds(60)) > 0) {
@@ -41,6 +42,11 @@ public final class DefinitionGuard {
         }
         this.clock = clock;
         this.ttl = ttl;
+    }
+
+    /** Told when a reading finds a tool in another state than the reading before it (or in a bad state on the first): a list may change. */
+    public void onVerdictChange(Runnable listener) {
+        this.onVerdictChange = listener;
     }
 
     /** The state of the approvals the next reading will be judged against; a reading started under an older one is stale. */
@@ -56,12 +62,17 @@ public final class DefinitionGuard {
                                     Map<String, Verdict> verdicts) {
         Reading reading = new Reading(clock.instant(), Map.copyOf(definitions), serverVersion, Map.copyOf(verdicts));
         boolean[] kept = {false};
+        boolean[] differs = {false};
         generations.computeIfAbsent(serverId, k -> new java.util.concurrent.atomic.AtomicLong());
         synchronized (generations.get(serverId)) {
             if (generations.get(serverId).get() == generation) {
-                readings.put(serverId, reading);
+                Reading before = readings.put(serverId, reading);
+                differs[0] = before == null ? verdicts.values().stream().anyMatch(v -> v != Verdict.INTACT) : !before.verdicts().equals(reading.verdicts());
                 kept[0] = true;
             }
+        }
+        if (differs[0]) {
+            onVerdictChange.run();
         }
         return kept[0] ? Optional.of(reading) : Optional.empty();
     }

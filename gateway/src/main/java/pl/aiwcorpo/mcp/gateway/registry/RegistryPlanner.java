@@ -34,6 +34,42 @@ public final class RegistryPlanner {
     }
 
     /**
+     * The registration of an adapter (CC-206, CC-207): nothing is approved by it. A tool whose hash is the approved one stays as it is, with
+     * its classification; every other new or changed tool waits for an administrator with the source {@code adapter}, a tool that looks
+     * like a read included; a tool the manifest no longer has is removed, and its classification with it. There is no risk to compare, so
+     * no floor and no lowering here: the administrator classifies when approving.
+     */
+    public static Plan planAdapter(JsonNode manifest, String credentialJson, Map<String, RegisteredTool> existing) {
+        String version = manifest.path("version").asString();
+        Map<String, RegisteredTool> next = new LinkedHashMap<>();
+        List<Change> changes = new ArrayList<>();
+        for (JsonNode entry : manifest.path("tools")) {
+            String name = entry.path("name").asString();
+            String hash = entry.path("definitionHash").asString();
+            RegisteredTool current = existing.get(name);
+            RegisteredTool.Approved approved = current == null ? null : current.approved();
+            if (approved != null && approved.hash().equals(hash)) {
+                next.put(name, new RegisteredTool(name, approved, null));
+                continue;
+            }
+            RegisteredTool.Pending kept = current == null ? null : current.pending();
+            if (kept != null && kept.hash().equals(hash) && "adapter".equals(kept.source())) {
+                next.put(name, new RegisteredTool(name, approved, kept));
+                continue;
+            }
+            next.put(name, new RegisteredTool(name, approved, new RegisteredTool.Pending(entry, hash, version,
+                    approved == null ? "new" : "changed", "adapter", credentialJson)));
+            changes.add(new Change("definition_submitted", name, hash));
+        }
+        existing.forEach((name, current) -> {
+            if (!next.containsKey(name)) {
+                changes.add(new Change("tool_removed", name, current.approved() != null ? current.approved().hash() : current.pending().hash()));
+            }
+        });
+        return new Plan(next, List.copyOf(changes), List.of(), Map.of());
+    }
+
+    /**
      * @param floors the highest risk ever reported per tool (ordinal), pending entries included (CC-167): a tool below it does not
      *        reject the manifest, it waits for an administrator who accepts the lowering
      * @param configuredMinimum risk ordinal per tool below which a manifest may never go: the operator's configuration

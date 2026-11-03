@@ -38,6 +38,7 @@ public final class KillSwitches {
     private volatile long failedAtNanos;
     private volatile boolean failed;
     private final Object refreshing = new Object();
+    private final java.util.List<Runnable> listeners = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     /** @param reader reads the switches from the database; a failure is a RuntimeException */
     public KillSwitches(Supplier<List<KillSwitchStore.Entry>> reader, Duration ttl, LongSupplier nanoTime, MeterRegistry meters) {
@@ -51,6 +52,11 @@ public final class KillSwitches {
         Gauge.builder("mcp_gateway_kill_switches_unreadable", this, k -> k.readable() ? 0 : 1)
                 .description("1 when this instance cannot read the emergency switches and refuses calls (fail-closed)").register(meters);
         refresh();
+    }
+
+    /** Told when what this instance knows of the switches changed: a switch put or lifted, or the store lost or found again. */
+    public void onChange(Runnable listener) {
+        listeners.add(listener);
     }
 
     /** Whether the tool is switched off, by its own switch or by the one of its server. */
@@ -74,22 +80,37 @@ public final class KillSwitches {
 
     /** Reads the state now (after a change is announced, and on the timer); a failure leaves nothing to trust. */
     public boolean refresh() {
+        boolean changed;
+        boolean ok;
         synchronized (refreshing) {
+            Snapshot before = snapshot;
             try {
                 List<KillSwitchStore.Entry> entries = reader.get();
                 Set<String> keys = new HashSet<>();
                 entries.forEach(entry -> keys.add(key(entry.serverId(), entry.tool())));
                 snapshot = new Snapshot(List.copyOf(entries), Set.copyOf(keys), nanoTime.getAsLong());
                 failed = false;
-                return true;
+                changed = before == null || !before.keys().equals(keys);
+                ok = true;
             } catch (RuntimeException e) {
                 log.error("the emergency switches cannot be read, calls are refused until they can: {}", e.getClass().getName());
                 snapshot = null;
                 failed = true;
                 failedAtNanos = nanoTime.getAsLong();
-                return false;
+                changed = before != null;
+                ok = false;
             }
         }
+        if (changed) {
+            listeners.forEach(listener -> {
+                try {
+                    listener.run();
+                } catch (RuntimeException e) {
+                    log.warn("a listener of the emergency switches failed: {}", e.getClass().getName());
+                }
+            });
+        }
+        return ok;
     }
 
     /** A copy not older than the TTL, or a new read, or null. */

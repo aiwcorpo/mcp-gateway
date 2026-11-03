@@ -24,6 +24,7 @@ import pl.aiwcorpo.mcp.gateway.audit.AuditEvent;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
 import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
 import pl.aiwcorpo.mcp.gateway.auth.PublicUrls;
+import pl.aiwcorpo.mcp.gateway.authz.ToolAccess;
 import pl.aiwcorpo.mcp.gateway.authz.ToolAuthorizer;
 import pl.aiwcorpo.mcp.gateway.authz.ToolDecision;
 import pl.aiwcorpo.mcp.gateway.broker.Credential;
@@ -82,6 +83,7 @@ public class McpGatewayService {
     private final EndpointAuditThrottle endpointAudit;
     private final ToolsListCursor listCursor;
     private final KillSwitches killSwitches;
+    private final ToolAccess access;
     private final Duration toolsListTimeout;
     private final Clock clock;
     private final ExecutorService listReaders = Executors.newVirtualThreadPerTaskExecutor();
@@ -91,7 +93,7 @@ public class McpGatewayService {
                              JsonMapper json, MeterRegistry meters, String componentId, ConfirmationService confirmations,
                              RegistryService registryService, DefinitionGuard definitionGuard, RateLimiter rateLimiter,
                              RateLimitAuditThrottle rateLimitAudit, EndpointAuditThrottle endpointAudit, ToolsListCursor listCursor,
-                             KillSwitches killSwitches, Duration toolsListTimeout, Clock clock) {
+                             KillSwitches killSwitches, ToolAccess access, Duration toolsListTimeout, Clock clock) {
         this.registry = registry;
         this.urls = urls;
         this.upstream = upstream;
@@ -110,6 +112,7 @@ public class McpGatewayService {
         this.endpointAudit = endpointAudit;
         this.listCursor = listCursor;
         this.killSwitches = killSwitches;
+        this.access = access;
         this.toolsListTimeout = toolsListTimeout;
         this.clock = clock;
     }
@@ -212,8 +215,15 @@ public class McpGatewayService {
     private List<ToolsPage.Entry<ObjectNode>> listFrom(CallContext ctx, McpServer server) throws RpcFailure {
         List<ToolsPage.Entry<ObjectNode>> out = new ArrayList<>();
         List<ToolDefinition> inScope = server.tools().values().stream().filter(t -> throughEndpoint(ctx, server, t)).toList();
+        // Cedar is asked once per tool that is switched on at all, all of them side by side: this is what a long list costs most.
+        List<ToolDefinition> switchedOn = inScope.stream().filter(t -> enabled(server, t)).toList();
+        List<Boolean> decisions = access.mayCall(ctx.user(), server, switchedOn);
+        Map<String, Boolean> allowed = new LinkedHashMap<>();
+        for (int i = 0; i < switchedOn.size(); i++) {
+            allowed.put(switchedOn.get(i).name(), decisions.get(i));
+        }
         // A server none of whose tools the user may list is not read at all.
-        if (inScope.stream().noneMatch(t -> candidate(ctx, server, t, true, true).allowedByPolicy())) {
+        if (!allowed.containsValue(true)) {
             return out;
         }
         if (!server.approvalRequired()) {
@@ -226,7 +236,7 @@ public class McpGatewayService {
             }
             for (ToolDefinition definition : inScope) {
                 if (served.containsKey(definition.name())
-                        && ListedTools.listed(candidate(ctx, server, definition, true, true))) {
+                        && ListedTools.listed(candidate(server, definition, true, true, allowed))) {
                     out.add(new ToolsPage.Entry<>(server.qualifiedName(definition), listed(server, definition, served.get(definition.name()))));
                 }
             }
@@ -237,19 +247,22 @@ public class McpGatewayService {
         DefinitionGuard.Reading reading = definitions(ctx, server);
         for (ToolDefinition definition : inScope) {
             Verdict verdict = reading.verdicts().getOrDefault(definition.name(), Verdict.NOT_SERVED);
-            if (ListedTools.listed(candidate(ctx, server, definition, verdict != Verdict.NOT_SERVED, verdict == Verdict.INTACT))) {
+            if (ListedTools.listed(candidate(server, definition, verdict != Verdict.NOT_SERVED, verdict == Verdict.INTACT, allowed))) {
                 out.add(new ToolsPage.Entry<>(server.qualifiedName(definition), listed(server, definition, definition.definition())));
             }
         }
         return out;
     }
 
-    private ListedTools.Candidate candidate(CallContext ctx, McpServer server, ToolDefinition tool, boolean served,
-                                            boolean definitionMatches) {
-        // An emergency switch hides the tool; a store that cannot be read hides everything (fail-closed, CC-194).
-        boolean enabled = server.enabled() && !tool.disabled() && killSwitches.status(server.serverId(), tool.name()) == KillSwitches.Status.OFF;
-        return new ListedTools.Candidate(server.qualifiedName(tool), tool.risk().name(), true, enabled, served, definitionMatches,
-                enabled && authorizer.mayCall(ctx.user(), server, tool));
+    /** Neither the server, the tool nor an emergency switch turns the tool off; an unreadable store of the switches turns everything off (CC-194). */
+    private boolean enabled(McpServer server, ToolDefinition tool) {
+        return server.enabled() && !tool.disabled() && killSwitches.status(server.serverId(), tool.name()) == KillSwitches.Status.OFF;
+    }
+
+    private ListedTools.Candidate candidate(McpServer server, ToolDefinition tool, boolean served, boolean definitionMatches,
+                                            Map<String, Boolean> allowed) {
+        return new ListedTools.Candidate(server.qualifiedName(tool), tool.risk().name(), true, enabled(server, tool), served, definitionMatches,
+                allowed.getOrDefault(tool.name(), false));
     }
 
     private ObjectNode listed(McpServer server, ToolDefinition definition, JsonNode source) {

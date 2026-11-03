@@ -141,7 +141,7 @@ class AggregateEndpointTest extends GatewayTestBase {
         String token = token();
         HttpResponse<String> init = send(token, "/mcp?systems=jira&access=read", initializeBody("2025-11-25"), Map.of());
         assertThat(init.statusCode()).isEqualTo(200);
-        assertThat(JSON.readTree(init.body()).path("result").path("capabilities").path("tools").path("listChanged").asBoolean(true)).isFalse();
+        assertThat(JSON.readTree(init.body()).path("result").path("capabilities").path("tools").path("listChanged").asBoolean(false)).isTrue();
         String session = init.headers().firstValue("Mcp-Session-Id").orElseThrow();
         String listBody = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}";
         Map<String, String> headers = Map.of("Mcp-Session-Id", session, "MCP-Protocol-Version", "2025-11-25");
@@ -184,11 +184,11 @@ class AggregateEndpointTest extends GatewayTestBase {
     }
 
     @Test
-    void thereIsNoStreamAndNoSavedLinks() throws Exception {
+    void aGetWithoutASessionIsNotAllowedAndThereAreNoSavedLinks() throws Exception {
         for (String path : List.of("/mcp", "/s/mcp-jira/mcp")) {
             HttpResponse<String> response = get(path, token());
             assertThat(response.statusCode()).isEqualTo(405);
-            assertThat(response.headers().firstValue("Allow")).contains("POST, DELETE");
+            assertThat(response.headers().firstValue("Allow")).contains("POST, DELETE, GET");
             assertThat(get(path, null).statusCode()).as("the token is checked first").isEqualTo(401);
         }
         String body = "{\"error\":\"not_found_or_denied\",\"message\":\"The resource does not exist or you do not have access to it.\"}";

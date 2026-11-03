@@ -46,6 +46,9 @@ public class RegistryController {
     private static final Pattern REQUEST_ID = Pattern.compile("^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$");
     private static final Pattern DEFINITION_HASH = Pattern.compile("^sha256:[0-9a-f]{64}$");
     private static final Pattern TOOL_NAME = Pattern.compile("^[a-z][a-z0-9]*(_[a-z0-9]+)*$");
+    private static final java.util.Set<String> APPROVE_FIELDS = java.util.Set.of("definitionHash", "acceptRiskLowering", "risk", "action");
+    private static final java.util.Set<String> RISKS = java.util.Set.of("READ_ONLY", "UPDATE", "DESTRUCTIVE");
+    private static final java.util.Set<String> ACTIONS = java.util.Set.of("read", "update", "delete", "admin");
 
     private final RegistryService registry;
     private final ServerRegistry servers;
@@ -74,7 +77,7 @@ public class RegistryController {
             return error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
         }
         return switch (registry.register(requestId, serverId, manifest, "ci")) {
-            case RegistryService.Result.Accepted accepted -> ok(requestId, view(accepted.server()));
+            case RegistryService.Result.Accepted accepted -> ok(requestId, RegistryViews.server(json, accepted.server(), false));
             case RegistryService.Result.Rejected rejected -> error(HttpStatus.UNPROCESSABLE_ENTITY, requestId, "manifest_rejected",
                     rejected.reason(), rejected.message());
             case RegistryService.Result.UnknownServer unknown -> error(HttpStatus.UNPROCESSABLE_ENTITY, requestId, "manifest_rejected",
@@ -93,7 +96,7 @@ public class RegistryController {
             ObjectNode item;
             Optional<RegisteredServer> registered = registry.registered(server.serverId());
             if (registered.isPresent()) {
-                item = view(registered.get());
+                item = RegistryViews.server(json, registered.get(), false);
             } else {
                 item = json.createObjectNode();
                 item.put("serverId", server.serverId());
@@ -150,12 +153,20 @@ public class RegistryController {
         byte[] raw = request.getInputStream().readNBytes(4097);
         String hash;
         boolean acceptRiskLowering = false;
+        RegistryService.Classification classification = null;
         try {
             JsonNode body = raw.length > 4096 ? null : json.readTree(raw);
             boolean shape = body != null && body.isObject() && body.has("definitionHash")
-                    && (body.size() == 1 || (body.size() == 2 && body.path("acceptRiskLowering").isBoolean()));
+                    && body.propertyNames().stream().allMatch(name -> APPROVE_FIELDS.contains(name))
+                    && (!body.has("acceptRiskLowering") || body.path("acceptRiskLowering").isBoolean())
+                    && (!body.has("risk") || RISKS.contains(body.path("risk").asString("")))
+                    && (!body.has("action") || ACTIONS.contains(body.path("action").asString("")));
             hash = shape ? body.path("definitionHash").asString(null) : null;
             acceptRiskLowering = shape && body.path("acceptRiskLowering").asBoolean(false);
+            if (shape && (body.has("risk") || body.has("action"))) {
+                // One of the two alone is a classification that is missing a half: the service answers classification_required.
+                classification = new RegistryService.Classification(body.path("risk").asString(null), body.path("action").asString(null));
+            }
         } catch (JacksonException e) {
             hash = null;
         }
@@ -165,52 +176,20 @@ public class RegistryController {
         if (!TOOL_NAME.matcher(tool).matches()) {
             return error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
         }
-        return switch (registry.approve(requestId, serverId, tool, hash, acceptRiskLowering, GatewayUser.from(token))) {
+        return switch (registry.approve(requestId, serverId, tool, hash, acceptRiskLowering, classification, GatewayUser.from(token))) {
             case RegistryService.Approval.Approved approved -> ResponseEntity.noContent().header("X-Request-Id", requestId)
                     .cacheControl(CacheControl.noStore()).build();
             case RegistryService.Approval.NotFound notFound -> error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
             case RegistryService.Approval.HashMismatch mismatch -> error(HttpStatus.CONFLICT, requestId, "hash_mismatch", null, null);
             case RegistryService.Approval.RiskLowered lowered -> error(HttpStatus.UNPROCESSABLE_ENTITY, requestId, "manifest_rejected",
                     "risk_lowered", lowered.message());
+            case RegistryService.Approval.Rejected rejected -> error(HttpStatus.UNPROCESSABLE_ENTITY, requestId, "manifest_rejected",
+                    rejected.reason(), rejected.message());
         };
     }
 
     private static boolean administrator(Jwt token) {
         return token != null && GatewayUser.from(token).hasGroup(ADMIN_GROUP);
-    }
-
-    /**
-     * RegistryServer: one row per tool. A tool with a pending entry shows that entry (status pending_approval, with the change and
-     * its source); the definition in force is available through the pending endpoint for the diff.
-     */
-    private ObjectNode view(RegisteredServer server) {
-        ObjectNode view = json.createObjectNode();
-        view.put("serverId", server.serverId());
-        view.put("system", server.system());
-        view.put("version", server.version());
-        ArrayNode tools = view.putArray("tools");
-        server.tools().values().forEach(tool -> {
-            RegisteredTool.Approved approved = tool.approved();
-            RegisteredTool.Pending pending = tool.pending();
-            ObjectNode entry = ((ObjectNode) (pending != null ? pending.entry() : approved.entry())).deepCopy();
-            if (pending != null) {
-                entry.put("status", "pending_approval");
-                entry.put("change", pending.change());
-                entry.put("source", pending.source());
-                if (pending.riskLowered()) {
-                    entry.put("riskLowered", true);
-                }
-            } else {
-                entry.put("status", "approved");
-            }
-            if (approved != null) {
-                entry.put("approvedInVersion", approved.version());
-            } else {
-                entry.putNull("approvedInVersion");
-            }
-            tools.add(entry);
-        });
-        return view;
     }
 
     @ExceptionHandler(DataAccessException.class)

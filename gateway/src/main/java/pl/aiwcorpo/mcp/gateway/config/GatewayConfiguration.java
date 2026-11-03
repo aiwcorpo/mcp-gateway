@@ -30,6 +30,8 @@ import pl.aiwcorpo.mcp.gateway.admin.ActivityController;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
 import pl.aiwcorpo.mcp.gateway.admin.RegistryController;
 import pl.aiwcorpo.mcp.gateway.registry.ChangeCounter;
+import pl.aiwcorpo.mcp.gateway.stream.ToolStreams;
+import pl.aiwcorpo.mcp.gateway.stream.UserToolLists;
 import pl.aiwcorpo.mcp.gateway.registry.ChangeWatcher;
 import pl.aiwcorpo.mcp.gateway.registry.DefinitionCheck;
 import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitchHealth;
@@ -51,6 +53,7 @@ import pl.aiwcorpo.mcp.gateway.auth.ResourceMetadata;
 import pl.aiwcorpo.mcp.gateway.authz.CedarToolAuthorizer;
 import pl.aiwcorpo.mcp.gateway.policy.BundleFetcher;
 import pl.aiwcorpo.mcp.gateway.policy.PolicyService;
+import pl.aiwcorpo.mcp.gateway.authz.ToolAccess;
 import pl.aiwcorpo.mcp.gateway.authz.ToolAuthorizer;
 import pl.aiwcorpo.mcp.gateway.broker.BrokerClient;
 import pl.aiwcorpo.mcp.gateway.broker.CredentialCache;
@@ -209,6 +212,28 @@ public class GatewayConfiguration {
     }
 
     @Bean
+    UserToolLists userToolLists(ServerRegistry servers, ToolAccess access, KillSwitches killSwitches, DefinitionGuard guard) {
+        return new UserToolLists(servers, access, killSwitches, guard);
+    }
+
+    /**
+     * Whatever may change a list wakes the streams: the registry (a registration, an approval, a change made on another instance), an
+     * emergency switch, the definitions a server presents, the policies (CC-192).
+     */
+    @Bean
+    ToolStreams toolStreams(UserToolLists lists, GatewayProperties properties, MeterRegistry meters, ClientSessionStore sessions,
+                            JsonMapper gatewayJson, RegistryService registry, KillSwitches killSwitches, DefinitionGuard guard,
+                            PolicyService policies) {
+        ToolStreams streams = new ToolStreams(lists, properties.mcp().sseHeartbeatInterval(), java.time.Duration.ofSeconds(1),
+                System::currentTimeMillis, meters, id -> sessions.find(id).isPresent(), gatewayJson);
+        registry.onChange(streams::changed);
+        killSwitches.onChange(streams::changed);
+        guard.onVerdictChange(streams::changed);
+        policies.onChange(streams::changed);
+        return streams;
+    }
+
+    @Bean
     ChangeWatcher changeWatcher(ChangeCounter counter, RegistryService registry, KillSwitches killSwitches, GatewayProperties properties) {
         return new ChangeWatcher(counter, registry, killSwitches, properties.mcp().changePollInterval(), java.util.List.of());
     }
@@ -247,6 +272,11 @@ public class GatewayConfiguration {
     @Bean
     ToolAuthorizer toolAuthorizer(PolicyService policies, JsonMapper gatewayJson) {
         return new CedarToolAuthorizer(policies, gatewayJson);
+    }
+
+    @Bean
+    ToolAccess toolAccess(ToolAuthorizer authorizer) {
+        return new ToolAccess(authorizer);
     }
 
     @Bean
@@ -446,9 +476,10 @@ public class GatewayConfiguration {
     @Bean
     pl.aiwcorpo.mcp.gateway.offboarding.UserPurge userPurge(ConfirmationService confirmations,
                                                             ClientSessionStore sessions, UpstreamSessions upstream,
-                                                            CredentialCache credentials, AuditLog audit, GatewayProperties properties) {
+                                                            CredentialCache credentials, AuditLog audit, GatewayProperties properties,
+                                                            ToolStreams streams) {
         return new pl.aiwcorpo.mcp.gateway.offboarding.UserPurge(confirmations, sessions, upstream, credentials, audit,
-                properties.componentId());
+                properties.componentId(), streams);
     }
 
     @Bean
@@ -470,10 +501,10 @@ public class GatewayConfiguration {
                                         pl.aiwcorpo.mcp.gateway.ratelimit.RateLimiter rateLimiter,
                                         pl.aiwcorpo.mcp.gateway.ratelimit.RateLimitAuditThrottle rateLimitAudit,
                                         EndpointAuditThrottle endpointAudit, ToolsListCursor listCursor, KillSwitches killSwitches,
-                                        Clock clock) {
+                                        ToolAccess toolAccess, Clock clock) {
         return new McpGatewayService(registry, urls, upstream, credentials, authorizer, audit, errors, gatewayJson, meters,
                 properties.componentId(), confirmations, registryService, definitionGuard, rateLimiter, rateLimitAudit, endpointAudit, listCursor,
-                killSwitches, properties.mcp().toolsListTimeout(), clock);
+                killSwitches, toolAccess, properties.mcp().toolsListTimeout(), clock);
     }
 
     @Bean
@@ -522,6 +553,11 @@ public class GatewayConfiguration {
     @DependsOn("devstackGuard")
     RegistryBootstrap registryBootstrap(RegistryService registry, GatewayProperties properties) {
         return new RegistryBootstrap(registry, properties.registry().bootstrapFromServer(), properties.registry().bootstrapRetry());
+    }
+
+    @Bean
+    pl.aiwcorpo.mcp.gateway.admin.AdapterRegistryController adapterRegistryController(RegistryService registry, JsonMapper gatewayJson) {
+        return new pl.aiwcorpo.mcp.gateway.admin.AdapterRegistryController(registry, gatewayJson);
     }
 
     @Bean

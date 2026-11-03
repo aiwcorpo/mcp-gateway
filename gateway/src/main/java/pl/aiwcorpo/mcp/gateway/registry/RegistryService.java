@@ -70,6 +70,21 @@ public final class RegistryService {
 
         record RiskLowered(String message) implements Approval {
         }
+
+        /** The classification of an entry of an adapter is missing, given for another entry, or does not fit (CC-193, CC-207). */
+        record Rejected(String reason, String message) implements Approval {
+        }
+    }
+
+    /** The risk and the action an administrator gives to a tool of an adapter when approving it (CC-193). */
+    public record Classification(String risk, String action) {
+        private static final Map<String, List<String>> FITS = Map.of("READ_ONLY", List.of("read"), "UPDATE", List.of("update", "admin"),
+                "DESTRUCTIVE", List.of("delete", "admin"));
+
+        /** read is for READ_ONLY only, update for UPDATE, delete for DESTRUCTIVE, admin for UPDATE or DESTRUCTIVE (CC-207). */
+        public boolean consistent() {
+            return risk != null && action != null && FITS.getOrDefault(risk, List.of()).contains(action);
+        }
     }
 
     /** The approved and the pending entry of a tool for the diff of the portal. */
@@ -97,6 +112,7 @@ public final class RegistryService {
     private final String componentId;
     private final JsonMapper json;
     private final Map<String, RegisteredServer> held = new ConcurrentHashMap<>();
+    private volatile Runnable onChange = () -> { };
 
     public RegistryService(ServerRegistry servers, RegistryStore store, ManifestValidator validator, ManifestFetcher fetcher,
                            DefinitionGuard guard, DefinitionCheck definitionCheck, AuditLog audit, String componentId,
@@ -110,6 +126,11 @@ public final class RegistryService {
         this.audit = audit;
         this.componentId = componentId;
         this.json = json;
+    }
+
+    /** Told whenever the state this instance holds of a server changed: a registration, an approval, a removal, a change made elsewhere. */
+    public void onChange(Runnable listener) {
+        this.onChange = listener;
     }
 
     /**
@@ -128,13 +149,27 @@ public final class RegistryService {
     }
 
     public Result register(String requestId, String serverId, JsonNode manifest, String source) {
-        return write(requestId, serverId, manifest, source, false);
+        return write(requestId, serverId, manifest, source, false, false);
     }
 
-    private Result write(String requestId, String serverId, JsonNode manifest, String source, boolean bootstrap) {
+    /** The manifest an adapter submits at its start (CC-206): the channel of an adapter, which stores nothing as approved. */
+    public Result submitAdapter(String requestId, String serverId, JsonNode manifest) {
+        return write(requestId, serverId, manifest, "adapter", false, true);
+    }
+
+    private Result write(String requestId, String serverId, JsonNode manifest, String source, boolean bootstrap, boolean adapterChannel) {
         Optional<McpServer> server = servers.find(serverId);
         if (server.isEmpty()) {
             return new Result.UnknownServer();
+        }
+        // Which servers an adapter serves is configuration; a manifest on the wrong channel, or of the wrong kind, is refused whole (CC-206).
+        boolean adapterManifest = "adapter".equals(manifest.path("source").asString(null));
+        if (server.get().adapter() != adapterChannel || adapterManifest != adapterChannel) {
+            denied(requestId, serverId, "adapter_mode_mismatch");
+            return new Result.Rejected(List.of(new Rejection("adapter_mode_mismatch", adapterChannel
+                    ? serverId + " is not served by an adapter" : server.get().adapter()
+                    ? serverId + " is served by an adapter, which submits its manifest on its own channel"
+                    : "the manifest of " + serverId + " says source adapter and the server is not served by an adapter")));
         }
         if (!server.get().approvalRequired()) {
             return new Result.Rejected(List.of(new Rejection(null, "this server takes its tools from the gateway configuration")));
@@ -150,13 +185,18 @@ public final class RegistryService {
                 return new Written.AlreadyThere();
             }
             Map<String, RegisteredTool> existing = tx.tools();
-            RegistryPlanner.Plan plan = RegistryPlanner.plan(manifest, credentialJson, existing, tx.floors(),
-                    servers.configuredMinimumRisks(serverId), bootstrap);
+            RegistryPlanner.Plan plan = adapterChannel ? RegistryPlanner.planAdapter(manifest, credentialJson, existing)
+                    : RegistryPlanner.plan(manifest, credentialJson, existing, tx.floors(), servers.configuredMinimumRisks(serverId), bootstrap);
             if (!plan.lowered().isEmpty()) {
                 return new Written.Lowered(plan.lowered());
             }
             tx.saveServer(manifest, source);
-            existing.keySet().stream().filter(name -> !plan.tools().containsKey(name)).forEach(tx::deleteTool);
+            existing.keySet().stream().filter(name -> !plan.tools().containsKey(name)).forEach(name -> {
+                tx.deleteTool(name);
+                if (adapterChannel) {
+                    tx.deleteFloor(name);
+                }
+            });
             plan.tools().forEach((name, tool) -> {
                 if (!tool.equals(existing.get(name))) {
                     tx.saveTool(tool);
@@ -187,10 +227,21 @@ public final class RegistryService {
     /** Approves the pending definition whose hash is {@code hash} (CC-133); the administrator is the actor of the audit event. */
     public Approval approve(String requestId, String serverId, String tool, String hash, boolean acceptRiskLowering,
                             GatewayUser administrator) {
+        return approve(requestId, serverId, tool, hash, acceptRiskLowering, null, administrator);
+    }
+
+    /**
+     * Approves the pending definition whose hash is {@code hash}. An entry of an adapter has no risk and no action: the administrator
+     * gives both ({@code classification}), they must fit each other and a lower one than given before needs {@code acceptRiskLowering}
+     * (CC-167, CC-193, CC-207). Any other entry takes none.
+     */
+    public Approval approve(String requestId, String serverId, String tool, String hash, boolean acceptRiskLowering,
+                            Classification classification, GatewayUser administrator) {
         Optional<McpServer> server = servers.find(serverId);
         if (server.isEmpty() || !server.get().approvalRequired()) {
             return new Approval.NotFound();
         }
+        java.time.Instant now = java.time.Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
         Approval result = store.locked(serverId, tx -> {
             RegisteredTool current = tx.tools().get(tool);
             if (current == null || current.pending() == null) {
@@ -200,15 +251,32 @@ public final class RegistryService {
             if (!pending.hash().equals(hash)) {
                 return new Approval.HashMismatch();
             }
-            int risk = Risk.valueOf(pending.entry().path("risk").asString()).ordinal();
+            boolean fromAdapter = "adapter".equals(pending.source());
+            if (fromAdapter && (classification == null || classification.risk() == null || classification.action() == null)) {
+                return new Approval.Rejected("classification_required", tool + " comes from an adapter and needs risk and action");
+            }
+            if (!fromAdapter && classification != null) {
+                return new Approval.Rejected("classification_not_allowed", tool + " does not come from an adapter and takes no risk and action");
+            }
+            if (fromAdapter && !classification.consistent()) {
+                return new Approval.Rejected("classification_inconsistent", classification.risk() + " does not fit the action " + classification.action());
+            }
+            int risk = Risk.valueOf(fromAdapter ? classification.risk() : pending.entry().path("risk").asString()).ordinal();
             int configured = servers.configuredMinimumRisks(serverId).getOrDefault(tool, 0);
             int floor = Math.max(tx.floors().getOrDefault(tool, 0), current.approvedRisk());
             boolean lowers = risk < floor;
             if (risk < configured || (lowers && !acceptRiskLowering)) {
                 return new Approval.RiskLowered(tool + " lowers risk from " + Risk.values()[Math.max(floor, configured)] + " to " + Risk.values()[risk]);
             }
-            tx.saveTool(new RegisteredTool(tool, new RegisteredTool.Approved(pending.entry(), pending.hash(), pending.version(),
-                    pending.credentialJson()), null));
+            JsonNode entry = pending.entry();
+            if (fromAdapter) {
+                ObjectNode classified = ((ObjectNode) entry).deepCopy();
+                classified.put("risk", classification.risk());
+                classified.put("action", classification.action());
+                entry = classified;
+            }
+            tx.saveTool(new RegisteredTool(tool, new RegisteredTool.Approved(entry, pending.hash(), pending.version(),
+                    pending.credentialJson(), fromAdapter ? administrator.sub() : null, fromAdapter ? now : null), null));
             if (lowers) {
                 tx.setFloor(tool, risk);
                 return new Approval.Approved(risk);
@@ -224,10 +292,18 @@ public final class RegistryService {
                 event.reason("risk_lowered_by_admin").risk(Risk.values()[approvedResult.loweredTo()].name());
             } else {
                 event.reason("definition_approved");
+                if (classification != null) {
+                    event.risk(classification.risk());
+                }
+            }
+            if (classification != null) {
+                event.action(classification.action());
             }
             audit.emit(event);
         } else if (result instanceof Approval.RiskLowered) {
             denied(requestId, serverId, "risk_lowered");
+        } else if (result instanceof Approval.Rejected rejected) {
+            denied(requestId, serverId, rejected.reason());
         }
         return result;
     }
@@ -266,7 +342,7 @@ public final class RegistryService {
                 definitionCheck.hashOf(server, tool, presented).ifPresent(hash -> changedHashes.put(tool.name(), hash));
             }
         }
-        if (server.approvalRequired() && needsRecording(server.serverId(), verdicts, changedHashes)) {
+        if (server.approvalRequired() && needsRecording(server, verdicts, changedHashes)) {
             try {
                 recordServerEntries(server, live, serverVersion, verdicts, changedHashes);
             } catch (DataAccessException e) {
@@ -276,8 +352,14 @@ public final class RegistryService {
         return verdicts;
     }
 
-    private boolean needsRecording(String serverId, Map<String, Verdict> verdicts, Map<String, String> changedHashes) {
-        RegisteredServer state = held.get(serverId);
+    /** What a running server may leave behind: for a server behind an adapter its own definitions come from the adapter (CC-206). */
+    private static String presentedSource(McpServer server) {
+        return server.adapter() ? "adapter" : "server";
+    }
+
+    private boolean needsRecording(McpServer server, Map<String, Verdict> verdicts, Map<String, String> changedHashes) {
+        String presented = presentedSource(server);
+        RegisteredServer state = held.get(server.serverId());
         if (state == null) {
             return false;
         }
@@ -285,10 +367,10 @@ public final class RegistryService {
             RegisteredTool tool = state.tools().get(verdict.getKey());
             RegisteredTool.Pending pending = tool == null ? null : tool.pending();
             if (verdict.getValue() == Verdict.CHANGED && changedHashes.containsKey(verdict.getKey())
-                    && (pending == null || ("server".equals(pending.source()) && !pending.hash().equals(changedHashes.get(verdict.getKey()))))) {
+                    && (pending == null || (presented.equals(pending.source()) && !pending.hash().equals(changedHashes.get(verdict.getKey()))))) {
                 return true;
             }
-            if (verdict.getValue() == Verdict.INTACT && pending != null && "server".equals(pending.source())) {
+            if (verdict.getValue() == Verdict.INTACT && pending != null && presented.equals(pending.source())) {
                 return true;
             }
         }
@@ -298,6 +380,7 @@ public final class RegistryService {
     private void recordServerEntries(McpServer server, Map<String, JsonNode> live, String serverVersion, Map<String, Verdict> verdicts,
                                      Map<String, String> changedHashes) {
         boolean[] touched = {false};
+        String presented = presentedSource(server);
         store.locked(server.serverId(), tx -> {
             Map<String, RegisteredTool> tools = tx.tools();
             verdicts.forEach((name, verdict) -> {
@@ -307,16 +390,18 @@ public final class RegistryService {
                 }
                 RegisteredTool.Pending pending = tool.pending();
                 ToolDefinition approved = server.tools().get(name);
-                if (verdict == Verdict.INTACT && pending != null && "server".equals(pending.source())) {
+                if (verdict == Verdict.INTACT && pending != null && presented.equals(pending.source())) {
                     tx.saveTool(tool.withPending(null));
                     touched[0] = true;
                 } else if (verdict == Verdict.CHANGED && approved != null && changedHashes.containsKey(name)
-                        && (pending == null || ("server".equals(pending.source()) && !pending.hash().equals(changedHashes.get(name))))) {
-                    ObjectNode entry = definitionCheck.entryOf(approved);
+                        && (pending == null || (presented.equals(pending.source()) && !pending.hash().equals(changedHashes.get(name))))) {
+                    ObjectNode entry = definitionCheck.entryOf(server, approved);
                     ObjectNode full = json.createObjectNode();
                     full.put("name", name);
-                    full.set("risk", entry.get("risk"));
-                    full.set("action", entry.get("action"));
+                    if (entry.has("risk")) {
+                        full.set("risk", entry.get("risk"));
+                        full.set("action", entry.get("action"));
+                    }
                     full.set("resourceRefs", entry.get("resourceRefs"));
                     full.set("definition", live.get(name));
                     full.put("definitionHash", changedHashes.get(name));
@@ -326,7 +411,7 @@ public final class RegistryService {
                     }
                     // The schema wants a SemVer; a value that is none must not look like the approved version in the diff.
                     String version = valid ? serverVersion : serverVersion == null ? tool.approved().version() : "0.0.0-invalid";
-                    tx.saveTool(tool.withPending(new RegisteredTool.Pending(full, changedHashes.get(name), version, "changed", "server",
+                    tx.saveTool(tool.withPending(new RegisteredTool.Pending(full, changedHashes.get(name), version, "changed", presented,
                             tool.approved().credentialJson())));
                     touched[0] = true;
                 }
@@ -345,11 +430,11 @@ public final class RegistryService {
      */
     public void bootstrapMissing() {
         for (McpServer server : servers.requiringApproval()) {
-            if (held.containsKey(server.serverId()) || !server.enabled() || store.findServer(server.serverId()).isPresent()) {
+            if (server.adapter() || held.containsKey(server.serverId()) || !server.enabled() || store.findServer(server.serverId()).isPresent()) {
                 continue;
             }
             fetcher.fetch(server).ifPresent(manifest -> {
-                Result result = write(UuidV7.next(), server.serverId(), manifest, "bootstrap", true);
+                Result result = write(UuidV7.next(), server.serverId(), manifest, "bootstrap", true, false);
                 if (result instanceof Result.Rejected rejected) {
                     log.error("manifest served by {} not taken: {}", server.serverId(), rejected.message());
                 } else {
@@ -364,11 +449,22 @@ public final class RegistryService {
      * memory). A state that is unchanged is left alone.
      */
     public void reloadChanged() {
-        for (RegistryStore.StoredServer stored : store.servers()) {
+        List<RegistryStore.StoredServer> all = store.servers();
+        for (RegistryStore.StoredServer stored : all) {
             RegisteredServer now = read(stored);
             RegisteredServer before = held.get(stored.serverId());
             if (now != null && !now.equals(before)) {
                 take(stored.serverId());
+            }
+        }
+        // A state that is gone from the store (an operator emptied the tables) is gone from here too: nothing stays approved on memory alone.
+        for (String serverId : List.copyOf(held.keySet())) {
+            if (all.stream().noneMatch(stored -> stored.serverId().equals(serverId))) {
+                RegisteredServer gone = held.remove(serverId);
+                servers.find(serverId).ifPresent(server -> servers.apply(serverId, server.version(), Map.of(), Map.of(), true));
+                guard.forget(serverId);
+                onChange.run();
+                log.warn("{}: the stored state is gone, {} tools are no longer served", serverId, gone == null ? 0 : gone.tools().size());
             }
         }
     }
@@ -398,6 +494,7 @@ public final class RegistryService {
         servers.apply(serverId, state.version(), state.tools(), store.floors(serverId), rejections.isEmpty());
         if (!state.equals(before)) {
             guard.forget(serverId);
+            onChange.run();
         }
     }
 

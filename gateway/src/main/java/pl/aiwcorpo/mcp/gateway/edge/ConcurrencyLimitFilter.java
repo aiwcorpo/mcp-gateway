@@ -32,6 +32,13 @@ import pl.aiwcorpo.mcp.gateway.ratelimit.RateLimitResponse;
  */
 public final class ConcurrencyLimitFilter extends OncePerRequestFilter {
 
+    /**
+     * Request attribute with the {@link Runnable} that gives the place back. A request that turns out to be a stream
+     * ({@code subscriptions/listen}) is known only after its body is read; it gives its place back then, because a stream lives for as
+     * long as its client does and counts for the metric of the open streams, not for this limit (CC-192, CC-207). Calling it twice is harmless.
+     */
+    public static final String RELEASE_ATTRIBUTE = ConcurrencyLimitFilter.class.getName() + ".release";
+
     private static final Logger log = LoggerFactory.getLogger(ConcurrencyLimitFilter.class);
 
     private final Semaphore places;
@@ -77,11 +84,18 @@ public final class ConcurrencyLimitFilter extends OncePerRequestFilter {
             return;
         }
         inFlight.incrementAndGet();
+        java.util.concurrent.atomic.AtomicBoolean released = new java.util.concurrent.atomic.AtomicBoolean();
+        Runnable release = () -> {
+            if (released.compareAndSet(false, true)) {
+                inFlight.decrementAndGet();
+                places.release();
+            }
+        };
+        request.setAttribute(RELEASE_ATTRIBUTE, release);
         try {
             chain.doFilter(request, response);
         } finally {
-            inFlight.decrementAndGet();
-            places.release();
+            release.run();
         }
     }
 

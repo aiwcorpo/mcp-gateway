@@ -23,9 +23,12 @@ import org.springframework.web.bind.annotation.RestController;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
 import pl.aiwcorpo.mcp.gateway.config.GatewayProperties;
+import pl.aiwcorpo.mcp.gateway.edge.ConcurrencyLimitFilter;
 import pl.aiwcorpo.mcp.gateway.edge.JsonErrorController;
+import pl.aiwcorpo.mcp.gateway.stream.ToolStreams;
 import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
 import pl.aiwcorpo.mcp.gateway.ratelimit.RateLimiter;
 import pl.aiwcorpo.mcp.gateway.ratelimit.RateLimitResponse;
@@ -52,6 +55,7 @@ public class McpEndpoint {
     private static final String META_VERSION = "io.modelcontextprotocol/protocolVersion";
     private static final String META_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities";
     private static final String META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
+    private static final java.util.regex.Pattern EVENT_STREAM = java.util.regex.Pattern.compile("(^|,)\\s*text/event-stream\\s*(;|,|$)");
     private static final String INVALID_FILTER_BODY = "{\"error\":\"invalid_request\",\"reason\":\"invalid_filter\","
             + "\"message\":\"The query of the address is not a valid filter.\"}";
 
@@ -65,9 +69,10 @@ public class McpEndpoint {
     private final String name;
     private final String version;
     private final int sessionStoreRetryAfter;
+    private final ToolStreams streams;
 
     public McpEndpoint(ServerRegistry servers, McpGatewayService service, ClientSessionStore sessions, UpstreamSessions upstream,
-                       JsonMapper json, MeterRegistry meters, GatewayProperties properties) {
+                       JsonMapper json, MeterRegistry meters, GatewayProperties properties, ToolStreams streams) {
         this.servers = servers;
         this.service = service;
         this.sessions = sessions;
@@ -78,30 +83,33 @@ public class McpEndpoint {
         this.name = properties.componentId();
         this.version = properties.version();
         this.sessionStoreRetryAfter = properties.mcp().sessionStoreRetryAfterSeconds();
+        this.streams = streams;
     }
 
     @PostMapping("/mcp")
-    public ResponseEntity<String> postAggregate(@AuthenticationPrincipal Jwt token, HttpServletRequest request) throws IOException {
-        return post(Optional.of(Target.aggregate()), token, request);
+    public ResponseEntity<String> postAggregate(@AuthenticationPrincipal Jwt token, HttpServletRequest request,
+                                                HttpServletResponse response) throws IOException {
+        return post(Optional.of(Target.aggregate()), token, request, response);
     }
 
     @PostMapping("/s/{serverId}/mcp")
     public ResponseEntity<String> post(@PathVariable String serverId, @AuthenticationPrincipal Jwt token,
-                                       HttpServletRequest request) throws IOException {
-        return post(servers.find(serverId).map(Target::of), token, request);
+                                       HttpServletRequest request, HttpServletResponse response) throws IOException {
+        return post(servers.find(serverId).map(Target::of), token, request, response);
     }
 
-    private ResponseEntity<String> post(Optional<Target> addressed, Jwt token, HttpServletRequest request) throws IOException {
+    private ResponseEntity<String> post(Optional<Target> addressed, Jwt token, HttpServletRequest request, HttpServletResponse response)
+            throws IOException {
         String requestId = UuidV7.next();
         try {
-            return post(addressed, token, request, requestId);
+            return post(addressed, token, request, response, requestId);
         } catch (DataAccessException failure) {
             return stateStoreUnavailable(GatewayUser.from(token), requestId, request.getHeader("X-Request-Id"), failure);
         }
     }
 
-    private ResponseEntity<String> post(Optional<Target> addressed, Jwt token, HttpServletRequest request, String requestId)
-            throws IOException {
+    private ResponseEntity<String> post(Optional<Target> addressed, Jwt token, HttpServletRequest request, HttpServletResponse response,
+                                        String requestId) throws IOException {
         GatewayUser user = GatewayUser.from(token);
         if (addressed.isEmpty()) {
             return plain(HttpStatus.NOT_FOUND, requestId);
@@ -145,6 +153,8 @@ public class McpEndpoint {
             if (refused != null) {
                 return refused;
             }
+            // A token with other groups than the stream of this session holds: the list of the stream is computed with the new ones.
+            streams.refreshUser(sessionId, user);
         }
         if (!"tools/call".equals(method)) {
             Optional<RateLimiter.Limited> limited = service.limitRequest(user, filter, requestId, clientRequestId);
@@ -157,20 +167,93 @@ public class McpEndpoint {
             return initialize(target, filter, user, message, requestId);
         }
         if (meta.has(META_VERSION)) {
-            return modern(target, filter, user, message, meta, request, requestId, clientRequestId);
+            return modern(target, filter, user, token, message, meta, request, response, requestId, clientRequestId);
         }
         return legacy(target, filter, user, message, request, session, requestId, clientRequestId, method, id);
     }
 
-    /** No stream of the server (CC-179): {@code GET} is 405 on both routes, for legacy and modern clients alike. */
+    /**
+     * The stream of a legacy session (CC-192): {@code GET} with {@code Mcp-Session-Id} and {@code Accept: text/event-stream}. The token was
+     * checked before; then, as for any request of a session (CC-184), the syntax of the query (400), the owner of the session, its
+     * route and its filter (404, {@code filter_mismatch} for the last two). Without a session or without that {@code Accept} it is 405:
+     * the stateless protocol opens its stream with {@code subscriptions/listen}.
+     */
     @GetMapping({"/mcp", "/s/{serverId}/mcp"})
-    public ResponseEntity<String> get(HttpServletRequest request) {
+    public ResponseEntity<String> get(@PathVariable(required = false) String serverId, @AuthenticationPrincipal Jwt token,
+                                      HttpServletRequest request, HttpServletResponse response) throws IOException {
         String requestId = UuidV7.next();
+        Optional<Target> addressed = serverId == null ? Optional.of(Target.aggregate()) : servers.find(serverId).map(Target::of);
+        try {
+            return openStream(addressed, token, request, response, requestId);
+        } catch (DataAccessException failure) {
+            return stateStoreUnavailable(GatewayUser.from(token), requestId, request.getHeader("X-Request-Id"), failure);
+        }
+    }
+
+    private ResponseEntity<String> openStream(Optional<Target> addressed, Jwt token, HttpServletRequest request, HttpServletResponse response,
+                                              String requestId) throws IOException {
+        GatewayUser user = GatewayUser.from(token);
+        if (addressed.isEmpty()) {
+            return plain(HttpStatus.NOT_FOUND, requestId);
+        }
+        Target target = addressed.get();
         if (!originAllowed(request)) {
             return plain(HttpStatus.FORBIDDEN, requestId);
         }
-        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).header(HttpHeaders.ALLOW, "POST, DELETE").header("X-Request-Id", requestId)
-                .contentType(MediaType.APPLICATION_JSON).body(JsonErrorController.body(405));
+        String sessionId = request.getHeader("Mcp-Session-Id");
+        if (sessionId == null || !EVENT_STREAM.matcher(String.valueOf(request.getHeader(HttpHeaders.ACCEPT))).find()) {
+            return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).header(HttpHeaders.ALLOW, "POST, DELETE, GET")
+                    .header("X-Request-Id", requestId).contentType(MediaType.APPLICATION_JSON).body(JsonErrorController.body(405));
+        }
+        String clientRequestId = request.getHeader("X-Request-Id");
+        EndpointFilter filter;
+        try {
+            filter = filterOf(request, target);
+        } catch (EndpointFilter.Invalid invalid) {
+            return invalidFilter(user, requestId, clientRequestId, invalid, request.getQueryString());
+        }
+        Optional<ClientSession> session = sessions.find(sessionId);
+        ResponseEntity<String> refused = refuseSession(user, target, filter, session, requestId, clientRequestId);
+        if (refused != null) {
+            return refused;
+        }
+        ToolStreams.Stream stream = streams.open(ToolStreams.Kind.SESSION, user, sessionId, filter, token.getExpiresAt(), null, true);
+        count("GET", false);
+        startEventStream(response, requestId);
+        stream.serve(response.getOutputStream());
+        return null;
+    }
+
+    /**
+     * {@code subscriptions/listen} of the stateless protocol (CC-192, CC-206, CC-207): no session, the stream is bound to the filter of this
+     * request, which was parsed before (400) and has nothing to be compared with. It gives its place in the limit of requests back as soon as it is
+     * known to be a stream. The first message is the acknowledgement with the subset of the filter of the client that the gateway honours.
+     */
+    private ResponseEntity<String> listen(HttpServletRequest request, HttpServletResponse response, Jwt token, GatewayUser user,
+                                          EndpointFilter filter, JsonNode message, JsonNode id, String requestId) {
+        boolean tools = message.path("params").path("notifications").path("toolsListChanged").asBoolean(false);
+        ToolStreams.Stream stream = streams.open(ToolStreams.Kind.LISTEN, user, null, filter, token.getExpiresAt(), id, tools);
+        if (request.getAttribute(ConcurrencyLimitFilter.RELEASE_ATTRIBUTE) instanceof Runnable release) {
+            release.run();
+        }
+        try {
+            startEventStream(response, requestId);
+            stream.serve(response.getOutputStream());
+        } catch (IOException e) {
+            log.debug("rid={}: the stream could not be started: {}", requestId, e.getClass().getName());
+        }
+        return null;
+    }
+
+    private static void startEventStream(HttpServletResponse response, String requestId) throws IOException {
+        response.setStatus(HttpStatus.OK.value());
+        response.setContentType("text/event-stream");
+        response.setCharacterEncoding("UTF-8");
+        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
+        // nginx: no buffering of this response, whatever its configuration says (the stream has to reach the client as it is written).
+        response.setHeader("X-Accel-Buffering", "no");
+        response.setHeader("X-Request-Id", requestId);
+        response.flushBuffer();
     }
 
     @DeleteMapping("/mcp")
@@ -221,6 +304,7 @@ public class McpEndpoint {
             return refused;
         }
         sessions.delete(sessionId);
+        streams.closeSession(sessionId);
         upstream.close(legacyConversation(user, sessionId, null), user, requestId);
         return plain(HttpStatus.NO_CONTENT, requestId);
     }
@@ -270,7 +354,7 @@ public class McpEndpoint {
         ClientSession session = sessions.create(user.sub(), user.client(), negotiated, target.route(), filter.canonical());
         ObjectNode result = json.createObjectNode();
         result.put("protocolVersion", negotiated);
-        result.putObject("capabilities").putObject("tools").put("listChanged", false);
+        result.putObject("capabilities").putObject("tools").put("listChanged", true);
         result.putObject("serverInfo").put("name", name).put("version", version);
         count("initialize", false);
         return ResponseEntity.ok().header("Mcp-Session-Id", session.id()).header("X-Request-Id", requestId)
@@ -304,8 +388,8 @@ public class McpEndpoint {
         return dispatch(ctx, message, method, id, false);
     }
 
-    private ResponseEntity<String> modern(Target target, EndpointFilter filter, GatewayUser user, JsonNode message, JsonNode meta,
-                                          HttpServletRequest request, String requestId, String clientRequestId) {
+    private ResponseEntity<String> modern(Target target, EndpointFilter filter, GatewayUser user, Jwt token, JsonNode message, JsonNode meta,
+                                          HttpServletRequest request, HttpServletResponse response, String requestId, String clientRequestId) {
         String method = message.get("method").asString();
         JsonNode id = message.get("id");
         String bodyVersion = meta.path(META_VERSION).asString(null);
@@ -345,8 +429,12 @@ public class McpEndpoint {
             count(method, true);
             ObjectNode result = json.createObjectNode();
             result.set("supportedVersions", json.valueToTree(ProtocolVersions.ALL));
-            result.putObject("capabilities").putObject("tools").put("listChanged", false);
+            result.putObject("capabilities").putObject("tools").put("listChanged", true);
             return ok(requestId, result(id, result, true));
+        }
+        if ("subscriptions/listen".equals(method)) {
+            count(method, true);
+            return listen(request, response, token, user, filter, message, id, requestId);
         }
         return dispatch(ctx, message, method, id, true);
     }
@@ -419,7 +507,7 @@ public class McpEndpoint {
 
     private void count(String method, boolean modern) {
         String tag = switch (method) {
-            case "initialize", "ping", "tools/list", "tools/call", "server/discover" -> method;
+            case "initialize", "ping", "tools/list", "tools/call", "server/discover", "subscriptions/listen", "GET" -> method;
             default -> "other";
         };
         meters.counter("mcp.gateway.requests", "method", tag, "era", modern ? "modern" : "legacy").increment();

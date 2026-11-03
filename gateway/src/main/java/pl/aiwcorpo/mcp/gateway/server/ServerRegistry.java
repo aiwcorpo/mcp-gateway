@@ -114,6 +114,12 @@ public final class ServerRegistry {
                 return;
             }
             JsonNode entry = approved.entry();
+            if (!entry.path("risk").isString()) {
+                // An approved entry of an adapter always carries the classification of the administrator; one that does not is not served.
+                log.error("{}: tool {} is approved without a classification; it is not served", serverId, name);
+                waiting.put(name, waitingTool(name, entry));
+                return;
+            }
             Risk risk = Risk.valueOf(entry.path("risk").asString());
             if (risk.ordinal() < minimum.getOrDefault(name, 0)) {
                 // The manifest says less than the configuration or an earlier approval: the tool is left out until it says enough.
@@ -138,11 +144,18 @@ public final class ServerRegistry {
         this.servers = Map.copyOf(next);
     }
 
+    /**
+     * A tool that waits for its first approval. One of an adapter has no risk and no action yet: it is judged as the most dangerous kind
+     * (DESTRUCTIVE, admin), so that only a user who may call such tools learns it is there (tool_disabled) and everyone else gets
+     * not_found_or_denied (invariant 8). It is disabled whatever it is judged as.
+     */
     private static ToolDefinition waitingTool(String name, JsonNode entry) {
         java.util.List<pl.aiwcorpo.mcp.cedar.entities.ResourceRef> refs = new java.util.ArrayList<>();
         entry.path("resourceRefs").forEach(ref -> refs.add(
                 new pl.aiwcorpo.mcp.cedar.entities.ResourceRef(ref.path("argument").asString(), ref.path("type").asString())));
-        return new ToolDefinition(name, Risk.valueOf(entry.path("risk").asString()), entry.path("action").asString(),
+        boolean classified = entry.path("risk").isString();
+        return new ToolDefinition(name, classified ? Risk.valueOf(entry.path("risk").asString()) : Risk.DESTRUCTIVE,
+                classified ? entry.path("action").asString() : "admin",
                 entry.path("definition").path("title").asString(null), entry.path("definition").path("description").asString(""), true,
                 List.copyOf(refs));
     }

@@ -45,6 +45,7 @@ public final class PolicyService implements DisposableBean {
         return thread;
     });
     private volatile boolean overridesGraceExpired;
+    private final java.util.List<Runnable> changeListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     /**
      * @param developmentStack true under the devstack profile: only there a missing state directory is accepted (a restart
@@ -202,6 +203,13 @@ public final class PolicyService implements DisposableBean {
                 etags.put(channel, bundle.etag());
             }
             log.info("policy bundle {} loaded: revision {}", channel.name().toLowerCase(), bundle.pointer().revision());
+            changeListeners.forEach(listener -> {
+                try {
+                    listener.run();
+                } catch (RuntimeException e) {
+                    log.warn("a listener of the policy change failed: {}", e.getClass().getName());
+                }
+            });
         } catch (BundleRejectedException e) {
             boolean notNewer = e.reason() == BundleRejectedException.Reason.NOT_NEWER;
             // A bundle that is not newer than the one in force keeps its ETag: the verdict cannot change, so the server is left alone.
@@ -246,6 +254,11 @@ public final class PolicyService implements DisposableBean {
     }
 
     /** Revision of the main bundle in force; null before the first load. */
+    /** Told after every bundle that was accepted: the answers of Cedar may differ, so lists that were computed are worth computing again. */
+    public void onChange(Runnable listener) {
+        changeListeners.add(listener);
+    }
+
     public String revision() {
         return store.current().map(s -> s.main().revision()).orElse(null);
     }

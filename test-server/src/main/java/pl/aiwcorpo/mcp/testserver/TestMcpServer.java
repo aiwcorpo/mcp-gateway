@@ -277,6 +277,26 @@ public final class TestMcpServer implements AutoCloseable {
         return manifest;
     }
 
+    /**
+     * The manifest an adapter in front of this server would submit (CC-193): {@code source: adapter}, entries without risk and action
+     * and without resource references, hashes without them.
+     */
+    public ObjectNode adapterManifest() {
+        ObjectNode manifest = manifest();
+        manifest.put("source", "adapter");
+        String system = config.serverId().replaceFirst("^mcp-", "");
+        manifest.putArray("resourceTypes");
+        for (JsonNode tool : manifest.path("tools")) {
+            ObjectNode entry = (ObjectNode) tool;
+            entry.remove("risk");
+            entry.remove("action");
+            entry.putArray("resourceRefs");
+            entry.put("definitionHash", pl.aiwcorpo.mcp.manifest.DefinitionHash.compute(JSON.writeValueAsString(entry.get("definition")),
+                    JSON.writeValueAsString(entry), system, JSON.writeValueAsString(manifest.get("credential"))));
+        }
+        return manifest;
+    }
+
     private void delete(HttpExchange exchange, Map<String, List<String>> headers, String body) throws IOException {
         String rid = first(headers, "x-request-id");
         InternalJwtVerifier.Result auth = verifier.verify(first(headers, "authorization"), rid,

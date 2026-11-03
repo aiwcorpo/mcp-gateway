@@ -227,6 +227,52 @@ class HighAvailabilityTest {
 
     // --- tests -------------------------------------------------------------------------------------------------
 
+    private static HttpResponse<String> admin(GatewayProcess instance, String method, String path, String body) throws Exception {
+        String token = env.idp.token("3b0d6f2e-91c4-4d7a-8a52-6c1e4f7a9d10", "a.admin", List.of("mcp-platform-admin"), "mcp-gateway-admin",
+                "mcp-portal-bff");
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create("https://localhost:" + instance.internalPort() + path))
+                .header("Content-Type", "application/json").header("Authorization", "Bearer " + token)
+                .method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body));
+        return HttpClient.newBuilder().sslContext(env.bffTls).build().send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    @Test
+    @Order(0)
+    void anEmergencySwitchPutOnOneInstanceHoldsOnTheOtherWithinFiveSecondsAndTheStreamsHearOfIt() throws Exception {
+        String token = token(UUID.randomUUID().toString());
+        String path = "/admin/v1/registry/servers/mcp-jira/tools/get_issue/kill-switch";
+        assertThat(toolError(callTool(b, token, "jira__get_issue", "{\"issueKey\":\"ABC-1\"}")).has("error")).isFalse();
+        HttpResponse<String> init = post(a, token, "/mcp", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":"
+                + "{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}", Map.of());
+        String session = init.headers().firstValue("Mcp-Session-Id").orElseThrow();
+        try (pl.aiwcorpo.mcp.gateway.support.SseClient onA = pl.aiwcorpo.mcp.gateway.support.SseClient.get(HTTP,
+                "http://localhost:" + a.port() + "/mcp", Map.of("Authorization", "Bearer " + token, "Mcp-Session-Id", session));
+             pl.aiwcorpo.mcp.gateway.support.SseClient onB = pl.aiwcorpo.mcp.gateway.support.SseClient.post(HTTP,
+                     "http://localhost:" + b.port() + "/mcp", "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"subscriptions/listen\",\"params\":{"
+                             + "\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\",\"io.modelcontextprotocol/clientCapabilities\":{}},"
+                             + "\"notifications\":{\"toolsListChanged\":true}}}", Map.of("Authorization", "Bearer " + token,
+                             "MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "subscriptions/listen"))) {
+            assertThat(onA.nextLine(Duration.ofSeconds(3))).isEqualTo(": open");
+            assertThat(onB.nextMessage(Duration.ofSeconds(3)).path("method").asString()).isEqualTo("notifications/subscriptions/acknowledged");
+
+            long started = System.nanoTime();
+            assertThat(admin(a, "PUT", path, "{\"reason\":\"incident\"}").statusCode()).isEqualTo(204);
+
+            await().atMost(Duration.ofSeconds(5)).pollInterval(Duration.ofMillis(100)).untilAsserted(() ->
+                    assertThat(toolError(callTool(b, token, "jira__get_issue", "{\"issueKey\":\"ABC-1\"}")).path("error").asString())
+                            .isEqualTo("tool_disabled"));
+            assertThat(Duration.ofNanos(System.nanoTime() - started)).as("the other instance, after the 204").isLessThan(Duration.ofSeconds(5));
+            assertThat(onA.nextMessage(Duration.ofSeconds(5)).path("method").asString()).isEqualTo("notifications/tools/list_changed");
+            JsonNode heard = onB.nextMessage(Duration.ofSeconds(5));
+            assertThat(heard.path("method").asString()).isEqualTo("notifications/tools/list_changed");
+            assertThat(heard.path("params").path("_meta").path("io.modelcontextprotocol/subscriptionId").asInt()).isEqualTo(4);
+        } finally {
+            assertThat(admin(b, "DELETE", path, null).statusCode()).isEqualTo(204);
+        }
+        await().atMost(Duration.ofSeconds(5)).pollInterval(Duration.ofMillis(100)).untilAsserted(() ->
+                assertThat(toolError(callTool(a, token, "jira__get_issue", "{\"issueKey\":\"ABC-1\"}")).has("error")).isFalse());
+    }
+
     @Test
     @Order(1)
     void aConfirmationBegunOnOneInstanceEndsOnTheOtherAndTheCodeWorksOnce() throws Exception {

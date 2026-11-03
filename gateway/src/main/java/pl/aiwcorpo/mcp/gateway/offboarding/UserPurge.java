@@ -10,6 +10,7 @@ import pl.aiwcorpo.mcp.gateway.broker.CredentialCache;
 import pl.aiwcorpo.mcp.gateway.confirm.ConfirmationService;
 import pl.aiwcorpo.mcp.gateway.confirm.ConfirmationStore;
 import pl.aiwcorpo.mcp.gateway.mcp.ClientSessionStore;
+import pl.aiwcorpo.mcp.gateway.stream.ToolStreams;
 import pl.aiwcorpo.mcp.gateway.upstream.UpstreamSessions;
 
 /**
@@ -28,15 +29,17 @@ public final class UserPurge {
     private final CredentialCache credentials;
     private final AuditLog audit;
     private final String componentId;
+    private final ToolStreams streams;
 
     public UserPurge(ConfirmationService confirmations, ClientSessionStore sessions, UpstreamSessions upstream,
-                     CredentialCache credentials, AuditLog audit, String componentId) {
+                     CredentialCache credentials, AuditLog audit, String componentId, ToolStreams streams) {
         this.confirmations = confirmations;
         this.sessions = sessions;
         this.upstream = upstream;
         this.credentials = credentials;
         this.audit = audit;
         this.componentId = componentId;
+        this.streams = streams;
     }
 
     /**
@@ -54,6 +57,8 @@ public final class UserPurge {
         }
         credentials.invalidateUser(sub);
         upstream.forgetUser(sub);
+        // The streams of this instance end; those on other instances end with their session (the next heartbeat) or with their token.
+        streams.closeUser(sub);
         AuditEvent summary = AuditEvent.of("admin_change", requestId, componentId).sub(sub).reason("user_purged");
         audit.emit(complete ? summary.outcome("ok") : summary.outcome("error", "upstream_unavailable"));
         return complete;

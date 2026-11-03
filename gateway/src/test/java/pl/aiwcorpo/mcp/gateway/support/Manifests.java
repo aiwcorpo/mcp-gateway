@@ -74,6 +74,33 @@ public final class Manifests {
         return manifest;
     }
 
+    /**
+     * The manifest an adapter submits (C6, CC-193): {@code source: adapter}, no risk and no action in the entries, no resource references.
+     * The risk of a {@link Tool} is only what the foreign tool looks like; it is not written.
+     */
+    public static ObjectNode adapter(String serverId, String system, String version, Tool... tools) {
+        ObjectNode manifest = JSON.createObjectNode();
+        manifest.put("serverId", serverId);
+        manifest.put("version", version);
+        manifest.put("system", system);
+        manifest.put("source", "adapter");
+        manifest.put("internalUrl", "https://" + serverId + ".internal:8443/mcp");
+        ObjectNode credential = manifest.putObject("credential");
+        credential.put("required", true);
+        credential.putArray("acceptedTypes").add(USER_SECRET);
+        manifest.putArray("resourceTypes");
+        ArrayNode list = manifest.putArray("tools");
+        for (Tool tool : tools) {
+            ObjectNode entry = list.addObject();
+            entry.put("name", tool.name());
+            entry.putArray("resourceRefs");
+            entry.set("definition", definition(tool));
+            entry.put("definitionHash", DefinitionHash.compute(JSON.writeValueAsString(entry.get("definition")),
+                    JSON.writeValueAsString(entry), system, JSON.writeValueAsString(credential)));
+        }
+        return manifest;
+    }
+
     public static ObjectNode definition(Tool tool) {
         ObjectNode definition = JSON.createObjectNode();
         definition.put("name", tool.name());

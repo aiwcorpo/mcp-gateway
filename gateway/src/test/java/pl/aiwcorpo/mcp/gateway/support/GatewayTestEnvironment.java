@@ -50,6 +50,8 @@ public final class GatewayTestEnvironment {
     public final TestMcpServer jira;
     public final TestMcpServer gitlab;
     public final TestMcpServer wrongName;
+    /** The foreign server behind an adapter: mcp-opensearch in adapter mode (the test server stands in for the foreign one). */
+    public final TestMcpServer opensearch;
     public final PolicyServer policies;
     public final Path policyKeys;
     public final Path policyState;
@@ -71,6 +73,11 @@ public final class GatewayTestEnvironment {
     public final SSLContext sharedCiTls;
     /** The offboarding process (CC-155). */
     public final SSLContext offboardingTls;
+    /** Adapters (CC-206): one certificate per server, mcp-adapter-<serverId>; and the pipeline of the adapter server, which may not use that channel. */
+    public final SSLContext adapterOpensearchTls;
+    public final SSLContext adapterJiraTls;
+    public final SSLContext adapterGitlabTls;
+    public final SSLContext ciOpensearchTls;
 
     public static synchronized GatewayTestEnvironment get() {
         if (instance == null) {
@@ -96,6 +103,11 @@ public final class GatewayTestEnvironment {
         Path ciKeystore = pki.issue("ci.p12", "mcp-registry-ci", List.of(), false, true);
         Path ciGitlabKeystore = pki.issue("ci-gitlab.p12", "mcp-registry-ci-mcp-gitlab", List.of(), false, true);
         Path ciJiraKeystore = pki.issue("ci-jira.p12", "mcp-registry-ci-mcp-jira", List.of(), false, true);
+        Path opensearchKeystore = pki.issue("opensearch.p12", "mcp-opensearch", List.of("mcp-opensearch.internal", "localhost"), true, false);
+        Path adapterOpensearchKeystore = pki.issue("adapter-opensearch.p12", "mcp-adapter-mcp-opensearch", List.of(), false, true);
+        Path adapterJiraKeystore = pki.issue("adapter-jira.p12", "mcp-adapter-mcp-jira", List.of(), false, true);
+        Path adapterGitlabKeystore = pki.issue("adapter-gitlab.p12", "mcp-adapter-mcp-gitlab", List.of(), false, true);
+        Path ciOpensearchKeystore = pki.issue("ci-opensearch.p12", "mcp-registry-ci-mcp-opensearch", List.of(), false, true);
         Path offboardingKeystore = pki.issue("offboarding.p12", "mcp-offboarding", List.of(), false, true);
         TestPki foreign = new TestPki(Files.createDirectory(dir.resolve("foreign")));
         Path foreignKeystore = foreign.issue("bff.p12", "mcp-portal-bff", List.of(), false, true);
@@ -128,6 +140,10 @@ public final class GatewayTestEnvironment {
                 false, null, gatewayKeys), Tls.fromPkcs12(wrongKeystore, pki.truststore(), TestPki.PASSWORD),
                 new InetSocketAddress("127.0.0.1", 0)).start();
 
+        opensearch = new TestMcpServer(new TestMcpServer.Config("mcp-opensearch", "/mcp", "https://mcp-gateway.internal", false, null,
+                gatewayKeys), Tls.fromPkcs12(opensearchKeystore, pki.truststore(), TestPki.PASSWORD),
+                new InetSocketAddress("127.0.0.1", 0)).start();
+
         String acl = redisAcl();
         redis = new GenericContainer<>("redis:8.8.4-alpine")
                 .withCopyToContainer(Transferable.of(acl), "/etc/redis-users.acl")
@@ -152,6 +168,10 @@ public final class GatewayTestEnvironment {
         ciJiraTls = Tls.fromPkcs12(ciJiraKeystore, pki.truststore(), TestPki.PASSWORD);
         sharedCiTls = otherComponentTls;
         offboardingTls = Tls.fromPkcs12(offboardingKeystore, pki.truststore(), TestPki.PASSWORD);
+        adapterOpensearchTls = Tls.fromPkcs12(adapterOpensearchKeystore, pki.truststore(), TestPki.PASSWORD);
+        adapterJiraTls = Tls.fromPkcs12(adapterJiraKeystore, pki.truststore(), TestPki.PASSWORD);
+        adapterGitlabTls = Tls.fromPkcs12(adapterGitlabKeystore, pki.truststore(), TestPki.PASSWORD);
+        ciOpensearchTls = Tls.fromPkcs12(ciOpensearchKeystore, pki.truststore(), TestPki.PASSWORD);
     }
 
     /**
@@ -244,6 +264,8 @@ public final class GatewayTestEnvironment {
         registry.add("gateway.registry.bootstrap-retry", () -> "500ms");
         registry.add("gateway.registry.definition-check-ttl", () -> "1s");
         registry.add("gateway.mcp.tools-list-timeout", () -> "700");
+        registry.add("gateway.mcp.sse-heartbeat-interval", () -> "1s");
+        registry.add("gateway.mcp.change-poll-interval", () -> "300ms");
         registry.add("gateway.servers.mcp-gitlab.manifest", () -> "required");
         registry.add("gateway.servers.mcp-gitlab.system", () -> "gitlab");
         registry.add("gateway.servers.mcp-gitlab.internal-url", () -> "https://127.0.0.1:" + gitlab.port() + "/mcp");
@@ -261,6 +283,13 @@ public final class GatewayTestEnvironment {
         registry.add("gateway.servers.mcp-servicedesk.internal-url", () -> "https://127.0.0.1:9/mcp");
         registry.add("gateway.servers.mcp-servicedesk.tools.get_ticket.risk", () -> "READ_ONLY");
         registry.add("gateway.servers.mcp-servicedesk.tools.get_ticket.description", () -> "Returns one ticket.");
+        registry.add("gateway.servers.mcp-opensearch.system", () -> "opensearch");
+        registry.add("gateway.servers.mcp-opensearch.adapter", () -> "true");
+        registry.add("gateway.servers.mcp-opensearch.manifest", () -> "required");
+        registry.add("gateway.servers.mcp-opensearch.internal-url", () -> "https://127.0.0.1:" + opensearch.port() + "/mcp");
+        registry.add("gateway.servers.mcp-opensearch.credential.accepted-types", () -> "user-secret");
+        registry.add("gateway.servers.mcp-opensearch.credential.type", () -> "user-secret");
+        registry.add("gateway.servers.mcp-opensearch.credential.token-exchange", () -> "false");
         registry.add("gateway.servers.mcp-confluence.system", () -> "confluence");
         registry.add("gateway.servers.mcp-confluence.internal-url", () -> "https://127.0.0.1:" + wrongName.port() + "/mcp");
         registry.add("gateway.servers.mcp-confluence.credential.required", () -> "false");
