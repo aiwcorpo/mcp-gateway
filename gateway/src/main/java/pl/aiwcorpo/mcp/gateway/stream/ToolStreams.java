@@ -40,6 +40,12 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
     private static final Logger log = LoggerFactory.getLogger(ToolStreams.class);
     private static final String META_SUBSCRIPTION = "io.modelcontextprotocol/subscriptionId";
     private static final byte[] KEEPALIVE = ": keepalive\n\n".getBytes(StandardCharsets.UTF_8);
+    /**
+     * Written a moment after every heartbeat. The first write to a connection the client has closed is accepted by the kernel (the peer
+     * answers it with a reset), and only the next one fails; without this the place of a closed stream stayed taken for two heartbeats.
+     * Servlet async does not help: the container does not report a client that closed an idle connection.
+     */
+    private static final byte[] PROBE = ":\n\n".getBytes(StandardCharsets.UTF_8);
     private static final byte[] OPEN = ": open\n\n".getBytes(StandardCharsets.UTF_8);
 
     public enum Kind { SESSION, LISTEN }
@@ -235,6 +241,8 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
 
         private String loop(OutputStream out) throws IOException {
             long nextBeat = millis.getAsLong() + heartbeat.toMillis();
+            long probeDelay = Math.max(1, Math.min(1000, heartbeat.toMillis() / 2));
+            long nextProbe = Long.MAX_VALUE;
             while (true) {
                 long now = millis.getAsLong();
                 if (closeReason != null) {
@@ -243,7 +251,7 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
                 if (now >= expiresAtMillis) {
                     return "token_expired";
                 }
-                long wakeAt = Math.min(nextBeat, Math.min(expiresAtMillis, tracker == null ? Long.MAX_VALUE : tracker.nextDueAt()));
+                long wakeAt = Math.min(Math.min(nextBeat, nextProbe), Math.min(expiresAtMillis, tracker == null ? Long.MAX_VALUE : tracker.nextDueAt()));
                 if (check) {
                     wakeAt = Math.min(wakeAt, now + 1000);
                 }
@@ -291,10 +299,16 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
                         meters.counter("mcp_gateway_stream_notifications_total").increment();
                     }
                 }
+                if (now >= nextProbe) {
+                    out.write(PROBE);
+                    out.flush();
+                    nextProbe = Long.MAX_VALUE;
+                }
                 if (now >= nextBeat) {
                     out.write(KEEPALIVE);
                     out.flush();
                     nextBeat = now + heartbeat.toMillis();
+                    nextProbe = now + probeDelay;
                     if (kind == Kind.SESSION && !alive()) {
                         return "session_deleted";
                     }

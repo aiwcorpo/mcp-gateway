@@ -350,12 +350,15 @@ stos naprawdę używa (dziś: `MCP_POLICY_ALLOW_TEST_KEYS=true`, `MCP_ALLOW_PLAI
 Zmienne środowiska (nazwy z `mcp-platform-dev`, usługa `mcp-gateway` profilu `full`); pełna lista w
 `gateway/src/main/resources/application.yml`.
 
+Wiersze z dopiskiem "wymagane poza devstack" to ustawienia, bez których `DevstackGuard` odmawia startu, gdy profil `devstack` nie jest jedynym aktywnym
+i podwójnie potwierdzonym (sekcja o profilu powyżej): puste albo słabsze wartości są dozwolone tylko w devstacku.
+
 | Zmienna | Znaczenie |
 | --- | --- |
-| `MCP_OIDC_ISSUER`, `MCP_OIDC_JWKS_URI`, `MCP_OIDC_AUDIENCE` | C1: oczekiwany `iss`, JWKS IdP, audience (domyślnie `mcp-gateway`) |
+| `MCP_OIDC_ISSUER`, `MCP_OIDC_JWKS_URI`, `MCP_OIDC_AUDIENCE` | C1: oczekiwany `iss`, JWKS IdP, audience (domyślnie `mcp-gateway`). Wymagane poza devstack: `MCP_OIDC_JWKS_URI` (i `MCP_OIDC_TOKEN_URI`, gdy ustawiony) pod `https` |
 | `MCP_OIDC_AUTHORIZATION_SERVER` | serwer autoryzacji w RFC 9728; domyślnie `MCP_OIDC_ISSUER` |
 | `MCP_OIDC_TOKEN_URI`, `MCP_OIDC_CLIENT_ID`, `MCP_OIDC_CLIENT_SECRET` | token exchange dla systemów `token-exchange` |
-| `MCP_PUBLIC_URL` | wymagany: publiczny origin portalu i gateway'a (`https://...`, `http://` tylko z `MCP_ALLOW_PLAIN_HTTP`), bez ścieżki; źródło `resource_metadata` i `connectUrl` |
+| `MCP_PUBLIC_URL` | wymagany: publiczny origin portalu i gateway'a (`https://...`, `http://` tylko z `MCP_ALLOW_PLAIN_HTTP`), bez ścieżki; źródło `resource_metadata` i `connectUrl`. Wymagane poza devstack: `https` |
 | `MCP_DB_URL`, `MCP_DB_USER`, `MCP_DB_PASSWORD` | PostgreSQL (baza `gateway`): rejestr narzędzi i aktywność; Flyway migruje przy starcie (`V7` usuwa tabelę linków), bez bazy gateway nie wstaje |
 | `MCP_ADMIN_AUDIENCE`, `MCP_ADMIN_AUTHORIZED_PARTY` | C5: `aud` tokenu BFF (domyślnie `mcp-gateway-admin`, token z `aud` `mcp-gateway` jest odrzucany, a token MCP z `aud` admina też) i wymagane `azp` (domyślnie `mcp-portal-bff`) |
 | `MCP_ADMIN_CLIENT_CNS`, `MCP_ADMIN_OFFBOARDING_CLIENT_CNS` | C5: CN certyfikatów klienta dla operacji BFF (domyślnie `mcp-portal-bff`) i dla `purge` (domyślnie `mcp-offboarding`); CN potoku rejestru nie jest konfiguracją: `mcp-registry-ci-<serverId>` równe `serverId` ze ścieżki (CC-161). Przydział operacji jest w kodzie wg `x-allowed-client-cn`, operacja spoza kontraktu to 403 dla każdego CN |
@@ -365,26 +368,26 @@ Zmienne środowiska (nazwy z `mcp-platform-dev`, usługa `mcp-gateway` profilu `
 | `MCP_TOOLS_LIST_TIMEOUT` | milisekundy, które ma jeden serwer na odczyt swojego `tools/list` przy liście klienta (domyślnie `3000`, wartość niedodatnia zatrzymuje start; CC-180) |
 | `MCP_AUDIT_THROTTLE_MAX_TARGETS_PER_USER` | ile kluczy (użytkownik, powód, cel) żyje naraz w audycie powtarzalnych odmów na użytkownika i powód (domyślnie 50, CC-191) |
 | `MCP_MAX_CONCURRENT_REQUESTS`, `MCP_CONCURRENCY_QUEUE_WAIT`, `MCP_SHED_RETRY_AFTER_SECONDS` | limit żądań MCP w toku (domyślnie 128), czas oczekiwania na miejsce (100 ms) i `Retry-After` odmowy 503 (2 s); sekcja "Przeciążenie" |
-| `MCP_LIST_CURSOR_KEY` | klucz HMAC kursora `tools/list` (min. 16 bajtów), ten sam na każdej instancji |
-| `MCP_REDIS_WAIT_REPLICAS`, `MCP_REDIS_WAIT_TIMEOUT` | ile replik musi potwierdzić zmianę stanu potwierdzeń (Redis `WAIT`, ACL gateway'a musi mieć `+wait`) i jak długo czekać; `0` = bez czekania (jeden Redis) |
+| `MCP_LIST_CURSOR_KEY` | klucz HMAC kursora `tools/list` (min. 16 bajtów), ten sam na każdej instancji. Wymagane poza devstack: puste = klucz losowy na proces, odrzucane przy starcie |
+| `MCP_REDIS_WAIT_REPLICAS`, `MCP_REDIS_WAIT_TIMEOUT` | ile replik musi potwierdzić zmianę stanu potwierdzeń (Redis `WAIT`, ACL gateway'a musi mieć `+wait`) i jak długo czekać. Wymagane poza devstack: `MCP_REDIS_WAIT_REPLICAS` >= 1, a `0` (bez czekania, jeden Redis bez repliki) tylko w devstacku, gdzie spalony kod nie jest potwierdzany przez replikę |
 | `MCP_METRICS_CLIENT_CNS` | CN certyfikatów klienta dla `/actuator/prometheus` (puste = nikt) |
 | `MCP_SERVER_<SYSTEM>_MCP_URL`, `_ENABLED`, `_VERSION` | adres (`https`), wyłącznik i wersja serwera dla JIRA, CONFLUENCE, GITLAB, SERVICEDESK, OPENSEARCH; adresy domyślne `https://mcp-<system>.internal:8443/mcp`, dla Jiry `MCP_SERVER_JIRA_URL` + `/mcp` |
 | `MCP_INTERNAL_PORT` | port wewnętrzny TLS, domyślnie `8443` |
 | `MCP_INTERNAL_JWT_ISSUER` | `iss` C2, domyślnie `https://mcp-gateway.internal` |
-| `MCP_INTERNAL_JWT_KEYS_FILE`, `MCP_INTERNAL_JWT_ACTIVE_KID` | prywatny JWKS (P-256, każdy klucz z `kid`) i aktywny `kid`; wspólny dla wszystkich instancji; puste = klucze generowane na proces, tylko w profilu `devstack` |
+| `MCP_INTERNAL_JWT_KEYS_FILE`, `MCP_INTERNAL_JWT_ACTIVE_KID` | prywatny JWKS (P-256, każdy klucz z `kid`) i aktywny `kid`; wspólny dla wszystkich instancji. Wymagane poza devstack: `MCP_INTERNAL_JWT_KEYS_FILE` (puste = klucze generowane na proces, tylko w `devstack`) |
 | `MCP_TLS_KEYSTORE`, `MCP_TLS_TRUSTSTORE`, `MCP_TLS_STORE_PASSWORD` | PKCS12 gateway'a (CN `mcp-gateway`, serverAuth+clientAuth) i CA |
 | `MCP_BROKER_URL`, `MCP_BROKER_TLS_NAME` | broker i nazwa w jego certyfikacie (CC-035) |
 | `MCP_REDIS_HOST`, `MCP_REDIS_PORT`, `MCP_REDIS_USER`, `MCP_REDIS_PASSWORD`, `MCP_REDIS_KEY_PREFIX` | Redis (ACL `gateway`, `gw:*`, `credential.invalidated`) |
 | `MCP_SERVER_JIRA_URL` albo `MCP_SERVER_JIRA_MCP_URL` | adres `mcp-jira`; do pierwszego dopisywane jest `/mcp` |
-| `MCP_POLICY_MAIN_URL`, `MCP_POLICY_OVERRIDES_URL` | wymagany katalog paczki głównej (`.../policies/main/`) i opcjonalny `overrides`; w compose `http://policies.internal:8080/policies/...` |
+| `MCP_POLICY_MAIN_URL`, `MCP_POLICY_OVERRIDES_URL` | wymagany katalog paczki głównej (`.../policies/main/`) i opcjonalny `overrides`; w compose `http://policies.internal:8080/policies/...`. Wymagane poza devstack: adresy pod `https` |
 | `MCP_POLICY_MAIN_KEY_ID`, `MCP_POLICY_MAIN_KEY_FILE`, `MCP_POLICY_OVERRIDES_KEY_ID`, `MCP_POLICY_OVERRIDES_KEY_FILE` | identyfikatory i pliki PEM kluczy publicznych Ed25519 obu kanałów |
 | `MCP_POLICY_ALLOW_TEST_KEYS` | tylko dev: klucze `test-*` (CC-044) |
-| `MCP_POLICY_STATE_DIR`, `MCP_POLICY_MINIMUM_MAIN_REVISION`, `MCP_POLICY_MINIMUM_OVERRIDES_REVISION` | ochrona przed cofnięciem po restarcie (CC-066): katalog stanu jednej instancji (w obrazie `/app/state`), wymagany poza dev (bez `MCP_POLICY_ALLOW_TEST_KEYS`), i rewizje minimalne |
+| `MCP_POLICY_STATE_DIR`, `MCP_POLICY_MINIMUM_MAIN_REVISION`, `MCP_POLICY_MINIMUM_OVERRIDES_REVISION` | ochrona przed cofnięciem po restarcie (CC-066): katalog stanu jednej instancji (w obrazie `/app/state`) i rewizje minimalne. Wymagane poza devstack: `MCP_POLICY_STATE_DIR` (pusty tylko w `devstack`) |
 | `MCP_POLICY_MAIN_INTERVAL`, `MCP_POLICY_OVERRIDES_INTERVAL`, `MCP_POLICY_STARTUP_TIMEOUT` | 30 s, 5 s, 2 min do rezygnacji ze startu bez paczki |
 | `MCP_REGISTRY_MODE`, `MCP_REGISTRY_BOOTSTRAP` | `required` (domyślnie) albo `static`; pobranie pierwszego manifestu od serwera bez zatwierdzenia (domyślnie NIE; tylko dev, patrz wyżej). Przełącznik `manifest` per serwer w `application.yml` |
-| `MCP_ACTIVITY_CURSOR_KEY` | klucz HMAC kursora `/activity/calls` (min. 16 bajtów); wspólny dla instancji; puste = losowy na proces, tylko w profilu `devstack` |
+| `MCP_ACTIVITY_CURSOR_KEY` | klucz HMAC kursora `/activity/calls` (min. 16 bajtów); wspólny dla instancji. Wymagane poza devstack: puste = losowy na proces, tylko w `devstack` |
 | `MCP_ALLOWED_ORIGINS` | dozwolone `Origin` (lista); żądanie (POST, GET, DELETE) z innym `Origin` -> 403, bez `Origin` przechodzi |
-| `MCP_ALLOW_PLAIN_HTTP` | tylko dev: `http` dla endpointu tokenów IdP (token exchange); bez flagi token exchange jest wyłączony, broker i serwery zawsze `https` |
+| `MCP_ALLOW_PLAIN_HTTP` | tylko dev: `http` dla endpointu tokenów IdP (token exchange); poza devstack flaga musi być wyłączona (start odmawia); bez flagi token exchange jest wyłączony, broker i serwery zawsze `https` |
 
 Konfiguracja statyczna serwera (M1, w miejscu rejestru C5) jest w `application.yml`:
 
@@ -416,7 +419,7 @@ konfiguracji zatrzymuje start.
   się do `MCP_MAX_CONCURRENT_REQUESTS` (żądanie oddaje miejsce, gdy okaże się strumieniem), nie ma limitu strumieni na użytkownika, otwarcie strumienia liczy się do zwykłych limitów żądań
   użytkownika i klienta (429), instancja trzyma najwyżej `MCP_MAX_OPEN_STREAMS` strumieni (domyślnie 2000, oba rodzaje razem; powyżej `503` jak przy przeciążeniu, z `Retry-After`,
   metryka `mcp_gateway_streams_refused_total`), a liczba otwartych to metryka; po zmianie listy liczy się najwyżej `MCP_STREAM_RECOMPUTE_PARALLELISM` list naraz (domyślnie 4), a seria zmian to jedno przeliczenie na strumień. Heartbeat
-  `: keepalive` co `MCP_SSE_HEARTBEAT_INTERVAL` (15 s). Koniec strumienia: wygaśnięcie tokenu, `DELETE` sesji, `purge` użytkownika (na tej instancji; na innej strumień sesji kończy się przy następnym heartbeacie, najwyżej po 15 s, bo sesji już nie ma, a bezstanowy dopiero z wygaśnięciem tokenu, najwyżej po 60 min), zatrzymanie procesu. Zdarzenia nie są odtwarzane. Lista strumienia jest liczona raz na tożsamość (sub, nazwa, klient, grupy): decyzje Cedar są pamiętane do następnej paczki polityk i dotyczą narzędzi o tym samym odcisku (serwer, nazwa, ryzyko, akcja, typ poświadczenia, `resourceRefs`), więc wyłącznik, zmiana odczytu serwera i zmiana jednego narzędzia nie kosztują decyzji dla reszty, a strumienie jednej tożsamości dzielą wynik; strumienie liczą w osobnej, małej puli (nie dzielą slotów z `tools/list` klientów). Strumień sesji na `/s/<serverId>/mcp` porównuje tylko narzędzia tego systemu; `subscriptions/listen` bez `toolsListChanged` nie liczy list. Zmiana grup w tokenie sesji z otwartym strumieniem zmienia jego listę przy następnym żądaniu tej sesji. Granice: dostępność serwera i dryf jego definicji wyzwalają powiadomienie dopiero po odczycie
+  `: keepalive` co `MCP_SSE_HEARTBEAT_INTERVAL` (15 s), a sekundę po nim pusty komentarz `:` (pierwszy zapis do gniazda zamkniętego przez klienta kernel przyjmuje, dopiero drugi się nie udaje, więc bez niego miejsce w `MCP_MAX_OPEN_STREAMS` wracałoby po dwóch heartbeatach; teraz po ok. 16 s od zamknięcia gniazda, `StreamReleaseTest`). Koniec strumienia: wygaśnięcie tokenu, `DELETE` sesji, `purge` użytkownika (na tej instancji; na innej strumień sesji kończy się przy następnym heartbeacie, najwyżej po 15 s, bo sesji już nie ma, a bezstanowy dopiero z wygaśnięciem tokenu, najwyżej po 60 min), zatrzymanie procesu. Zdarzenia nie są odtwarzane. Lista strumienia jest liczona raz na tożsamość (sub, nazwa, klient, grupy): decyzje Cedar są pamiętane do następnej paczki polityk i dotyczą narzędzi o tym samym odcisku (serwer, nazwa, ryzyko, akcja, typ poświadczenia, `resourceRefs`), więc wyłącznik, zmiana odczytu serwera i zmiana jednego narzędzia nie kosztują decyzji dla reszty, a strumienie jednej tożsamości dzielą wynik; strumienie liczą w osobnej, małej puli (nie dzielą slotów z `tools/list` klientów). Strumień sesji na `/s/<serverId>/mcp` porównuje tylko narzędzia tego systemu; `subscriptions/listen` bez `toolsListChanged` nie liczy list. Zmiana grup w tokenie sesji z otwartym strumieniem zmienia jego listę przy następnym żądaniu tej sesji. Granice: dostępność serwera i dryf jego definicji wyzwalają powiadomienie dopiero po odczycie
   przez ruch (`tools/list`, `tools/call`); zmiana grup strumienia bezstanowego dociera z nowym tokenem (nowy strumień).
 - **Wyłącznik awaryjny (CC-194, A9).** Tabela `kill_switches` (Flyway V8), operacje C5 `putServerKillSwitch`, `deleteServerKillSwitch`, `putToolKillSwitch`, `deleteToolKillSwitch`,
   `listKillSwitches` (administrator `mcp-platform-admin`, `mcp-portal-bff`); włączenie bez MFA, bez wygasania. Sprawdzany w `tools/call` po `mayCall` i po filtrze adresu, przed
