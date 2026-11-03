@@ -500,7 +500,7 @@ public class McpGatewayService {
         JsonNode response;
         try {
             response = upstream.call(server, ctx.conversationKey(), ctx.user(), ctx.requestId(), request, tool.name(), credential,
-                    tool.risk() == pl.aiwcorpo.mcp.gateway.server.Risk.READ_ONLY);
+                    tool.risk() == pl.aiwcorpo.mcp.gateway.server.Risk.READ_ONLY, tool.risk().name(), tool.action());
         } catch (UpstreamException e) {
             log.warn("tools/call rid={} to {} failed: {} {}", ctx.requestId(), server.serverId(), e.kind(), e.getMessage());
             String code = e.kind() == UpstreamException.Kind.UNAVAILABLE ? "upstream_unavailable" : "internal_error";

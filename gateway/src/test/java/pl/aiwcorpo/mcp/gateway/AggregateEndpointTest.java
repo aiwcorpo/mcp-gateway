@@ -184,6 +184,14 @@ class AggregateEndpointTest extends GatewayTestBase {
     }
 
     @Test
+    void aCursorThatIsEmptyOrNullIsNotTheFirstPage() throws Exception {
+        for (String cursor : List.of("\"\"", "null", "5")) {
+            HttpResponse<String> response = sendModern(tokenOf(java.util.UUID.randomUUID().toString()), "/mcp", "tools/list", null, "{\"cursor\":" + cursor + "}");
+            assertThat(JSON.readTree(response.body()).path("error").path("code").asInt()).as(cursor).isEqualTo(-32602);
+        }
+    }
+
+    @Test
     void aGetWithoutASessionIsNotAllowedAndThereAreNoSavedLinks() throws Exception {
         for (String path : List.of("/mcp", "/s/mcp-jira/mcp")) {
             HttpResponse<String> response = get(path, token());

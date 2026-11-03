@@ -45,6 +45,15 @@ public final class InternalTokenIssuer {
 
     /** User variant; {@code tool} is the server-side name or null. The token carries no endpoint filter (C2 has no claim for it). */
     public String forUser(String audience, GatewayUser user, String tool, String requestId) {
+        return forUser(audience, user, tool, requestId, null, null);
+    }
+
+    /**
+     * As above; {@code risk} and {@code action} are the classification of the administrator of a tool of an adapter (CC-226), given by the
+     * caller only for a server in adapter mode. They become {@code mcp_risk} and {@code mcp_action} only together, only as a pair that fits and
+     * only with a {@code tool}: anything else is left out, and the sidecar then refuses the call.
+     */
+    public String forUser(String audience, GatewayUser user, String tool, String requestId, String risk, String action) {
         JWTClaimsSet.Builder claims = common(audience, requestId)
                 .subject(user.sub())
                 .claim("usr", user.username())
@@ -52,8 +61,21 @@ public final class InternalTokenIssuer {
                 .claim("azp", user.client());
         if (tool != null) {
             claims.claim("tool", tool);
+            if (fits(risk, action)) {
+                claims.claim("mcp_risk", risk).claim("mcp_action", action);
+            }
         }
         return sign(claims.build());
+    }
+
+    /** READ_ONLY with read, UPDATE with update or admin, DESTRUCTIVE with delete or admin (CC-207). */
+    private static boolean fits(String risk, String action) {
+        return risk != null && action != null && switch (risk) {
+            case "READ_ONLY" -> "read".equals(action);
+            case "UPDATE" -> "update".equals(action) || "admin".equals(action);
+            case "DESTRUCTIVE" -> "delete".equals(action) || "admin".equals(action);
+            default -> false;
+        };
     }
 
     /** Service variant (no user): C2 allows it for initialize, tools/list, ping, GET /mcp-manifest and GET /v1/systems. */

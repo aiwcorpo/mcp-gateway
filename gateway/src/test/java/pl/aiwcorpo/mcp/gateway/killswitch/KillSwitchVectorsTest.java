@@ -23,7 +23,7 @@ import tools.jackson.databind.JsonNode;
  */
 class KillSwitchVectorsTest {
 
-    private static final Set<String> HANDLED_HERE = Set.of("call", "confirm", "list");
+    private static final Set<String> HANDLED_HERE = Set.of("call", "confirm", "list", "catalog");
 
     private static KillSwitches switchesOf(JsonNode input, boolean readable) {
         List<KillSwitchStore.Entry> entries = new ArrayList<>();
@@ -40,7 +40,7 @@ class KillSwitchVectorsTest {
     @TestFactory
     List<DynamicTest> callsConfirmationsAndLists() {
         List<Vectors.Vector> vectors = Vectors.of("kill-switch");
-        assertThat(vectors).hasSize(17);
+        assertThat(vectors).hasSize(18);
         List<DynamicTest> tests = new ArrayList<>();
         for (Vectors.Vector vector : vectors) {
             String event = vector.document().path("input").path("event").asString();
@@ -62,6 +62,11 @@ class KillSwitchVectorsTest {
         int separator = qualified.indexOf("__");
         String serverId = "mcp-" + qualified.substring(0, separator);
         String tool = qualified.substring(separator + 2);
+        if ("catalog".equals(input.path("event").asString())) {
+            // The catalog answers 503 with Retry-After exactly when the switches cannot be read (CC-224), see AdminApiTest.
+            assertThat(!switches.readable()).isEqualTo(expected.path("status").asInt() == 503);
+            return;
+        }
         if ("list".equals(input.path("event").asString())) {
             boolean listed = readable && switches.status(serverId, tool) == KillSwitches.Status.OFF;
             assertThat(listed).as(vector.path("description").asString()).isEqualTo(expected.path("listed").asBoolean());
@@ -81,6 +86,6 @@ class KillSwitchVectorsTest {
         Set<String> events = new TreeSet<>();
         Vectors.of("kill-switch").forEach(v -> events.add(v.document().path("input").path("event").asString()));
         return List.of(DynamicTest.dynamicTest("events of the vectors", () ->
-                assertThat(events).containsExactlyInAnyOrder("call", "confirm", "list", "approve", "register", "lift-tool", "lift-server")));
+                assertThat(events).containsExactlyInAnyOrder("call", "confirm", "list", "approve", "register", "lift-tool", "lift-server", "catalog")));
     }
 }

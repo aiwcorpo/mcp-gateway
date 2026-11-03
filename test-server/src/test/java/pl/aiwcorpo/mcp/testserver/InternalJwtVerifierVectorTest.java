@@ -65,7 +65,8 @@ class InternalJwtVerifierVectorTest {
         Clock clock = Clock.fixed(Instant.parse(verifier.get("now").asString()), ZoneOffset.UTC);
         InternalJwtVerifier subject = new InternalJwtVerifier(verifier.get("issuer").asString(),
                 verifier.get("audience").asString(), verifier.path("allowTestKeys").asBoolean(false),
-                verifier.path("devstackProfile").asBoolean(false), jwks::getKeyByKeyId, clock);
+                verifier.path("devstackProfile").asBoolean(false), jwks::getKeyByKeyId, clock)
+                .asAdapterReceiver("adapter".equals(verifier.path("receiverMode").asString("native")));
         for (JsonNode jti : verifier.path("seenJtis")) {
             subject.markSeen(jti.asString(), Long.MAX_VALUE / 2);
         }

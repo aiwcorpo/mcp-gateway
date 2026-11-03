@@ -68,7 +68,18 @@ public final class TestMcpServer implements AutoCloseable {
     }
 
     public record Config(String serverId, String path, String issuer, boolean allowTestKeys, boolean devstackProfile, URI jiraUrl,
-                         InternalJwtVerifier.KeySource keys) {
+                         InternalJwtVerifier.KeySource keys, boolean adapterReceiver) {
+        /** A native server: the claims of the classification of an adapter are refused. */
+        public Config(String serverId, String path, String issuer, boolean allowTestKeys, boolean devstackProfile, URI jiraUrl,
+                      InternalJwtVerifier.KeySource keys) {
+            this(serverId, path, issuer, allowTestKeys, devstackProfile, jiraUrl, keys, false);
+        }
+
+        /** The sidecar of an adapter in front of a foreign server: takes mcp_risk and mcp_action and refuses a call without them. */
+        public Config asAdapter() {
+            return new Config(serverId, path, issuer, allowTestKeys, devstackProfile, jiraUrl, keys, true);
+        }
+
         public Config(String serverId, String path, String issuer, boolean allowTestKeys, URI jiraUrl,
                       InternalJwtVerifier.KeySource keys) {
             this(serverId, path, issuer, allowTestKeys, false, jiraUrl, keys);
@@ -88,7 +99,7 @@ public final class TestMcpServer implements AutoCloseable {
     public TestMcpServer(Config config, SSLContext sslContext, InetSocketAddress address) throws IOException {
         this.config = Objects.requireNonNull(config);
         this.verifier = new InternalJwtVerifier(config.issuer(), config.serverId(), config.allowTestKeys(),
-                config.devstackProfile(), config.keys(), java.time.Clock.systemUTC());
+                config.devstackProfile(), config.keys(), java.time.Clock.systemUTC()).asAdapterReceiver(config.adapterReceiver());
         this.jira = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3))
                 .followRedirects(HttpClient.Redirect.NEVER).build();
         this.server = HttpsServer.create(address, 0);

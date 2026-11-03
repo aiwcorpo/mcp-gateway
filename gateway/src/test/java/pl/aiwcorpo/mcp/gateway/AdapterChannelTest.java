@@ -161,6 +161,9 @@ class AdapterChannelTest extends GatewayTestBase {
         HttpResponse<String> inconsistent = asAdmin("POST", approve, "{\"definitionHash\":\"" + hash + "\",\"risk\":\"READ_ONLY\",\"action\":\"delete\"}");
         assertThat(inconsistent.statusCode()).isEqualTo(422);
         assertThat(JSON.readTree(inconsistent.body()).path("reason").asString()).isEqualTo("classification_inconsistent");
+        HttpResponse<String> writes = asAdmin("POST", approve, "{\"definitionHash\":\"" + hash + "\",\"risk\":\"UPDATE\",\"action\":\"update\"}");
+        assertThat(writes.statusCode()).as("a tool of an adapter is read only (CC-227)").isEqualTo(422);
+        assertThat(JSON.readTree(writes.body()).path("reason").asString()).isEqualTo("classification_not_allowed");
         assertThat(asAdmin("POST", approve, "{\"definitionHash\":\"" + hash + "\",\"risk\":\"BOGUS\",\"action\":\"read\"}").statusCode()).isEqualTo(400);
 
         HttpResponse<String> approved = asAdmin("POST", approve, "{\"definitionHash\":\"" + hash + "\",\"risk\":\"READ_ONLY\",\"action\":\"read\"}");
@@ -181,6 +184,10 @@ class AdapterChannelTest extends GatewayTestBase {
                 "{\"name\":\"opensearch__get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}"));
         assertThat(served.has("error")).as(served.toString()).isFalse();
         assertThat(env.opensearch.requests()).anyMatch(r -> "tools/call".equals(r.rpcMethod()) && "get_issue".equals(r.toolName()));
+        JsonNode token = claims(env.opensearch.requests().stream().filter(r -> "tools/call".equals(r.rpcMethod()) && "get_issue".equals(r.toolName()))
+                .reduce((a, b) -> b).orElseThrow().header("authorization"));
+        assertThat(token.path("mcp_risk").asString()).as("the classification of the administrator, for the sidecar").isEqualTo("READ_ONLY");
+        assertThat(token.path("mcp_action").asString()).isEqualTo("read");
 
         HttpResponse<String> again = submit(env.adapterOpensearchTls, PATH, manifest);
         assertThat(again.statusCode()).isEqualTo(200);

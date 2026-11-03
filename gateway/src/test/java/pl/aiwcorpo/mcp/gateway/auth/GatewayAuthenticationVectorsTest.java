@@ -31,7 +31,7 @@ class GatewayAuthenticationVectorsTest {
     @TestFactory
     List<DynamicTest> everyVector() {
         List<Vectors.Vector> vectors = Vectors.of("gateway-authentication");
-        assertThat(vectors).hasSize(20);
+        assertThat(vectors).hasSize(21);
         return vectors.stream().map(v -> DynamicTest.dynamicTest(v.name(), () -> check(v.document()))).toList();
     }
 
@@ -55,7 +55,7 @@ class GatewayAuthenticationVectorsTest {
             response.setStatus(refused.getStatusCode().value());
             refused.getHeaders().forEach((name, values) -> response.setHeader(name, values.getFirst()));
             response.getWriter().write(refused.getBody());
-        } else if ("overloaded".equals(input.path("reason").asString())) {
+        } else if ("overloaded".equals(input.path("reason").asString()) || "streams_limit_reached".equals(input.path("reason").asString())) {
             write(response, RateLimitResponse.overloaded("0192d1b2-7c3a-7d4e-8f10-2a3b4c5d6e7f", 2));
         } else if ("session_store_unavailable".equals(input.path("reason").asString())) {
             write(response, RateLimitResponse.sessionStoreUnavailable("0192d1b2-7c3a-7d4e-8f10-2a3b4c5d6e7f", 10));

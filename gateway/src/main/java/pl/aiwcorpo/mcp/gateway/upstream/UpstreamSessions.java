@@ -63,13 +63,20 @@ public class UpstreamSessions {
      */
     public JsonNode call(McpServer server, String conversationKey, GatewayUser user, String requestId, ObjectNode message,
                          String tool, Credential credential, boolean repeatable) throws UpstreamException {
+        return call(server, conversationKey, user, requestId, message, tool, credential, repeatable, null, null);
+    }
+
+    /** {@code risk} and {@code action}: the classification of a tool of an adapter, put into the token of the call only for a server in adapter mode (CC-226). */
+    public JsonNode call(McpServer server, String conversationKey, GatewayUser user, String requestId, ObjectNode message,
+                         String tool, Credential credential, boolean repeatable, String risk, String action) throws UpstreamException {
         sweep();
         StreamableHttpClient client = client(server);
         String key = key(server, conversationKey);
         for (int attempt = 0; attempt < 2; attempt++) {
             Session session = ensure(server, client, key, user, requestId);
             UpstreamResponse response = client.post(new UpstreamRequest(
-                    tokens.forUser(server.serverId(), user, tool, requestId), requestId, session.sessionId(),
+                    tokens.forUser(server.serverId(), user, tool, requestId, server.adapter() ? risk : null,
+                            server.adapter() ? action : null), requestId, session.sessionId(),
                     session.protocolVersion(), credential, json.writeValueAsString(message)), message.get("id"));
             if (response.status() == 404 && session.sessionId() != null) {
                 sessions.remove(key, session);

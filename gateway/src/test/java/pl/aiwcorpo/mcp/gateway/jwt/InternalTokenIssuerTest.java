@@ -50,6 +50,30 @@ class InternalTokenIssuerTest {
     }
 
     @Test
+    void theClassificationOfAnAdapterToolTravelsAsAPairThatFitsAndOnlyWithATool() throws Exception {
+        String rid = UuidV7.next();
+        String token = issuer.forUser("mcp-opensearch", alice, "get_issue", rid, "READ_ONLY", "read");
+        JsonNode claims = claims(token);
+        assertThat(claims.path("mcp_risk").asString()).isEqualTo("READ_ONLY");
+        assertThat(claims.path("mcp_action").asString()).isEqualTo("read");
+        assertThat(Contracts.schemaErrors("schemas/internal-jwt.schema.json", claims)).isEmpty();
+        assertThat(receiver("mcp-opensearch").asAdapterReceiver(true).verify("Bearer " + token, rid,
+                InternalJwtVerifier.RequestRule.forJsonRpc("tools/call", "get_issue")).reason()).isNull();
+        assertThat(receiver("mcp-opensearch").verify("Bearer " + token, rid,
+                InternalJwtVerifier.RequestRule.forJsonRpc("tools/call", "get_issue")).reason())
+                .as("a native server or the broker refuses them").isEqualTo("invalid_claims");
+
+        for (String[] left : new String[][] {{"READ_ONLY", "delete"}, {"UPDATE", "read"}, {"READ_ONLY", null}, {null, "read"}, {"BOGUS", "read"}}) {
+            JsonNode without = claims(issuer.forUser("mcp-opensearch", alice, "get_issue", UuidV7.next(), left[0], left[1]));
+            assertThat(without.has("mcp_risk") || without.has("mcp_action")).as(java.util.Arrays.toString(left)).isFalse();
+        }
+        JsonNode noTool = claims(issuer.forUser("mcp-opensearch", alice, null, UuidV7.next(), "READ_ONLY", "read"));
+        assertThat(noTool.has("mcp_risk") || noTool.has("mcp_action") || noTool.has("tool")).isFalse();
+        JsonNode plain = claims(issuer.forUser("mcp-jira", alice, "get_issue", UuidV7.next()));
+        assertThat(plain.has("mcp_risk")).isFalse();
+    }
+
+    @Test
     void noTokenCarriesTheRemovedLinkClaims() throws Exception {
         String rid = UuidV7.next();
         JsonNode claims = claims(issuer.forUser("mcp-jira", alice, "get_issue", rid));

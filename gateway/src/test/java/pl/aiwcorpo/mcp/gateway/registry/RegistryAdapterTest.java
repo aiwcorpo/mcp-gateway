@@ -105,7 +105,7 @@ class RegistryAdapterTest extends GatewayTestBase {
 
     @Test
     void aSubmissionApprovesNothingNotEvenAToolThatLooksLikeARead(CapturedOutput output) {
-        ObjectNode manifest = adapterManifest("0.3.0", Tool.readOnly("get_issue"), Tool.update("update_issue"));
+        ObjectNode manifest = adapterManifest("0.3.0", Tool.readOnly("get_issue"), Tool.readOnly("update_issue"));
 
         Result.Accepted accepted = submit(manifest);
 
@@ -126,7 +126,7 @@ class RegistryAdapterTest extends GatewayTestBase {
 
     @Test
     void theAdministratorClassifiesWhenApprovingAndTheHashDoesNotCoverTheClassification(CapturedOutput output) {
-        ObjectNode manifest = adapterManifest("0.3.0", Tool.update("update_issue"));
+        ObjectNode manifest = adapterManifest("0.3.0", Tool.readOnly("update_issue"));
         submit(manifest);
         String hash = hash(manifest, "update_issue");
 
@@ -137,33 +137,40 @@ class RegistryAdapterTest extends GatewayTestBase {
         assertThat(adapterService.approve(requestId, SERVER, "update_issue", hash, false, new Classification("READ_ONLY", "delete"), admin()))
                 .isInstanceOfSatisfying(Approval.Rejected.class, r -> assertThat(r.reason()).isEqualTo("classification_inconsistent"));
 
-        assertThat(adapterService.approve(requestId, SERVER, "update_issue", hash, false, new Classification("UPDATE", "update"), admin()))
+        for (Classification writes : List.of(new Classification("UPDATE", "update"), new Classification("UPDATE", "admin"),
+                new Classification("DESTRUCTIVE", "delete"))) {
+            assertThat(adapterService.approve(requestId, SERVER, "update_issue", hash, false, writes, admin()))
+                    .as("a tool of an adapter is read only (CC-227)")
+                    .isInstanceOfSatisfying(Approval.Rejected.class, r -> assertThat(r.reason()).isEqualTo("classification_not_allowed"));
+        }
+
+        assertThat(adapterService.approve(requestId, SERVER, "update_issue", hash, false, new Classification("READ_ONLY", "read"), admin()))
                 .isEqualTo(new Approval.Approved(-1));
 
         RegisteredTool.Approved approved = tool("update_issue").approved();
-        assertThat(approved.entry().path("risk").asString()).isEqualTo("UPDATE");
-        assertThat(approved.entry().path("action").asString()).isEqualTo("update");
+        assertThat(approved.entry().path("risk").asString()).isEqualTo("READ_ONLY");
+        assertThat(approved.entry().path("action").asString()).isEqualTo("read");
         assertThat(approved.classifiedBy()).isEqualTo(ADMIN_SUB);
         assertThat(approved.classifiedAt()).isNotNull();
         assertThat(approved.hash()).as("the classification is outside the hash").isEqualTo(hash);
         McpServer server = adapterServers.find(SERVER).orElseThrow();
-        assertThat(server.tools().get("update_issue").risk().name()).isEqualTo("UPDATE");
+        assertThat(server.tools().get("update_issue").risk().name()).isEqualTo("READ_ONLY");
         JsonNode event = auditEvents(output, requestId).stream().filter(e -> "definition_approved".equals(e.path("reason").asString())).findFirst().orElseThrow();
-        assertThat(event.path("risk").asString()).isEqualTo("UPDATE");
-        assertThat(event.path("action").asString()).isEqualTo("update");
+        assertThat(event.path("risk").asString()).isEqualTo("READ_ONLY");
+        assertThat(event.path("action").asString()).isEqualTo("read");
         assertThat(event.path("sub").asString()).isEqualTo(ADMIN_SUB);
         assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", event)).isEmpty();
-        assertThat(new DefinitionCheck(JSON).intact(server, server.tools().get("update_issue"), Manifests.definition(Tool.update("update_issue"))))
+        assertThat(new DefinitionCheck(JSON).intact(server, server.tools().get("update_issue"), Manifests.definition(Tool.readOnly("update_issue"))))
                 .as("the live definition is compared with a hash that has no risk and no action").isTrue();
     }
 
     @Test
     void aClassifiedToolKeepsItsClassificationWhenTheSameManifestComesAgain() {
-        ObjectNode manifest = adapterManifest("0.3.0", Tool.update("update_issue"));
+        ObjectNode manifest = adapterManifest("0.3.0", Tool.readOnly("update_issue"));
         submit(manifest);
-        adapterService.approve(requestId, SERVER, "update_issue", hash(manifest, "update_issue"), false, new Classification("UPDATE", "update"), admin());
+        adapterService.approve(requestId, SERVER, "update_issue", hash(manifest, "update_issue"), false, new Classification("READ_ONLY", "read"), admin());
 
-        submit(adapterManifest("0.3.1", Tool.update("update_issue")));
+        submit(adapterManifest("0.3.1", Tool.readOnly("update_issue")));
 
         assertThat(tool("update_issue").pending()).isNull();
         assertThat(tool("update_issue").approved().classifiedBy()).isEqualTo(ADMIN_SUB);
@@ -172,29 +179,33 @@ class RegistryAdapterTest extends GatewayTestBase {
 
     @Test
     void aChangedDefinitionIsPendingAgainAndTheEarlierClassificationIsOnlyASuggestion() {
-        ObjectNode first = adapterManifest("0.3.0", Tool.update("update_issue"));
+        ObjectNode first = adapterManifest("0.3.0", Tool.readOnly("update_issue"));
         submit(first);
-        adapterService.approve(requestId, SERVER, "update_issue", hash(first, "update_issue"), false, new Classification("UPDATE", "update"), admin());
+        adapterService.approve(requestId, SERVER, "update_issue", hash(first, "update_issue"), false, new Classification("READ_ONLY", "read"), admin());
 
-        ObjectNode changed = adapterManifest("0.4.0", Tool.update("update_issue").described("Changes the issue and more."));
+        ObjectNode changed = adapterManifest("0.4.0", Tool.readOnly("update_issue").described("Changes the issue and more."));
         submit(changed);
 
         RegisteredTool current = tool("update_issue");
         assertThat(current.pending().change()).isEqualTo("changed");
         assertThat(current.pending().entry().has("risk")).as("the suggestion is in the approved entry, not applied").isFalse();
-        assertThat(current.approved().entry().path("risk").asString()).isEqualTo("UPDATE");
+        assertThat(current.approved().entry().path("risk").asString()).isEqualTo("READ_ONLY");
         assertThat(adapterService.approve(requestId, SERVER, "update_issue", hash(changed, "update_issue"), false, admin()))
                 .isInstanceOfSatisfying(Approval.Rejected.class, r -> assertThat(r.reason()).isEqualTo("classification_required"));
     }
 
+    /** What the migration V10 leaves for a classification UPDATE of an earlier version: the floor of the risk (ordinal 1). */
+    private void voidedUpdateClassification(String tool) {
+        jdbc.sql("INSERT INTO registry_risk_floor (server_id, tool, risk) VALUES (?, ?, 1) ON CONFLICT (server_id, tool) DO UPDATE SET risk = 1")
+                .params(SERVER, tool).update();
+    }
+
     @Test
-    void aLowerClassificationThanBeforeNeedsTheFlag(CapturedOutput output) {
-        ObjectNode first = adapterManifest("0.3.0", Tool.update("update_issue"));
-        submit(first);
-        adapterService.approve(requestId, SERVER, "update_issue", hash(first, "update_issue"), false, new Classification("UPDATE", "update"), admin());
-        ObjectNode changed = adapterManifest("0.4.0", Tool.update("update_issue").described("Now only reads."));
-        submit(changed);
-        String hash = hash(changed, "update_issue");
+    void aVoidedClassificationStaysTheFloorSoReadOnlyIsALowering(CapturedOutput output) {
+        ObjectNode manifest = adapterManifest("0.3.0", Tool.readOnly("update_issue"));
+        submit(manifest);
+        voidedUpdateClassification("update_issue");
+        String hash = hash(manifest, "update_issue");
 
         assertThat(adapterService.approve(requestId, SERVER, "update_issue", hash, false, new Classification("READ_ONLY", "read"), admin()))
                 .isInstanceOf(Approval.RiskLowered.class);
@@ -207,14 +218,49 @@ class RegistryAdapterTest extends GatewayTestBase {
     }
 
     @Test
+    void theMigrationVoidsAStoredWriteClassificationAndKeepsTheFloor(@Autowired javax.sql.DataSource dataSource) throws Exception {
+        ObjectNode manifest = adapterManifest("0.3.0", Tool.readOnly("update_issue"), Tool.readOnly("get_issue"));
+        submit(manifest);
+        // The state an earlier version could leave: UPDATE and READ_ONLY classifications of an adapter, approved.
+        for (String name : List.of("update_issue", "get_issue")) {
+            ObjectNode entry = ((ObjectNode) Manifests.tool(manifest, name)).deepCopy();
+            entry.put("risk", "update_issue".equals(name) ? "UPDATE" : "READ_ONLY");
+            entry.put("action", "update_issue".equals(name) ? "update" : "read");
+            store.locked(SERVER, tx -> {
+                tx.saveTool(new RegisteredTool(name, new RegisteredTool.Approved(entry, hash(manifest, name), "0.3.0", tool(name).pending().credentialJson(),
+                        "old-admin", java.time.Instant.now()), null));
+                return null;
+            });
+        }
+        voidedUpdateClassification("update_issue");
+
+        try (java.sql.Connection connection = dataSource.getConnection()) {
+            org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,
+                    new org.springframework.core.io.ClassPathResource("db/migration/V10__adapter_read_only.sql"));
+        }
+        adapterService.reloadChanged();
+
+        RegisteredTool voided = tool("update_issue");
+        assertThat(voided.approved()).isNull();
+        assertThat(voided.pending().source()).isEqualTo("adapter");
+        assertThat(voided.pending().hash()).isEqualTo(hash(manifest, "update_issue"));
+        assertThat(voided.pending().entry().has("risk")).isFalse();
+        assertThat(store.floors(SERVER)).containsEntry("update_issue", 1);
+        assertThat(tool("get_issue").approved().entry().path("risk").asString()).as("a read stays classified").isEqualTo("READ_ONLY");
+        assertThat(adapterServers.find(SERVER).orElseThrow().tools()).containsOnlyKeys("get_issue");
+        assertThat(adapterService.approve(requestId, SERVER, "update_issue", hash(manifest, "update_issue"), false,
+                new Classification("READ_ONLY", "read"), admin())).isInstanceOf(Approval.RiskLowered.class);
+    }
+
+    @Test
     void aToolThatLeavesTheManifestLosesItsClassificationAndComesBackNewAndUnclassified() {
-        ObjectNode both = adapterManifest("0.3.0", Tool.update("update_issue"), Tool.readOnly("get_issue"));
+        ObjectNode both = adapterManifest("0.3.0", Tool.readOnly("update_issue"), Tool.readOnly("get_issue"));
         submit(both);
-        adapterService.approve(requestId, SERVER, "update_issue", hash(both, "update_issue"), false, new Classification("UPDATE", "update"), admin());
+        adapterService.approve(requestId, SERVER, "update_issue", hash(both, "update_issue"), false, new Classification("READ_ONLY", "read"), admin());
 
         submit(adapterManifest("0.4.0", Tool.readOnly("get_issue")));
         assertThat(tool("update_issue")).isNull();
-        assertThat(store.floors(SERVER)).as("the floor of the risk stays").containsEntry("update_issue", 1);
+        assertThat(store.floors(SERVER)).as("the floor of the risk stays").containsKey("update_issue");
 
         submit(both);
         RegisteredTool back = tool("update_issue");
@@ -224,16 +270,16 @@ class RegistryAdapterTest extends GatewayTestBase {
     }
 
     @Test
-    void aToolRemovedAndReturnedCannotBeClassifiedLowerWithoutTheFlag() {
-        ObjectNode both = adapterManifest("0.3.0", Tool.update("update_issue"), Tool.readOnly("get_issue"));
+    void aToolRemovedAndReturnedKeepsTheFloorOfItsVoidedClassification() {
+        ObjectNode both = adapterManifest("0.3.0", Tool.readOnly("update_issue"), Tool.readOnly("get_issue"));
         submit(both);
-        adapterService.approve(requestId, SERVER, "update_issue", hash(both, "update_issue"), false, new Classification("UPDATE", "update"), admin());
+        voidedUpdateClassification("update_issue");
         submit(adapterManifest("0.4.0", Tool.readOnly("get_issue")));
         submit(both);
         String hash = hash(both, "update_issue");
 
         assertThat(adapterService.approve(requestId, SERVER, "update_issue", hash, false, new Classification("READ_ONLY", "read"), admin()))
-                .as("the floor of the risk outlives the classification (CC-167)").isInstanceOf(Approval.RiskLowered.class);
+                .as("the floor of the risk outlives the tool (CC-167)").isInstanceOf(Approval.RiskLowered.class);
         assertThat(adapterService.approve(requestId, SERVER, "update_issue", hash, true, new Classification("READ_ONLY", "read"), admin()))
                 .isEqualTo(new Approval.Approved(0));
     }
@@ -253,19 +299,19 @@ class RegistryAdapterTest extends GatewayTestBase {
 
     @Test
     void aRunningServerInAdapterModeLeavesAnEntryOfTheAdapter() {
-        ObjectNode manifest = adapterManifest("0.3.0", Tool.update("update_issue"));
+        ObjectNode manifest = adapterManifest("0.3.0", Tool.readOnly("update_issue"));
         submit(manifest);
-        adapterService.approve(requestId, SERVER, "update_issue", hash(manifest, "update_issue"), false, new Classification("UPDATE", "update"), admin());
+        adapterService.approve(requestId, SERVER, "update_issue", hash(manifest, "update_issue"), false, new Classification("READ_ONLY", "read"), admin());
         McpServer server = adapterServers.find(SERVER).orElseThrow();
 
         Map<String, pl.aiwcorpo.mcp.gateway.registry.DefinitionGuard.Verdict> verdicts = adapterService.observe(server,
-                Map.of("update_issue", Manifests.definition(Tool.update("update_issue").described("Drifted."))), "9.9.9");
+                Map.of("update_issue", Manifests.definition(Tool.readOnly("update_issue").described("Drifted."))), "9.9.9");
 
         assertThat(verdicts.get("update_issue")).isEqualTo(DefinitionGuard.Verdict.CHANGED);
         RegisteredTool.Pending pending = tool("update_issue").pending();
         assertThat(pending.source()).as("never server for an adapter").isEqualTo("adapter");
         assertThat(pending.entry().has("risk")).isFalse();
-        assertThat(tool("update_issue").approved().entry().path("risk").asString()).as("the old classification stays as it was").isEqualTo("UPDATE");
+        assertThat(tool("update_issue").approved().entry().path("risk").asString()).as("the old classification stays as it was").isEqualTo("READ_ONLY");
     }
 
     // --- the vectors -----------------------------------------------------------------------------------------
@@ -323,13 +369,11 @@ class RegistryAdapterTest extends GatewayTestBase {
                 ObjectNode baseline = Manifests.adapter(SERVER, "jira", "0.1.0", before.toArray(new Tool[0]));
                 assertThat(adapterService.submitAdapter(requestId, SERVER, baseline)).isInstanceOf(Result.Accepted.class);
                 for (Tool tool : before) {
-                    Classification classification = new Classification(tool.risk(), switch (tool.risk()) {
-                        case "READ_ONLY" -> "read";
-                        case "UPDATE" -> "update";
-                        default -> "delete";
-                    });
-                    assertThat(adapterService.approve(requestId, SERVER, tool.name(), hash(baseline, tool.name()), false, classification, admin()))
-                            .isInstanceOf(Approval.Approved.class);
+                    if (!"READ_ONLY".equals(tool.risk())) {
+                        continue; // an adapter has no write classification (CC-227): such a tool stays pending
+                    }
+                    assertThat(adapterService.approve(requestId, SERVER, tool.name(), hash(baseline, tool.name()), false,
+                            new Classification("READ_ONLY", "read"), admin())).isInstanceOf(Approval.Approved.class);
                 }
             } else {
                 ObjectNode baseline = Manifests.jira("0.1.0", before.toArray(new Tool[0]));
@@ -385,7 +429,7 @@ class RegistryAdapterTest extends GatewayTestBase {
         if (adapterMode) {
             ObjectNode baseline = Manifests.adapter(SERVER, "jira", "0.1.0", tool);
             adapterService.submitAdapter(requestId, SERVER, baseline);
-            adapterService.approve(requestId, SERVER, tool.name(), hash(baseline, tool.name()), false, new Classification("UPDATE", "update"), admin());
+            adapterService.approve(requestId, SERVER, tool.name(), hash(baseline, tool.name()), false, new Classification("READ_ONLY", "read"), admin());
         } else {
             ObjectNode baseline = Manifests.jira("0.1.0", tool);
             starterService.register(requestId, SERVER, baseline, "ci");
@@ -408,7 +452,7 @@ class RegistryAdapterTest extends GatewayTestBase {
     @TestFactory
     List<DynamicTest> theApprovalsOfTheVectors() {
         List<Vectors.Vector> vectors = Vectors.of("registry-approval");
-        assertThat(vectors).hasSize(13);
+        assertThat(vectors).hasSize(20);
         List<DynamicTest> tests = new ArrayList<>();
         for (Vectors.Vector vector : vectors) {
             if (vector.document().path("input").has("entry")) {
@@ -418,7 +462,7 @@ class RegistryAdapterTest extends GatewayTestBase {
                 }));
             }
         }
-        assertThat(tests).hasSize(11);
+        assertThat(tests).hasSize(17);
         return tests;
     }
 
@@ -435,13 +479,17 @@ class RegistryAdapterTest extends GatewayTestBase {
         if ("adapter".equals(source)) {
             // A classification given earlier is the floor: classified once, then the definition changes and is pending again.
             String floor = input.path("floor").asString(null);
-            ObjectNode manifest = adapterManifest("0.1.0", Tool.update("update_issue"));
+            ObjectNode manifest = adapterManifest("0.1.0", Tool.readOnly("update_issue"));
             submit(manifest);
             if (floor != null) {
-                adapterService.approve(requestId, SERVER, "update_issue", hash(manifest, "update_issue"), false,
-                        new Classification(floor, "READ_ONLY".equals(floor) ? "read" : "UPDATE".equals(floor) ? "update" : "delete"), admin());
-                manifest = adapterManifest("0.2.0", Tool.update("update_issue").described("Changed."));
-                submit(manifest);
+                // The classification of the floor was stored by an earlier version and voided (CC-227): what is left is the floor.
+                int ordinal = switch (floor) {
+                    case "READ_ONLY" -> 0;
+                    case "UPDATE" -> 1;
+                    default -> 2;
+                };
+                jdbc.sql("INSERT INTO registry_risk_floor (server_id, tool, risk) VALUES (?, ?, ?) ON CONFLICT (server_id, tool) DO UPDATE SET risk = EXCLUDED.risk")
+                        .params(SERVER, "update_issue", ordinal).update();
             }
             hash = hash(manifest, "update_issue");
             answer = adapterService.approve(requestId, SERVER, "update_issue", hash, accept, classification, admin());

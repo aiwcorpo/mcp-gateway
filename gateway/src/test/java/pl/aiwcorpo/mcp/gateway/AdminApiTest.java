@@ -206,4 +206,21 @@ class AdminApiTest extends GatewayTestBase {
         }
         throw new AssertionError("no tool " + name + " in " + server);
     }
+
+    @Test
+    void theCatalogIsA503WhenTheSwitchesCannotBeRead() throws Exception {
+        pl.aiwcorpo.mcp.gateway.admin.AdminController controller = new pl.aiwcorpo.mcp.gateway.admin.AdminController(
+                org.mockito.Mockito.mock(pl.aiwcorpo.mcp.gateway.server.ServerRegistry.class),
+                org.mockito.Mockito.mock(pl.aiwcorpo.mcp.gateway.authz.ToolAuthorizer.class), JSON, "mcp-gateway",
+                org.mockito.Mockito.mock(pl.aiwcorpo.mcp.gateway.registry.DefinitionGuard.class),
+                org.mockito.Mockito.mock(pl.aiwcorpo.mcp.gateway.killswitch.KillSwitches.class));
+        org.springframework.security.oauth2.jwt.Jwt token = org.springframework.security.oauth2.jwt.Jwt.withTokenValue("t").header("alg", "none")
+                .subject("s").claim("groups", List.of()).issuedAt(java.time.Instant.now()).expiresAt(java.time.Instant.now().plusSeconds(60)).build();
+
+        var answer = controller.catalog(token, new org.springframework.mock.web.MockHttpServletRequest());
+
+        assertThat(answer.getStatusCode().value()).isEqualTo(503);
+        assertThat(answer.getHeaders().getFirst("Retry-After")).isEqualTo("10");
+        assertThat(JSON.readTree(answer.getBody()).path("error").asString()).isEqualTo("upstream_unavailable");
+    }
 }

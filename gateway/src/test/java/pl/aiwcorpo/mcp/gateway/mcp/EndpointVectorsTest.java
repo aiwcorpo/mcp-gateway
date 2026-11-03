@@ -264,7 +264,7 @@ class EndpointVectorsTest {
             case "empty-string" -> "";
             default -> cursor;
         };
-        if ("not-a-string".equals(input.path("mutation").asString())) {
+        if ("not-a-string".equals(input.path("mutation").asString()) || "null".equals(input.path("mutation").asString())) {
             assertThat(expected.path("valid").asBoolean()).isFalse();
             return;
         }

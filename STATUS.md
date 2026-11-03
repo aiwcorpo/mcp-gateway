@@ -1,6 +1,6 @@
 # Status ws-05 (mcp-gateway)
 
-Kamień: **M6, etap 3** (2026-11-03) na kontraktach `mcp-contracts` **6.2.0**, kod na gałęzi `main` (sekcja "M6 etap 3" niżej; wiersze M5 o `listChanged: false`, `GET` 405 i powodzie `not_granted` dla `forbid` są nią zastąpione).
+Kamień: **M6, etap 3** (2026-11-03) na kontraktach `mcp-contracts` **6.3.2**, kod na gałęzi `main` (sekcja "M6 etap 3" niżej; wiersze M5 o `listChanged: false`, `GET` 405 i powodzie `not_granted` dla `forbid` są nią zastąpione).
 Pod spodem M5 (fala z 2026-10-31). Pod spodem M4 i starsze (sekcje niżej, wiersze
 zastąpione w M5 są oznaczone). PoC `poc/mcp-query` był materiałem: klasa `ToolFilter`, trasa `/f/` i `access=write` jako READ_ONLY+UPDATE nie weszły,
 filtr to `EndpointFilter` z kontraktów.
@@ -30,6 +30,10 @@ Decyzje i granice tego etapu:
   L1 trasa systemu w trackerze, L2 zgubione wybudzenia (reorder, ponowienie po wyjątku, zmiana w trakcie liczenia odniesienia), L3 `listen` bez `toolsListChanged` nie liczy, L4 wiek kopii wyłączników od startu odczytu,
   L5 anulowane decyzje nie liczą się, L6 `ci.yml` z SHA i `permissions`, `ci/Dockerfile` po digeście (`imagetools inspect`, bez pobierania), L7 komentarz `put`, L8 README i test grup sesji.
   SHA akcji GitHub przepisane z `release.yml` brokera, nie sprawdzałem ich online.
+- **Kontrakty 6.3.2 (CC-223 ... CC-228).** Zależność 6.3.2. CC-227: `approve` adaptera tylko `READ_ONLY` (`classification_not_allowed`), migracja `V10` unieważnia zapisane klasyfikacje `UPDATE`/`DESTRUCTIVE`
+  (wpis do `pending_approval`, podłoga zostaje; test na kopii skryptu `RegistryAdapterTest`). CC-226: `mcp_risk` i `mcp_action` w JWT tylko dla serwera w trybie adaptera, tylko zgodna para, tylko z `tool`
+  (`InternalTokenIssuer`, test i `AdapterChannelTest`; `test-server` ma tryb odbiorcy adaptera i odrzuca claimy jako serwer natywny). CC-223 (wektor `streams-limit-reached`), CC-224 (katalog `503`, wektor `store-unreadable-catalog`),
+  CC-225 (`cursor: null`), CC-228 (README) zgodne z wektorami. Pytania 2 i 3 z poprzedniego raportu są tym samym rozstrzygnięte kontraktem.
 - **Limit strumieni (decyzja człowieka 2026-11-03) i przegląd bezpieczeństwa strumienia.** `MCP_MAX_OPEN_STREAMS` (2000 na instancję, `GET` sesji i `subscriptions/listen` razem, bez limitu na użytkownika);
   powyżej `503` z `Retry-After` (`MCP_SHED_RETRY_AFTER_SECONDS`) i tym samym ciałem co przeciążenie z CC-199, metryka `mcp_gateway_streams_refused_total` (`StreamLimitTest`, `ToolStreamsTest`).
   Otwarcie strumienia przechodzi przez `limitRequest` (limity użytkownika i klienta). Wpis strumienia jest zwalniany w `finally` (także gdy odpowiedź nie wystartuje); po zmianie przeliczenie listy

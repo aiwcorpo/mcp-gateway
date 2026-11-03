@@ -258,6 +258,10 @@ public final class RegistryService {
             if (fromAdapter && !classification.consistent()) {
                 return new Approval.Rejected("classification_inconsistent", classification.risk() + " does not fit the action " + classification.action());
             }
+            if (fromAdapter && !"READ_ONLY".equals(classification.risk())) {
+                // The adapter has no resource scope, so there is nothing to evaluate a write against: only reads are classified (CC-227).
+                return new Approval.Rejected("classification_not_allowed", "a tool of an adapter is classified READ_ONLY only");
+            }
             int risk = Risk.valueOf(fromAdapter ? classification.risk() : pending.entry().path("risk").asString()).ordinal();
             int configured = servers.configuredMinimumRisks(serverId).getOrDefault(tool, 0);
             int floor = Math.max(tx.floors().getOrDefault(tool, 0), current.approvedRisk());

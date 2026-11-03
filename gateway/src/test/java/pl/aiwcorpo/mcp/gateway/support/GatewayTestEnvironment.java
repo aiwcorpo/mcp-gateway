@@ -141,7 +141,7 @@ public final class GatewayTestEnvironment {
                 new InetSocketAddress("127.0.0.1", 0)).start();
 
         opensearch = new TestMcpServer(new TestMcpServer.Config("mcp-opensearch", "/mcp", "https://mcp-gateway.internal", false, null,
-                gatewayKeys), Tls.fromPkcs12(opensearchKeystore, pki.truststore(), TestPki.PASSWORD),
+                gatewayKeys).asAdapter(), Tls.fromPkcs12(opensearchKeystore, pki.truststore(), TestPki.PASSWORD),
                 new InetSocketAddress("127.0.0.1", 0)).start();
 
         String acl = redisAcl();

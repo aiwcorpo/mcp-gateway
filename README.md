@@ -13,7 +13,7 @@ Stan: kamień M6, etap 3 (wyłącznik awaryjny, kanał adaptera i klasyfikacja n
 sekcja "Co dochodzi w M6") na M5 (jeden adres `/mcp` z filtrem w query zamiast zapisanych linków, HA dwóch instancji, CI w `ci/run.sh`; sekcja "Co dochodzi w M5") na M4 (przypinanie definicji w rejestrze, offboarding, limity zapytań, typ poświadczenia w Cedar, tryb dev tylko ze
 stosem dev) na M3 (potwierdzenia TOTP akcji DESTRUCTIVE, Cedar z podpisanych paczek, `/activity/calls`), M2 (wirtualne serwery,
 API C5 dla BFF, jedna domena) i M1 (OAuth RS, broker, C2/C3, audyt). Co działa, czego nie ma i odstępstwa: [STATUS.md](STATUS.md).
-Kontrakty: `mcp-contracts` 6.2.0.
+Kontrakty: `mcp-contracts` 6.3.2.
 
 ## Instalacja i obsługa
 
@@ -49,7 +49,7 @@ polityka `noeviction`, `appendonly yes`), IdP z OIDC (Keycloak lub Entra), broke
   uruchomi się na bazie po V9 (ignoruje nowe migracje), ale **nie zna wyłączników awaryjnych**: stara instancja ich nie sprawdza, a `PUT`/`DELETE .../kill-switch` skierowane do niej dają `404`.
   Dlatego: (1) przy aktualizacji kroczącej nie wyłączaj niczego wyłącznikiem, dopóki wszystkie instancje nie są na M6 (w oknie wyłącznik działa tylko na nowych); (2) przed cofnięciem
   do M5 zdejmij ruch do serwerów z aktywnym wyłącznikiem (`MCP_SERVER_<SYSTEM>_ENABLED=false` w konfiguracji, albo nie cofaj), bo po cofnięciu wyłączniki przestają działać po cichu;
-  (3) serwer za adapterem (`source: adapter`, wpisy bez `risk`) stara wersja wyłączy (manifest nie przechodzi jej walidacji, fail-closed); stara wersja nie wstanie też z serwerem
+  (3) po aktualizacji do wersji z migracją V10 klasyfikacje `UPDATE`/`DESTRUCTIVE` adaptera tracą ważność (cofnięcie migracji nie jest możliwe: stara wersja nie zna adaptera); (4) serwer za adapterem (`source: adapter`, wpisy bez `risk`) stara wersja wyłączy (manifest nie przechodzi jej walidacji, fail-closed); stara wersja nie wstanie też z serwerem
   adaptera bez wpisów `tools` w konfiguracji.
 - *Wyłącznik awaryjny:* portal (administrator `mcp-platform-admin`) albo `PUT/DELETE /admin/v1/registry/servers/{serverId}[/tools/{tool}]/kill-switch`; lista `GET /admin/v1/kill-switches`;
   alert na zdarzenie `admin_change` z powodem `kill_switch_set` oraz na metrykę `mcp_gateway_kill_switches_unreadable` = 1.
@@ -428,8 +428,8 @@ konfiguracji zatrzymuje start.
   wpisy bez `risk` i `action`) przychodzi na `PUT /admin/v1/registry/adapters/{serverId}` z certyfikatem `mcp-adapter-<serverId>`; kolejność odpowiedzi: certyfikat (`403`), `serverId` ciała
   względem ścieżki (`400`), tryb i `source` (`422 adapter_mode_mismatch`, także dla pipeline'u na serwerze adaptera), kontrole każdego manifestu (`422`). Wywołanie niczego nie zatwierdza:
   każde nowe lub zmienione narzędzie jest `pending_approval` ze `source: adapter`, narzędzie nieobecne w manifeście jest usuwane razem z klasyfikacją i podłogą ryzyka. `approve`
-  przyjmuje `risk` i `action` (wymagane dla wpisu adaptera: `classification_required`, zabronione dla innych: `classification_not_allowed`, zgodne ze sobą: `classification_inconsistent`);
-  obniżenie klasyfikacji wymaga `acceptRiskLowering`; hash wpisu adaptera nie obejmuje `risk` ani `action`; zdarzenie `admin_change` niesie `risk` i `action`. Narzędzie bez klasyfikacji jest
+  przyjmuje `risk` i `action` (tylko `READ_ONLY` z `read`, CC-227: `UPDATE` i `DESTRUCTIVE` to `422 classification_not_allowed`; wymagane dla wpisu adaptera: `classification_required`, zabronione dla innych: `classification_not_allowed`, zgodne ze sobą: `classification_inconsistent`);
+  obniżenie klasyfikacji wymaga `acceptRiskLowering`; klasyfikacje `UPDATE` i `DESTRUCTIVE` zapisane przez wcześniejszą wersję traci ważność migracja `V10` (wpis wraca do `pending_approval`, ukryty jako `tool_disabled`, klasyfikacja zostaje podłogą, więc ponowne zatwierdzenie jako `READ_ONLY` to obniżenie z `acceptRiskLowering` i świeżym MFA); wywołanie narzędzia serwera adaptera niesie w wewnętrznym JWT claimy `mcp_risk` i `mcp_action` (CC-226; tylko dla serwera w trybie adaptera, tylko zgodna para i tylko z `tool`; serwer natywny i broker odrzucają je jako `invalid_claims`); hash wpisu adaptera nie obejmuje `risk` ani `action`; zdarzenie `admin_change` niesie `risk` i `action`. Narzędzie bez klasyfikacji jest
   oceniane jak najbardziej niebezpieczne (DESTRUCTIVE, `admin`), więc tylko użytkownik z takim prawem w ogóle widzi je jako `tool_disabled`. Różnica znaleziona przy odczycie działającego
   serwera adaptera to wpis `source: adapter`, nigdy `server`.
 - **Audyt i odpowiedzi.** Zakaz `forbid` na poziomie narzędzia to w audycie `policy_forbid` (klient: `not_found_or_denied`, wiersz aktywności: `denied_not_granted`); podsumowania
@@ -437,7 +437,7 @@ konfiguracji zatrzymuje start.
   (`MCP_SESSION_STORE_RETRY_AFTER_SECONDS`); `cursor: ""` w `tools/list` to `-32602`; claimy tokenu IdP spoza znanych (w tym `vs`, `vsc`) są ignorowane i nigdy nie trafiają do JWT C2;
   gateway nie ponawia sam `tools/call` o ryzyku `UPDATE` ani `DESTRUCTIVE` (po utracie sesji przez serwer klient dostaje `upstream_unavailable` i decyduje).
 - **Skala strumieni (pomiar w STATUS.md).** 2000 strumieni 500 tożsamości, 253 narzędzia, 12 rdzeni: powiadomienie o wyłączniku do wszystkich w 0,3 s, o zmianie jednego narzędzia w 0,7 s,
-  `tools/list` klienta w czasie burzy bez zmiany (ok. 140 ms). Nowa paczka polityk i otwarcie strumienia nowej tożsamości kosztują pełne przeliczenie (ok. 0,18 s na tożsamość, 5 tożsamości na sekundę),
+  `tools/list` klienta w czasie burzy bez zmiany (ok. 140 ms). Zmiana paczki polityk nie ma gwarancji 5 s dla `list_changed` (CC-228): nowa paczka i otwarcie strumienia nowej tożsamości kosztują pełne przeliczenie (ok. 0,18 s na tożsamość, 5 tożsamości na sekundę),
   więc dla polityk nie ma obietnicy 5 s przy setkach tożsamości.
 - **Koszt `tools/list`.** Decyzje Cedar o narzędziach jednego serwera liczą się równolegle (`ToolAccess`) i raz na narzędzie; 253 narzędzia: 883 ms po kolei, 162 ms równolegle
   na 12 rdzeniach, 493 ms na 2 rdzeniach (`ToolsListCostTest`). Jedna decyzja to ok. 3,4 ms, prawie w całości wywołanie natywnej biblioteki Cedar.

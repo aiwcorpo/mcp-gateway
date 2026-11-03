@@ -81,6 +81,7 @@ public final class InternalJwtVerifier {
     private final KeySource keys;
     private final Clock clock;
     private final Map<String, Long> seenJtis = new ConcurrentHashMap<>();
+    private volatile boolean adapterReceiver;
 
     public InternalJwtVerifier(String issuer, String audience, boolean allowTestKeys, KeySource keys, Clock clock) {
         this(issuer, audience, allowTestKeys, false, keys, clock);
@@ -95,6 +96,24 @@ public final class InternalJwtVerifier {
         this.devstackProfile = devstackProfile;
         this.keys = Objects.requireNonNull(keys);
         this.clock = Objects.requireNonNull(clock);
+    }
+
+    /**
+     * Only the sidecar of an adapter takes the claims {@code mcp_risk} and {@code mcp_action} (CC-226); a native server or the broker
+     * rejects them as invalid_claims. An adapter wants both, as a pair that fits, with a tool, and refuses a call without them.
+     */
+    public InternalJwtVerifier asAdapterReceiver(boolean adapter) {
+        this.adapterReceiver = adapter;
+        return this;
+    }
+
+    private static boolean pairFits(String risk, String action) {
+        return switch (risk) {
+            case "READ_ONLY" -> "read".equals(action);
+            case "UPDATE" -> "update".equals(action) || "admin".equals(action);
+            case "DESTRUCTIVE" -> "delete".equals(action) || "admin".equals(action);
+            default -> false;
+        };
     }
 
     /** Marks a jti as already used (vectors with {@code seenJtis}). */
@@ -150,6 +169,13 @@ public final class InternalJwtVerifier {
         if (!CLAIMS_SCHEMA.validate(claims).isEmpty()) {
             return Result.reject("invalid_claims");
         }
+        boolean risk = claims.has("mcp_risk");
+        boolean action = claims.has("mcp_action");
+        if (risk || action) {
+            if (!adapterReceiver || !(risk && action) || !claims.has("tool") || !pairFits(claims.path("mcp_risk").asString(""), claims.path("mcp_action").asString(""))) {
+                return Result.reject("invalid_claims");
+            }
+        }
         if (!issuer.equals(claims.path("iss").asString())) {
             return Result.reject("wrong_issuer");
         }
@@ -195,6 +221,9 @@ public final class InternalJwtVerifier {
                     return Result.reject("tool_mismatch");
                 }
             }
+        }
+        if (adapterReceiver && rule.toolRule() == ToolRule.EQUALS && !risk) {
+            return Result.reject("classification_missing");
         }
         String jti = claims.path("jti").asString();
         seenJtis.values().removeIf(expiry -> expiry + CLOCK_SKEW_SECONDS < now);
