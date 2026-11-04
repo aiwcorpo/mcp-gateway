@@ -66,6 +66,44 @@ public final class TestPki {
     public Path issue(String file, String cn, List<String> dnsNames, boolean serverAuth, boolean clientAuth, boolean ca)
             throws Exception {
         KeyPair keys = keyPair();
+        X509Certificate cert = certificate(keys, cn, dnsNames, serverAuth, clientAuth, ca);
+        KeyStore store = KeyStore.getInstance("PKCS12");
+        store.load(null, null);
+        store.setKeyEntry(cn, keys.getPrivate(), PASSWORD, new Certificate[] {cert, caCert});
+        Path path = dir.resolve(file);
+        save(store, path);
+        return path;
+    }
+
+    /**
+     * A server identity as PEM files, the way the public port takes it: {@code <name>.crt} (certificate and CA) and
+     * {@code <name>.key} (PKCS#8, mode {@code keyMode}); returns the two paths in that order.
+     */
+    public List<Path> issuePem(String name, String cn, List<String> dnsNames, String keyMode) throws Exception {
+        KeyPair keys = keyPair();
+        X509Certificate cert = certificate(keys, cn, dnsNames, true, false, false);
+        Path crt = dir.resolve(name + ".crt");
+        Path key = dir.resolve(name + ".key");
+        Files.writeString(crt, pem("CERTIFICATE", cert.getEncoded()) + pem("CERTIFICATE", caCert.getEncoded()));
+        Files.writeString(key, pem("PRIVATE KEY", keys.getPrivate().getEncoded()));
+        Files.setPosixFilePermissions(key, java.nio.file.attribute.PosixFilePermissions.fromString(keyMode));
+        return List.of(crt, key);
+    }
+
+    /** The CA certificate alone, for a client that is to trust this PKI and nothing else. */
+    public Path caPem(String name) throws Exception {
+        Path path = dir.resolve(name + ".crt");
+        Files.writeString(path, pem("CERTIFICATE", caCert.getEncoded()));
+        return path;
+    }
+
+    private static String pem(String type, byte[] der) {
+        return "-----BEGIN " + type + "-----\n" + java.util.Base64.getMimeEncoder(64, new byte[] {'\n'}).encodeToString(der)
+                + "\n-----END " + type + "-----\n";
+    }
+
+    private X509Certificate certificate(KeyPair keys, String cn, List<String> dnsNames, boolean serverAuth, boolean clientAuth,
+                                        boolean ca) throws Exception {
         X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(new X500Name("CN=test-internal-ca"), serial(),
                 Date.from(Instant.now().minusSeconds(60)), Date.from(Instant.now().plus(Duration.ofDays(1))),
                 new X500Name("CN=" + cn), keys.getPublic());
@@ -84,13 +122,7 @@ public final class TestPki {
             purposes.add(KeyPurposeId.id_kp_clientAuth);
         }
         builder.addExtension(Extension.extendedKeyUsage, false, new ExtendedKeyUsage(purposes.toArray(KeyPurposeId[]::new)));
-        X509Certificate cert = sign(builder, caKeys);
-        KeyStore store = KeyStore.getInstance("PKCS12");
-        store.load(null, null);
-        store.setKeyEntry(cn, keys.getPrivate(), PASSWORD, new Certificate[] {cert, caCert});
-        Path path = dir.resolve(file);
-        save(store, path);
-        return path;
+        return sign(builder, caKeys);
     }
 
     private static KeyPair keyPair() throws Exception {

@@ -335,6 +335,7 @@ Same zgody bez profilu nic nie znaczą, profil bez obu zgód też nie. Zgody le�
 | narzędzia z `application.yml` zamiast zatwierdzonego manifestu | `MCP_REGISTRY_MODE=static` albo `manifest: static` serwera |
 | http | `MCP_ALLOW_PLAIN_HTTP=true`; `MCP_PUBLIC_URL`, `MCP_OIDC_JWKS_URI`, `MCP_OIDC_TOKEN_URI`, `MCP_POLICY_MAIN_URL`, `MCP_POLICY_OVERRIDES_URL` bez `https` |
 | brak ochrony przed cofnięciem paczek | puste `MCP_POLICY_STATE_DIR` |
+| klucz TLS portu publicznego czytelny dla wszystkich | `MCP_PUBLIC_TLS_PRIVATE_KEY` wskazuje plik z bitem dla "others" (np. `0644`); bez certyfikatu lub klucza (puste, brak pliku) start jest odrzucany także w devstacku |
 
 Każdy start z profilem loguje `WARN event=devstack_profile` z listą użytych relaksacji, a gauge `mcp_gateway_devstack_active`
 ma wartość 1 (manifest ani audyt nie mają pola na środowisko). Bez profilu odrzucone są także klucze `test-*` (JWT i paczki),
@@ -372,6 +373,7 @@ i podwójnie potwierdzonym (sekcja o profilu powyżej): puste albo słabsze wart
 | `MCP_REDIS_WAIT_REPLICAS`, `MCP_REDIS_WAIT_TIMEOUT` | ile replik musi potwierdzić zmianę stanu potwierdzeń (Redis `WAIT`, ACL gateway'a musi mieć `+wait`) i jak długo czekać. Wymagane poza devstack: `MCP_REDIS_WAIT_REPLICAS` >= 1, a `0` (bez czekania, jeden Redis bez repliki) tylko w devstacku, gdzie spalony kod nie jest potwierdzany przez replikę |
 | `MCP_METRICS_CLIENT_CNS` | CN certyfikatów klienta dla `/actuator/prometheus` (puste = nikt) |
 | `MCP_SERVER_<SYSTEM>_MCP_URL`, `_ENABLED`, `_VERSION` | adres (`https`), wyłącznik i wersja serwera dla JIRA, CONFLUENCE, GITLAB, SERVICEDESK, OPENSEARCH; adresy domyślne `https://mcp-<system>.internal:8443/mcp`, dla Jiry `MCP_SERVER_JIRA_URL` + `/mcp` |
+| `MCP_PUBLIC_TLS_ENABLED`, `MCP_PUBLIC_TLS_CERTIFICATE`, `MCP_PUBLIC_TLS_PRIVATE_KEY`, `MCP_PUBLIC_TLS_PRIVATE_KEY_PASSWORD` | opcjonalny TLS na porcie publicznym (`MCP_GATEWAY_PORT`, domyślnie wyłączony); sekcja "TLS na porcie publicznym" |
 | `MCP_INTERNAL_PORT` | port wewnętrzny TLS, domyślnie `8443` |
 | `MCP_INTERNAL_JWT_ISSUER` | `iss` C2, domyślnie `https://mcp-gateway.internal` |
 | `MCP_INTERNAL_JWT_KEYS_FILE`, `MCP_INTERNAL_JWT_ACTIVE_KID` | prywatny JWKS (P-256, każdy klucz z `kid`) i aktywny `kid`; wspólny dla wszystkich instancji. Wymagane poza devstack: `MCP_INTERNAL_JWT_KEYS_FILE` (puste = klucze generowane na proces, tylko w `devstack`) |
@@ -405,6 +407,39 @@ gateway:
 
 `serverId` musi być `mcp-<system>`, adres tylko `https`, nazwy narzędzi według `ToolName` z kontraktu; błąd
 konfiguracji zatrzymuje start.
+
+### TLS na porcie publicznym
+
+Domyślnie port publiczny (`8080`) mówi po http, jak dotąd; ruch proxy -> gateway niesie jednak tokeny IdP, więc poza jedną maszyną
+warto go zaszyfrować. `MCP_PUBLIC_TLS_ENABLED=true` włącza TLS na tym porcie (Tomcat, `server.ssl` ze Spring Boot, protokoły TLS 1.3 i 1.2,
+szyfry domyślne JDK 25). Certyfikat i klucz to pliki PEM: `MCP_PUBLIC_TLS_CERTIFICATE` (certyfikat serwera, a po nim certyfikaty pośrednie,
+jeśli są) i `MCP_PUBLIC_TLS_PRIVATE_KEY` (PKCS#8; zaszyfrowany klucz wymaga `MCP_PUBLIC_TLS_PRIVATE_KEY_PASSWORD`). Port wewnętrzny (`8443`) nie
+zmienia się: dalej PKCS12 z `MCP_TLS_KEYSTORE`, z JWKS, `/actuator/health` i `/actuator/prometheus`. Port publiczny nigdy nie serwował
+actuatora, więc sprawdzanie zdrowia idzie jak dotąd portem wewnętrznym albo, gdy sonda sprawdza tylko otwarcie portu (`bash` i `/dev/tcp`),
+portem publicznym bez zmian. Certyfikat nie jest przeładowywany bez restartu: żaden z pozostałych portów nie ma takiego mechanizmu, więc
+wymiana certyfikatu to restart instancji, po jednej.
+
+Start jest odrzucany, gdy TLS jest włączony, a certyfikat lub klucz jest pusty albo nie jest czytelnym plikiem, także w `devstack`. Klucz z bitem
+odczytu, zapisu lub wykonania dla "others" jest relaksacją dozwoloną tylko w `devstack` (tabela wyżej); w produkcji ustaw `0600` albo `0640` dla
+grupy procesu. Certyfikat powinien mieć w SAN nazwę, pod którą proxy łączy się z gatewayem, i wystawcę z wewnętrznego CA.
+
+Proxy ma ten certyfikat weryfikować, inaczej szyfrowanie chroni tylko przed podsłuchem biernym. Przykład dla nginx:
+
+```nginx
+location / {
+    proxy_pass https://mcp-gateway.internal:8080;
+    proxy_ssl_server_name on;
+    proxy_ssl_name mcp-gateway.internal;                  # nazwa z SAN certyfikatu gatewaya
+    proxy_ssl_verify on;
+    proxy_ssl_verify_depth 2;
+    proxy_ssl_trusted_certificate /etc/nginx/internal-ca.pem;  # wewnętrzne CA, nie magazyn systemowy
+    proxy_ssl_protocols TLSv1.2 TLSv1.3;
+}
+```
+
+`proxy_ssl_name` ustawia nazwę sprawdzaną w certyfikacie i SNI, `proxy_ssl_trusted_certificate` wskazuje CA, któremu proxy ufa przy tym łączu.
+Bez mTLS: gateway nie żąda certyfikatu od proxy. Test: `PublicTlsTest` (klient z CA gatewaya dostaje odpowiedź, klient z obcym CA odrzuca
+certyfikat w handshake, TLS 1.2 i 1.3, port wewnętrzny bez zmian).
 
 ## Co dochodzi w M6 (etap 3, kontrakty 6.2.0)
 

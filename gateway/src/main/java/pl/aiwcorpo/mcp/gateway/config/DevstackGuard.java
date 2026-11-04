@@ -1,6 +1,10 @@
 package pl.aiwcorpo.mcp.gateway.config;
 
+import java.io.IOException;
 import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -19,7 +23,7 @@ import io.micrometer.core.instrument.MeterRegistry;
  * image: a deployment block that carries both of them with the profile is carried as a whole, so this protects against a
  * setting that slips in alone, not against copying the whole block (the gauge and the WARN make it visible). The relaxations are: signing keys named {@code test-*} (internal JWT and policy bundles),
  * a bootstrap of the registry from the manifest a server serves itself, tools from the configuration instead of an approved
- * manifest, plain http for the public URL, the IdP and the policy bundles, and no state directory for the rollback protection, and keys or cursor keys that are not shared (generated per process).
+ * manifest, plain http for the public URL, the IdP and the policy bundles, and no state directory for the rollback protection, and keys or cursor keys that are not shared (generated per process), and a private key of the public TLS port that every user of the host can read.
  * The pattern is the one of the server starter (profile {@code devstack}, {@code aiwcorpo.mcp.platform.devstack.acknowledged}).
  */
 public final class DevstackGuard {
@@ -80,7 +84,47 @@ public final class DevstackGuard {
         if (p.policy().stateDir() == null || p.policy().stateDir().isBlank()) {
             used.add("gateway.policy.state-dir is empty");
         }
+        if (p.publicTls().enabled() && keyReadableByOthers(p.publicTls().privateKey())) {
+            used.add("gateway.public-tls.private-key is readable by all users");
+        }
         return used;
+    }
+
+    /**
+     * Public TLS that cannot work: enabled without a certificate or key, or with files that are not there. Never a relaxation,
+     * because the devstack profile does not make a missing file usable.
+     */
+    public static List<String> publicTlsProblems(GatewayProperties p) {
+        List<String> problems = new ArrayList<>();
+        GatewayProperties.PublicTls tls = p.publicTls();
+        if (!tls.enabled()) {
+            return problems;
+        }
+        requireFile(problems, "gateway.public-tls.certificate (MCP_PUBLIC_TLS_CERTIFICATE)", tls.certificate());
+        requireFile(problems, "gateway.public-tls.private-key (MCP_PUBLIC_TLS_PRIVATE_KEY)", tls.privateKey());
+        return problems;
+    }
+
+    private static void requireFile(List<String> problems, String setting, String file) {
+        if (blank(file)) {
+            problems.add("public TLS is enabled but " + setting + " is empty");
+        } else if (!Files.isRegularFile(Path.of(file)) || !Files.isReadable(Path.of(file))) {
+            problems.add("public TLS is enabled but " + setting + " is not a readable file: " + file);
+        }
+    }
+
+    /** Any permission bit for "others"; on a file system without POSIX permissions nothing can be judged and the key passes. */
+    private static boolean keyReadableByOthers(String file) {
+        if (blank(file)) {
+            return false;
+        }
+        try {
+            return Files.getPosixFilePermissions(Path.of(file)).stream().anyMatch(
+                    permission -> permission == PosixFilePermission.OTHERS_READ || permission == PosixFilePermission.OTHERS_WRITE
+                            || permission == PosixFilePermission.OTHERS_EXECUTE);
+        } catch (IOException | UnsupportedOperationException e) {
+            return false;
+        }
     }
 
     /**
@@ -119,6 +163,7 @@ public final class DevstackGuard {
         List<String> problems = problems(List.of(environment.getActiveProfiles()),
                 "true".equalsIgnoreCase(environment.getProperty(ACK_PROPERTY, "")),
                 "true".equalsIgnoreCase(processEnvironment.getOrDefault(ACK_ENVIRONMENT, "")), used);
+        problems.addAll(publicTlsProblems(properties));
         if (!problems.isEmpty()) {
             throw new IllegalStateException("refusing to start: " + String.join("; ", problems));
         }

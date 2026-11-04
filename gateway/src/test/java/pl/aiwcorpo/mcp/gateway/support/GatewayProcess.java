@@ -26,8 +26,10 @@ public final class GatewayProcess implements AutoCloseable {
     private final int port;
     private final int internalPort;
     private final Path log;
+    private final javax.net.ssl.SSLContext publicTls;
 
-    private GatewayProcess(String name, Process process, int port, int internalPort, Path log) {
+    private GatewayProcess(String name, Process process, int port, int internalPort, Path log, javax.net.ssl.SSLContext publicTls) {
+        this.publicTls = publicTls;
         this.name = name;
         this.process = process;
         this.port = port;
@@ -50,6 +52,17 @@ public final class GatewayProcess implements AutoCloseable {
     /** As above with the options of the JVM (heap, exit on out of memory) given by the caller. */
     public static GatewayProcess start(String name, Path directory, Map<String, String> properties, int port, int internalPort,
                                        List<String> jvmOptions) throws Exception {
+        return start(name, directory, properties, port, internalPort, jvmOptions, null);
+    }
+
+    /** As above for a public port with TLS: {@code publicTls} is the client context that trusts its certificate. */
+    public static GatewayProcess startWithPublicTls(String name, Path directory, Map<String, String> properties, int port,
+                                                    int internalPort, javax.net.ssl.SSLContext publicTls) throws Exception {
+        return start(name, directory, properties, port, internalPort, List.of("-Xmx384m"), publicTls);
+    }
+
+    private static GatewayProcess start(String name, Path directory, Map<String, String> properties, int port, int internalPort,
+                                        List<String> jvmOptions, javax.net.ssl.SSLContext publicTls) throws Exception {
         List<String> command = new ArrayList<>();
         command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
         command.add("--enable-native-access=ALL-UNNAMED");
@@ -70,7 +83,7 @@ public final class GatewayProcess implements AutoCloseable {
                 "MCP_BROKER_URL", "MCP_DB_URL", "MCP_OIDC_JWKS_URI", "MCP_POLICY_MAIN_URL", "MCP_PUBLIC_URL", "MCP_SERVER_JIRA_URL"}) {
             environment.put(placeholder, "https://placeholder.invalid");
         }
-        GatewayProcess gateway = new GatewayProcess(name, builder.start(), port, internalPort, log);
+        GatewayProcess gateway = new GatewayProcess(name, builder.start(), port, internalPort, log, publicTls);
         try {
             gateway.awaitServing();
         } catch (Exception failure) {
@@ -81,7 +94,8 @@ public final class GatewayProcess implements AutoCloseable {
     }
 
     private void awaitServing() throws Exception {
-        HttpClient http = HttpClient.newHttpClient();
+        HttpClient http = publicTls == null ? HttpClient.newHttpClient() : HttpClient.newBuilder().sslContext(publicTls).build();
+        String scheme = publicTls == null ? "http" : "https";
         long deadline = System.nanoTime() + Duration.ofSeconds(90).toNanos();
         while (System.nanoTime() < deadline) {
             if (!process.isAlive()) {
@@ -89,7 +103,7 @@ public final class GatewayProcess implements AutoCloseable {
             }
             try {
                 HttpResponse<String> response = http.send(HttpRequest.newBuilder(
-                        URI.create("http://localhost:" + port + "/.well-known/oauth-protected-resource/mcp")).GET().build(),
+                        URI.create(scheme + "://localhost:" + port + "/.well-known/oauth-protected-resource/mcp")).GET().build(),
                         HttpResponse.BodyHandlers.ofString());
                 if (response.statusCode() == 200) {
                     return;

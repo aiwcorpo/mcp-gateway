@@ -7,6 +7,10 @@ names the milestone and the commit (`m6-<short sha>`).
 
 Moves to `mcp-contracts` 6.3.2. Behaviour that clients and other components see changes as follows.
 
+- Optional TLS on the public port: `MCP_PUBLIC_TLS_ENABLED` (default `false`), `MCP_PUBLIC_TLS_CERTIFICATE` and
+  `MCP_PUBLIC_TLS_PRIVATE_KEY` (PEM files), `MCP_PUBLIC_TLS_PRIVATE_KEY_PASSWORD` for an encrypted key. TLS 1.3 and 1.2, JDK
+  default ciphers. The start is refused without a readable certificate and key; a key readable by "others" is allowed only in the
+  `devstack` profile. The internal port is unchanged. Off by default, so existing deployments need no change.
 - `listChanged: true` on `/mcp` and `/s/<serverId>/mcp` for both protocols. `GET` with a session and
   `Accept: text/event-stream` opens a stream; `POST subscriptions/listen` is the stateless one. The reference of the
   comparison is the list of the user when the stream was opened; at most one `notifications/tools/list_changed` per

@@ -31,6 +31,7 @@ public record GatewayProperties(
         @Valid @NotNull InternalJwt internalJwt,
         @Valid @NotNull InternalEndpoint internalEndpoint,
         @Valid @NotNull Tls tls,
+        @DefaultValue @Valid PublicTls publicTls,
         @Valid @NotNull Broker broker,
         @Valid @NotNull Redis redis,
         @Valid @NotNull Sessions sessions,
@@ -98,6 +99,17 @@ public record GatewayProperties(
             @NotBlank String keystore,
             @NotBlank String truststore,
             @NotBlank String storePassword) {
+    }
+
+    /**
+     * Optional TLS on the public port (proxy to gateway carries IdP tokens). PEM files; the connector itself is configured by
+     * {@code server.ssl.*} in application.yml, which reads these values, so that {@link DevstackGuard} judges what the connector uses.
+     */
+    public record PublicTls(
+            @DefaultValue("false") boolean enabled,
+            String certificate,
+            String privateKey,
+            String privateKeyPassword) {
     }
 
     public record Broker(

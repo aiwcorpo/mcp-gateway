@@ -3,11 +3,15 @@ package pl.aiwcorpo.mcp.gateway.config;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.boot.context.properties.source.MapConfigurationPropertySource;
 import org.springframework.mock.env.MockEnvironment;
@@ -192,5 +196,63 @@ class DevstackGuardTest {
         assertThat(DevstackGuard.problems(List.of("devstack"), true, true, List.of("x"))).isEmpty();
         assertThat(DevstackGuard.problems(List.of(), true, true, List.of("x"))).hasSize(1);
         assertThat(DevstackGuard.problems(List.of("prod"), true, true, List.of())).isEmpty();
+    }
+
+    private static Map<String, String> publicTls(Path directory, String keyMode) throws Exception {
+        Path certificate = Files.writeString(directory.resolve("public.crt"), "certificate");
+        Path key = Files.writeString(directory.resolve("public.key"), "key");
+        Files.setPosixFilePermissions(key, PosixFilePermissions.fromString(keyMode));
+        Map<String, String> values = production();
+        values.put("gateway.public-tls.enabled", "true");
+        values.put("gateway.public-tls.certificate", certificate.toString());
+        values.put("gateway.public-tls.private-key", key.toString());
+        return values;
+    }
+
+    @Test
+    void publicTlsIsOffByDefaultAndNeedsNothingThen() {
+        assertThat(bind(production()).publicTls().enabled()).isFalse();
+        assertThat(DevstackGuard.publicTlsProblems(bind(production()))).isEmpty();
+    }
+
+    @Test
+    void publicTlsWithAPrivateKeyStartsWithoutAnyProfile(@TempDir Path directory) throws Exception {
+        Map<String, String> values = publicTls(directory, "rw-------");
+        assertThat(DevstackGuard.relaxations(bind(values))).isEmpty();
+        check(values, false, false, false);
+        check(publicTls(directory, "r--r-----"), false, false, false);
+    }
+
+    @Test
+    void publicTlsWithoutACertificateOrKeyIsRefusedEvenInTheDevstack(@TempDir Path directory) throws Exception {
+        for (String setting : List.of("gateway.public-tls.certificate", "gateway.public-tls.private-key")) {
+            Map<String, String> blank = publicTls(directory, "rw-------");
+            blank.remove(setting);
+            assertThatThrownBy(() -> check(blank, true, true, true)).as(setting + " blank")
+                    .isInstanceOf(IllegalStateException.class).hasMessageContaining(setting);
+            Map<String, String> missing = publicTls(directory, "rw-------");
+            missing.put(setting, directory.resolve("absent.pem").toString());
+            assertThatThrownBy(() -> check(missing, true, true, true)).as(setting + " missing file")
+                    .isInstanceOf(IllegalStateException.class).hasMessageContaining("not a readable file");
+        }
+    }
+
+    @Test
+    void aPublicTlsKeyReadableByAllIsARelaxation(@TempDir Path directory) throws Exception {
+        for (String mode : List.of("rw-r--r--", "rw-rw-r--", "rw------x")) {
+            Map<String, String> values = publicTls(directory, mode);
+            assertThat(DevstackGuard.relaxations(bind(values))).as(mode).containsExactly("gateway.public-tls.private-key is readable by all users");
+            assertThatThrownBy(() -> check(values, false, false, false)).as(mode).hasMessageContaining("readable by all users");
+            assertThatThrownBy(() -> check(values, true, true, false)).as(mode).hasMessageContaining(DevstackGuard.ACK_ENVIRONMENT);
+            check(values, true, true, true);
+        }
+    }
+
+    @Test
+    void aDisabledPublicTlsIgnoresItsFiles(@TempDir Path directory) throws Exception {
+        Map<String, String> values = publicTls(directory, "rw-rw-rw-");
+        values.put("gateway.public-tls.enabled", "false");
+        assertThat(DevstackGuard.relaxations(bind(values))).isEmpty();
+        check(values, false, false, false);
     }
 }
