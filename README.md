@@ -411,9 +411,9 @@ konfiguracji zatrzymuje start.
 ### TLS na porcie publicznym
 
 Domyślnie port publiczny (`8080`) mówi po http, jak dotąd; ruch proxy -> gateway niesie jednak tokeny IdP, więc poza jedną maszyną
-warto go zaszyfrować. `MCP_PUBLIC_TLS_ENABLED=true` włącza TLS na tym porcie (Tomcat, `server.ssl` ze Spring Boot, protokoły TLS 1.3 i 1.2,
-szyfry domyślne JDK 25). Certyfikat i klucz to pliki PEM: `MCP_PUBLIC_TLS_CERTIFICATE` (certyfikat serwera, a po nim certyfikaty pośrednie,
-jeśli są) i `MCP_PUBLIC_TLS_PRIVATE_KEY` (PKCS#8; zaszyfrowany klucz wymaga `MCP_PUBLIC_TLS_PRIVATE_KEY_PASSWORD`). Port wewnętrzny (`8443`) nie
+warto go zaszyfrować. `MCP_PUBLIC_TLS_ENABLED=true` włącza TLS na tym porcie (Tomcat, `server.ssl.bundle`, protokoły TLS 1.3 i 1.2,
+szyfry domyślne JDK 25). Certyfikat i klucz to pliki PEM (zwykła ścieżka albo z prefiksem `file:`, jak w portalu): `MCP_PUBLIC_TLS_CERTIFICATE` (certyfikat serwera, a po nim certyfikaty pośrednie,
+jeśli są) i `MCP_PUBLIC_TLS_PRIVATE_KEY` (PKCS#8; zaszyfrowany klucz wymaga `MCP_PUBLIC_TLS_PRIVATE_KEY_PASSWORD`, a hasło przy kluczu bez szyfrowania zatrzymuje start; złe hasło też, bez wypisania go w logu). Konektor bierze je z pakietu SSL `public` (`spring.ssl.bundle.pem.public`). Port wewnętrzny (`8443`) nie
 zmienia się: dalej PKCS12 z `MCP_TLS_KEYSTORE`, z JWKS, `/actuator/health` i `/actuator/prometheus`. Port publiczny nigdy nie serwował
 actuatora, więc sprawdzanie zdrowia idzie jak dotąd portem wewnętrznym albo, gdy sonda sprawdza tylko otwarcie portu (`bash` i `/dev/tcp`),
 portem publicznym bez zmian. Certyfikat nie jest przeładowywany bez restartu: żaden z pozostałych portów nie ma takiego mechanizmu, więc

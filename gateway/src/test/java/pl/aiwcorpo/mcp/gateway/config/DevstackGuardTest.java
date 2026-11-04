@@ -255,4 +255,12 @@ class DevstackGuardTest {
         assertThat(DevstackGuard.relaxations(bind(values))).isEmpty();
         check(values, false, false, false);
     }
+
+    @Test
+    void theFilePrefixOfAPublicTlsLocationIsJudgedLikeAPlainPath(@TempDir Path directory) throws Exception {
+        Map<String, String> values = publicTls(directory, "rw-r--r--");
+        values.replaceAll((key, value) -> key.startsWith("gateway.public-tls.") && value.startsWith("/") ? "file:" + value : value);
+        assertThat(DevstackGuard.relaxations(bind(values))).containsExactly("gateway.public-tls.private-key is readable by all users");
+        assertThat(DevstackGuard.publicTlsProblems(bind(values))).isEmpty();
+    }
 }

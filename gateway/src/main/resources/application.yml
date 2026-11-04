@@ -7,17 +7,25 @@ server:
     include-message: never
     include-stacktrace: never
   shutdown: graceful
-  # Optional TLS on the public port (MCP_PUBLIC_TLS_*); the values come from gateway.public-tls so that DevstackGuard checks the same files.
+  # Optional TLS on the public port (MCP_PUBLIC_TLS_*), through the SSL bundle "public" below; the locations get their file: prefix
+  # in PublicTlsEnvironment and DevstackGuard checks the same files.
   ssl:
-    enabled: ${gateway.public-tls.enabled}
-    certificate: ${gateway.public-tls.certificate}
-    certificate-private-key: ${gateway.public-tls.private-key}
-    key-password: ${gateway.public-tls.private-key-password}
-    enabled-protocols: TLSv1.3,TLSv1.2
+    enabled: ${gateway.public-tls.enabled:false}
+    bundle: public
 
 spring:
   application:
     name: mcp-gateway
+  ssl:
+    bundle:
+      pem:
+        public:
+          keystore:
+            certificate: ${gateway.public-tls.certificate-location:}
+            private-key: ${gateway.public-tls.private-key-location:}
+            private-key-password: ${gateway.public-tls.private-key-password:}
+          options:
+            enabled-protocols: TLSv1.3,TLSv1.2
   threads:
     virtual:
       enabled: true

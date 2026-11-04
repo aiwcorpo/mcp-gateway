@@ -108,7 +108,7 @@ public final class DevstackGuard {
     private static void requireFile(List<String> problems, String setting, String file) {
         if (blank(file)) {
             problems.add("public TLS is enabled but " + setting + " is empty");
-        } else if (!Files.isRegularFile(Path.of(file)) || !Files.isReadable(Path.of(file))) {
+        } else if (!Files.isRegularFile(Path.of(PublicTlsEnvironment.path(file))) || !Files.isReadable(Path.of(PublicTlsEnvironment.path(file)))) {
             problems.add("public TLS is enabled but " + setting + " is not a readable file: " + file);
         }
     }
@@ -119,7 +119,7 @@ public final class DevstackGuard {
             return false;
         }
         try {
-            return Files.getPosixFilePermissions(Path.of(file)).stream().anyMatch(
+            return Files.getPosixFilePermissions(Path.of(PublicTlsEnvironment.path(file))).stream().anyMatch(
                     permission -> permission == PosixFilePermission.OTHERS_READ || permission == PosixFilePermission.OTHERS_WRITE
                             || permission == PosixFilePermission.OTHERS_EXECUTE);
         } catch (IOException | UnsupportedOperationException e) {

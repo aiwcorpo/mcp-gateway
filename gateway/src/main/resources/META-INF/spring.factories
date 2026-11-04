@@ -1,1 +1,2 @@
 org.springframework.context.ApplicationContextInitializer=pl.aiwcorpo.mcp.gateway.config.DevstackInitializer
+org.springframework.boot.EnvironmentPostProcessor=pl.aiwcorpo.mcp.gateway.config.PublicTlsEnvironment

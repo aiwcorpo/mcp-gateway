@@ -3,7 +3,6 @@ package pl.aiwcorpo.mcp.gateway;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -52,14 +51,20 @@ class PublicTlsTest {
         TestPki other = new TestPki(Files.createDirectory(dir.resolve("other-ca")));
         foreign = Tls.fromKeyStores(null, TestPki.PASSWORD, load(other.truststore()));
 
+        gateway = startWith("public-tls", dir, pem.get(0).toString(), pem.get(1).toString(), null);
+    }
+
+    private static GatewayProcess startWith(String name, Path dir, String certificate, String key, String password) throws Exception {
         Map<String, String> properties = new LinkedHashMap<>(env.properties());
         properties.remove("gateway.internal-endpoint.port");
         properties.put("gateway.public-tls.enabled", "true");
-        properties.put("gateway.public-tls.certificate", pem.get(0).toString());
-        properties.put("gateway.public-tls.private-key", pem.get(1).toString());
-        properties.put("gateway.policy.state-dir", Files.createDirectories(dir.resolve("state")).toString());
-        gateway = GatewayProcess.startWithPublicTls("public-tls", dir, properties, GatewayProcess.freePort(),
-                GatewayProcess.freePort(), trusting);
+        properties.put("gateway.public-tls.certificate", certificate);
+        properties.put("gateway.public-tls.private-key", key);
+        if (password != null) {
+            properties.put("gateway.public-tls.private-key-password", password);
+        }
+        properties.put("gateway.policy.state-dir", Files.createDirectories(dir.resolve("state-" + name)).toString());
+        return GatewayProcess.startWithPublicTls(name, dir, properties, GatewayProcess.freePort(), GatewayProcess.freePort(), trusting);
     }
 
     @AfterAll
@@ -108,13 +113,9 @@ class PublicTlsTest {
     }
 
     @Test
-    void plainHttpOnTheTlsPortIsNotServed() throws Exception {
-        try {
-            HttpResponse<String> response = get(HttpClient.newHttpClient(), "http://localhost:" + gateway.port() + METADATA);
-            assertThat(response.statusCode()).isNotEqualTo(200);
-        } catch (IOException closedByTheServer) {
-            // Tomcat may drop the connection instead of answering the plain request.
-        }
+    void plainHttpOnTheTlsPortIsAnswered400() throws Exception {
+        HttpResponse<String> response = get(HttpClient.newHttpClient(), "http://localhost:" + gateway.port() + METADATA);
+        assertThat(response.statusCode()).isEqualTo(400);
     }
 
     @Test
@@ -129,5 +130,27 @@ class PublicTlsTest {
     void theActuatorIsNotServedOnThePublicPortWithTlsEither() throws Exception {
         HttpClient client = HttpClient.newBuilder().sslContext(trusting).build();
         assertThat(get(client, "https://localhost:" + gateway.port() + "/actuator/health").statusCode()).isNotEqualTo(200);
+    }
+
+    @Test
+    void anEncryptedKeyStartsWithItsPasswordAndTheFilePrefixIsAccepted() throws Exception {
+        Path dir = Files.createTempDirectory("mcp-gateway-public-tls-encrypted");
+        List<Path> pem = env.pki.issueEncryptedPem("encrypted", "mcp-gateway-public", List.of("localhost"), "key-password-1");
+        try (GatewayProcess encrypted = startWith("encrypted", dir, "file:" + pem.get(0), "file:" + pem.get(1), "key-password-1")) {
+            HttpResponse<String> response = get(HttpClient.newBuilder().sslContext(trusting).build(),
+                    "https://localhost:" + encrypted.port() + METADATA);
+            assertThat(response.statusCode()).isEqualTo(200);
+        }
+    }
+
+    @Test
+    void aWrongOrMissingKeyPasswordStopsTheStartWithoutPrintingIt() throws Exception {
+        Path dir = Files.createTempDirectory("mcp-gateway-public-tls-wrong");
+        List<Path> pem = env.pki.issueEncryptedPem("wrong", "mcp-gateway-public", List.of("localhost"), "key-password-1");
+        for (String password : new String[] {"not-the-password-2", null}) {
+            assertThatThrownBy(() -> startWith("wrong", dir, pem.get(0).toString(), pem.get(1).toString(), password).close())
+                    .isInstanceOf(IllegalStateException.class).hasMessageContaining("exited")
+                    .hasMessageNotContaining("not-the-password-2").hasMessageNotContaining("key-password-1");
+        }
     }
 }

@@ -90,6 +90,25 @@ public final class TestPki {
         return List.of(crt, key);
     }
 
+    /** As {@link #issuePem}, with the key as an encrypted PKCS#8 PEM (AES-256) under {@code password}. */
+    public List<Path> issueEncryptedPem(String name, String cn, List<String> dnsNames, String password) throws Exception {
+        KeyPair keys = keyPair();
+        X509Certificate cert = certificate(keys, cn, dnsNames, true, false, false);
+        Path crt = dir.resolve(name + ".crt");
+        Path key = dir.resolve(name + ".key");
+        Files.writeString(crt, pem("CERTIFICATE", cert.getEncoded()) + pem("CERTIFICATE", caCert.getEncoded()));
+        org.bouncycastle.operator.OutputEncryptor encryptor = new org.bouncycastle.openssl.jcajce.JceOpenSSLPKCS8EncryptorBuilder(
+                org.bouncycastle.openssl.PKCS8Generator.AES_256_CBC).setPasssword(password.toCharArray())
+                .setProvider(new org.bouncycastle.jce.provider.BouncyCastleProvider()).build();
+        java.io.StringWriter text = new java.io.StringWriter();
+        try (org.bouncycastle.openssl.jcajce.JcaPEMWriter writer = new org.bouncycastle.openssl.jcajce.JcaPEMWriter(text)) {
+            writer.writeObject(new org.bouncycastle.openssl.jcajce.JcaPKCS8Generator(keys.getPrivate(), encryptor));
+        }
+        Files.writeString(key, text.toString());
+        Files.setPosixFilePermissions(key, java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"));
+        return List.of(crt, key);
+    }
+
     /** The CA certificate alone, for a client that is to trust this PKI and nothing else. */
     public Path caPem(String name) throws Exception {
         Path path = dir.resolve(name + ".crt");
