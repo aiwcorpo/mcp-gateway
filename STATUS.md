@@ -5,6 +5,10 @@ Pod spodem M5 (fala z 2026-10-31). Pod spodem M4 i starsze (sekcje niżej, wiers
 zastąpione w M5 są oznaczone). PoC `poc/mcp-query` był materiałem: klasa `ToolFilter`, trasa `/f/` i `access=write` jako READ_ONLY+UPDATE nie weszły,
 filtr to `EndpointFilter` z kontraktów.
 
+## Wersja 1.0.0 (2026-11-04)
+
+Wersja projektu `1.0.0` (parent, `gateway`, `test-server`), kontrakty 6.3.2 z Maven Central. Usunięte pozostałości GitHub Packages: `distributionManagement`, `.ci/settings.xml`, zmienne `MCP_MAVEN_REPOSITORY_*` w `ci/run.sh`, workflowach, `.gitlab-ci.yml` i `Jenkinsfile`; zadania CI nie dostają tokenu ani `packages: read`. Obraz ma etykiety `org.opencontainers.image.source` i `licenses`. Tytuły w statycznym rejestrze równe tytułom serwerów po poprawkach koordynatora: `Search issues`, `List projects`, `Get file` (jira, gitlab); pozostałe już były zgodne (`Change issue status`, `Comment on merge request`). `make ci`: 864 testy gatewaya i 112 test-servera, zielone. `SaturationTest` i `ReplicatedStoreTest` (próg 150 ms, wynik 159 ms) padły raz przy obciążeniu maszyny rzędu 390, po ponowieniu przeszły; progów nie zmieniono. CHANGELOG zawiera jeden wpis 1.0.0. Obraz `mcp-gateway:m6-<sha>` budowany po commicie (tag w raporcie).
+
 ## M6 etap 3: kontrakty 6.2.0 i porządki do wydania
 
 | Punkt | Stan |

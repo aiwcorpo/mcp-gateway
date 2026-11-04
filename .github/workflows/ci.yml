@@ -1,6 +1,5 @@
-# Thin wrapper: all logic is in ci/run.sh. The pull request job needs no registry and no secret. The push job reads the
-# mcp-contracts artifacts from GitHub Packages with the GITHUB_TOKEN of the run (packages: read; the package must grant
-# access to this repository); no personal access token is stored.
+# Thin wrapper: all logic is in ci/run.sh. No job needs a registry login or a secret: the mcp-contracts artifacts come from
+# Maven Central.
 name: ci
 on:
   push:
@@ -30,7 +29,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-      packages: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -41,7 +39,3 @@ jobs:
           java-version: '25'
       - run: ci/self-test.sh
       - run: ci/run.sh verify
-        env:
-          MCP_MAVEN_REPOSITORY_URL: https://maven.pkg.github.com/aiwcorpo/mcp-contracts
-          MCP_MAVEN_REPOSITORY_USER: ${{ github.actor }}
-          MCP_MAVEN_REPOSITORY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}

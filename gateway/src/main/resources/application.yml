@@ -196,7 +196,7 @@ gateway:
       tools:
         search_issues:
           risk: READ_ONLY
-          title: Search issues (JQL)
+          title: Search issues
           description: Searches Jira issues with a JQL query.
         get_issue:
           risk: READ_ONLY
@@ -261,11 +261,11 @@ gateway:
       tools:
         list_projects:
           risk: READ_ONLY
-          title: List group projects
+          title: List projects
           description: Lists the projects directly in one GitLab group, ordered by path, at most 100.
         get_file:
           risk: READ_ONLY
-          title: Get repository file
+          title: Get file
           description: Returns one UTF-8 text file from a GitLab repository at a branch, tag or commit.
         get_merge_request:
           risk: READ_ONLY

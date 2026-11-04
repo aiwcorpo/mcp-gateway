@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Single CI entry point (M5-5): every CI system, the container image of ci/Dockerfile and a developer's shell call this script and
 # nothing else. .gitlab-ci.yml, Jenkinsfile and .github/workflows/ci.yml are thin wrappers around it. Needs bash, git, JDK 25 and
-# either a filled ~/.m2 with the mcp-contracts artifacts or MCP_MAVEN_REPOSITORY_URL (+ _USER, _PASSWORD) pointing at the registry
-# that holds them.
+# Maven Central (the mcp-contracts artifacts are published there) or a ~/.m2 that already holds them.
 #
 #   ci/run.sh                 verify (default)
 #   ci/run.sh verify          hygiene checks, then unit and integration tests of both modules (mvnw clean verify)
@@ -26,12 +25,7 @@ fail() {
 }
 
 mvnw() {
-  local wrapper="${CI_MVNW:-./mvnw}"
-  if [[ -n "${MCP_MAVEN_REPOSITORY_URL:-}" ]]; then
-    "$wrapper" -B -s .ci/settings.xml "$@"
-  else
-    "$wrapper" -B "$@"
-  fi
+  "${CI_MVNW:-./mvnw}" -B "$@"
 }
 
 tracked_sources() {

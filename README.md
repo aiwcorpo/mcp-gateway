@@ -38,8 +38,7 @@ Modules: `gateway` (Spring Boot 4.1.0, Java 25) and `test-server` (a minimal MCP
 not a product). Load tests live in `mcp-load-tests`.
 
 `ci/run.sh` has the steps `verify`, `hygiene` and `image` (image `mcp-gateway:<MCP_IMAGE_STAGE>-<sha>`, built from a clean tree).
-An unknown or empty step exits with 2. On a clean runner the `mcp-contracts` artifacts come from the registry set in
-`MCP_MAVEN_REPOSITORY_URL`, `MCP_MAVEN_REPOSITORY_USER` and `MCP_MAVEN_REPOSITORY_PASSWORD` (see `.ci/settings.xml`).
+An unknown or empty step exits with 2. The `mcp-contracts` artifacts come from Maven Central, so no registry login is needed.
 The GitLab, Jenkins and GitHub files only call this script; write access and the Docker socket are granted by the CI system,
 not by files in a branch. The release workflow (`release.yml`) has three jobs: build (read-only), publish (`packages: write`,
 only `docker load` and `docker push`) and release (`contents: write`, only `gh release create`).

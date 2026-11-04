@@ -1,12 +1,6 @@
-# Thin wrapper: all logic is in ci/run.sh, which also runs in a developer's shell.
-#
-# Code of a merge request decides what runs, so a merge request never sees a credential that can write or that reaches more than
-# the artifacts it needs: its job takes the read-only variables MCP_MAVEN_RO_USER and MCP_MAVEN_RO_PASSWORD (a deploy token with
-# read_package_registry only). The variables MCP_MAVEN_REPOSITORY_USER and MCP_MAVEN_REPOSITORY_PASSWORD are "protected" in the
-# project settings, so GitLab hands them to pipelines of protected branches only. MCP_MAVEN_REPOSITORY_URL is set in the project
-# settings, never in a file of the repository; .ci/settings.xml only names the variables and a change of it in a merge request
-# cannot make a credential go anywhere but to that URL. The tests start PostgreSQL and Redis with Testcontainers: use a runner with
-# the Docker socket mounted that is dedicated to this project, or set DOCKER_HOST to a Docker-in-Docker service.
+# Thin wrapper: all logic is in ci/run.sh, which also runs in a developer's shell. The mcp-contracts artifacts come from Maven
+# Central, so no job needs a credential. The tests start PostgreSQL and Redis with Testcontainers: use a runner with the Docker
+# socket mounted that is dedicated to this project, or set DOCKER_HOST to a Docker-in-Docker service.
 stages:
   - verify
 
@@ -28,9 +22,6 @@ verify-merge-request:
     key: maven-merge-request
     policy: pull
     paths: [.m2/repository]
-  variables:
-    MCP_MAVEN_REPOSITORY_USER: $MCP_MAVEN_RO_USER
-    MCP_MAVEN_REPOSITORY_PASSWORD: $MCP_MAVEN_RO_PASSWORD
   script:
     - ci/self-test.sh
     - ci/run.sh verify

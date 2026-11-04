@@ -13,7 +13,7 @@
 
     <groupId>pl.aiwcorpo.mcp</groupId>
     <artifactId>mcp-gateway-parent</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>1.0.0</version>
     <packaging>pom</packaging>
     <name>MCP Gateway :: Parent</name>
     <description>The single entry point of the MCP platform for AI clients: authentication, authorization of every tool call, credentials from the broker, audit.</description>
@@ -29,13 +29,6 @@
         <url>https://github.com/aiwcorpo/mcp-gateway</url>
         <connection>scm:git:https://github.com/aiwcorpo/mcp-gateway.git</connection>
     </scm>
-    <distributionManagement>
-        <repository>
-            <id>github</id>
-            <name>GitHub Packages of aiwcorpo/mcp-gateway</name>
-            <url>https://maven.pkg.github.com/aiwcorpo/mcp-gateway</url>
-        </repository>
-    </distributionManagement>
 
     <modules>
         <module>test-server</module>

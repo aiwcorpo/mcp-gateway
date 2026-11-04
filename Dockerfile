@@ -1,6 +1,8 @@
 # Build the jars first: ./mvnw -B verify (or install -DskipTests), then: docker build -t mcp-gateway:dev .
 # A glibc image: cedar-java (policies, C7) ships native libraries for glibc, not for musl (Alpine).
 FROM eclipse-temurin:25-jre@sha256:78f1f183913482ef390c2722f46c3f0ce76ada341d69590e7c482ec943ee72d5
+LABEL org.opencontainers.image.source="https://github.com/aiwcorpo/mcp-gateway" \
+      org.opencontainers.image.licenses="Apache-2.0"
 
 RUN groupadd --system gateway && useradd --system --gid gateway --no-create-home --home-dir /app gateway \
     && mkdir -p /app/state && chown gateway:gateway /app/state
