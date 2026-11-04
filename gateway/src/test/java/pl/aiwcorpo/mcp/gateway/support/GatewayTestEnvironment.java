@@ -23,7 +23,7 @@ import pl.aiwcorpo.mcp.testserver.Tls;
  * Everything around the gateway under test, started once per JVM: internal CA and certificates (gateway, BFF, a
  * component of another name, a certificate of a foreign CA), IdP stand-in, broker stub, the test MCP server as
  * mcp-jira and as mcp-gitlab, a server with a certificate for the wrong name (as mcp-confluence), Redis with the
- * ACL of mcp-platform-dev and PostgreSQL for the links.
+ * ACL of the dev stack and PostgreSQL for the links.
  */
 public final class GatewayTestEnvironment {
 
@@ -32,7 +32,7 @@ public final class GatewayTestEnvironment {
     public static final String POSTGRES_PASSWORD = "gateway-db-test-password";
     /** publicBaseUrl in tests; no request to the gateway ever carries this host. */
     public static final String PUBLIC_URL = "https://mcp.aiwcorpo.pl";
-    /** The command list of the gateway's ACL in mcp-platform-dev (redis/gateway.rules, ws-01). */
+    /** The command list of the gateway's ACL in the dev stack (redis/gateway.rules, ws-01). */
     private static final String DATA_COMMANDS = "-@all +get +set +setnx +setex +psetex +getdel +getex +mget +del +unlink "
             + "+exists +expire +pexpire +expireat +pexpireat +persist +ttl +pttl +incr +incrby +decr +decrby +hset +hsetnx "
             + "+hget +hmget +hdel +hgetall +hexists +hincrby +hlen +sadd +srem +scard +sismember +smembers +zadd +zrem +zcard "
@@ -195,7 +195,7 @@ public final class GatewayTestEnvironment {
         }
     }
 
-    /** The ACL file of the Redis of mcp-platform-dev: the commands the gateway may use, and an admin for the tests. */
+    /** The ACL file of the Redis of the dev stack: the commands the gateway may use, and an admin for the tests. */
     public static String redisAcl() {
         return String.join("\n",
                 "user default off resetkeys resetchannels -@all",

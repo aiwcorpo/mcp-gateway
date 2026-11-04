@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs the test MCP server (in place of mcp-jira) on the host: https://localhost:18702/mcp with the mcp-jira
-# certificate of mcp-platform-dev, the gateway JWKS from run-dev-host.sh and the Jira mock. Not a product.
+# certificate of the dev stack, the gateway JWKS from run-dev-host.sh and the Jira mock. Not a product.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")/.." && pwd)"

@@ -1,4 +1,4 @@
-# Environment variables follow mcp-platform-dev (docs/integracja.md, service mcp-gateway of profile "full").
+# Environment variables follow the dev stack (service mcp-gateway of profile "full").
 server:
   port: ${MCP_GATEWAY_PORT:8080}
   error:

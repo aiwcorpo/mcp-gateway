@@ -29,7 +29,7 @@ import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 
-/** Throw-away internal CA and PKCS12 files shaped like mcp-platform-dev's certs/. */
+/** Throw-away internal CA and PKCS12 files shaped like the certs/ of the dev stack. */
 public final class TestPki {
 
     public static final char[] PASSWORD = "test-store-password".toCharArray();

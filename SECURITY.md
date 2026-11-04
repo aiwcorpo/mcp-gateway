@@ -26,7 +26,7 @@ This repository has no bug bounty.
 
 The published test keys of `mcp-contracts` are refused unless the development profile and its acknowledgement are set;
 findings that need them enabled in production are configuration errors. The credentials of the development stack
-(`mcp-platform-dev`) and the test server and stand-in broker of this repository are not production material.
+(the local dev stack) and the test server and stand-in broker of this repository are not production material.
 
 ## Supported versions
 

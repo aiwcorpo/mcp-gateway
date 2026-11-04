@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs the test broker (a stand-in for the C4 resolve of the credential broker, not the broker) on the host:
-# https://localhost:18703 with the broker certificate of mcp-platform-dev and the JWKS of the gateway started by
+# https://localhost:18703 with the broker certificate of the dev stack and the JWKS of the gateway started by
 # run-dev-host.sh. Users in BROKER_PATS ("alice=alice-pat,bob=bob-pat") get that PAT as a user-secret credential,
 # everybody else gets 409 credential_required with a link to the portal on the public origin.
 set -euo pipefail

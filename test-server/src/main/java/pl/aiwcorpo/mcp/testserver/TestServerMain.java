@@ -8,8 +8,8 @@ import java.time.Duration;
 import javax.net.ssl.SSLContext;
 
 /**
- * Runs {@link TestMcpServer} in a container in the place of mcp-jira (mcp-platform-dev, profile "full").
- * Environment names follow the mcp-jira service of mcp-platform-dev's docker-compose.yml.
+ * Runs {@link TestMcpServer} in a container in the place of mcp-jira (the dev stack, profile "full").
+ * Environment names follow the mcp-jira service of the dev stack compose file.
  */
 public final class TestServerMain {
 

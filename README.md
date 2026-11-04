@@ -18,7 +18,7 @@ License: Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). Changes: [CHANGELOG.
 PostgreSQL (registry, kill switches, activity; Flyway creates the schema at start), Redis with a `gateway` account
 (sessions, confirmations, rate limits; `noeviction`, `appendonly yes`), an OIDC identity provider (Keycloak or Entra),
 `mcp-credential-broker`, a policy server with signed bundles (`mcp-policies`) and MCP servers reachable over mTLS with
-certificates from one internal CA. `mcp-platform-dev` gives a single-machine stack for trying it out, not for production.
+certificates from one internal CA. The Compose install in `mcp-docs` (`examples/compose`) gives a single-machine stack for trying it out; its settings are not for production.
 
 Ports: `8080` for MCP clients (public) and `8443` for TLS with the gateway certificate (internal JWKS, `/actuator/health`,
 `/actuator/prometheus`, `/admin/v1/*`). The internal port does not serve MCP paths and the public one serves neither JWKS nor
@@ -35,7 +35,7 @@ make ci                                              # ci/run.sh verify: text ch
 ```
 
 Modules: `gateway` (Spring Boot 4.1.0, Java 25) and `test-server` (a minimal MCP server plus a broker stub for tests and demos;
-not a product). Load tests live in `mcp-load-tests`.
+not a product). The gateway was load tested in a separate private suite; the method and results are in the scaling chapter of `mcp-docs`.
 
 `ci/run.sh` has the steps `verify`, `hygiene` and `image` (image `mcp-gateway:<MCP_IMAGE_STAGE>-<sha>`, built from a clean tree).
 An unknown or empty step exits with 2. The `mcp-contracts` artifacts come from Maven Central, so no registry login is needed.

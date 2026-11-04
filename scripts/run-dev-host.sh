@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the gateway on the host against mcp-platform-dev started with `make up` (Keycloak, Redis, PostgreSQL,
+# Runs the gateway on the host against the dev stack (not public yet) started with `make up` (Keycloak, Redis, PostgreSQL,
 # certificates). Ports of the M2 wave: public MCP endpoint http://localhost:18700 (/s/<serverId>/mcp,
 # /v/<slug>/mcp, /.well-known/oauth-protected-resource*), internal TLS endpoint https://localhost:18701 (JWKS of
 # C2, actuator, C5 admin API with mTLS). The public URL is configuration (MCP_PUBLIC_URL), not the Host header.
@@ -12,7 +12,7 @@ here="$(cd "$(dirname "$0")/.." && pwd)"
 dev="${MCP_PLATFORM_DEV:-$here/../mcp-platform-dev}"
 jar="$here/gateway/target/mcp-gateway.jar"
 
-[[ -f "$dev/.secrets/dev.env" ]] || { echo "no $dev/.secrets/dev.env: run make up in mcp-platform-dev" >&2; exit 1; }
+[[ -f "$dev/.secrets/dev.env" ]] || { echo "no $dev/.secrets/dev.env: run make up in the dev stack" >&2; exit 1; }
 [[ -f "$jar" ]] || { echo "no $jar: run ./mvnw -B install first" >&2; exit 1; }
 
 set -a

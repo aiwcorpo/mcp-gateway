@@ -9,7 +9,7 @@ import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
 
-/** SSLContext from PKCS12 files as mcp-platform-dev produces them (certs/&lt;name&gt;/keystore.p12, certs/ca/truststore.p12). */
+/** SSLContext from PKCS12 files as the dev stack produces them (certs/&lt;name&gt;/keystore.p12, certs/ca/truststore.p12). */
 public final class Tls {
 
     private Tls() {
