@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * A server that lost the session answers 404. A READ_ONLY call is sent again on a new session, an UPDATE call is not: the gateway never
- * repeats a call that may change something, the client decides (CC-204, README "Semantyka dostarczenia").
+ * repeats a call that may change something, the client decides (CC-204).
  */
 class NoRepeatOfWritesTest extends GatewayTestBase {
 

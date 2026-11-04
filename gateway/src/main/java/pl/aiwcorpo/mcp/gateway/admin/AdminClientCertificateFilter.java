@@ -32,7 +32,7 @@ import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
  * JWKS present none or a serverAuth-only one), so the chain is verified here against the internal CA and then the
  * name is checked against the operation: each rule is a method and a path pattern with the names the contract
  * allows for it ({@code x-allowed-client-cn}). A request no rule covers is refused for every name. No usable
- * certificate is 401, a valid certificate of another component 403 (README of C5).
+ * certificate is 401, a valid certificate of another component 403.
  */
 public final class AdminClientCertificateFilter extends OncePerRequestFilter {
 

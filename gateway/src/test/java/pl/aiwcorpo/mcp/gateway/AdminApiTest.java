@@ -132,7 +132,7 @@ class AdminApiTest extends GatewayTestBase {
         assertThat(jira.path("system").asString()).isEqualTo("jira");
         assertThat(jira.path("version").asString()).isEqualTo("1.0.0");
         JsonNode getIssue = tool(jira, "jira__get_issue");
-        assertThat(getIssue.path("title").asString()).isEqualTo("Pobranie zg\u0142oszenia");
+        assertThat(getIssue.path("title").asString()).isEqualTo("Get issue");
         assertThat(getIssue.path("description").asString()).isEqualTo("Returns one Jira issue by key.");
         assertThat(getIssue.path("risk").asString()).isEqualTo("READ_ONLY");
         assertThat(getIssue.path("action").asString()).isEqualTo("read");

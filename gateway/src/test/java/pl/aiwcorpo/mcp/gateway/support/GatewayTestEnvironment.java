@@ -258,7 +258,7 @@ public final class GatewayTestEnvironment {
         registry.add("gateway.servers.mcp-jira.tools.delete_issue.description", () -> "Deletes one Jira issue.");
         registry.add("gateway.servers.mcp-jira.tools.delete_issue.resource-refs[0].argument", () -> "issueKey");
         registry.add("gateway.servers.mcp-jira.tools.delete_issue.resource-refs[0].type", () -> "Jira::Issue");
-        registry.add("gateway.servers.mcp-jira.tools.delete_issue.title", () -> "Usuni\u0119cie zg\u0142oszenia");
+        registry.add("gateway.servers.mcp-jira.tools.delete_issue.title", () -> "Delete issue");
         registry.add("gateway.registry.mode", () -> "static");
         registry.add("gateway.registry.bootstrap-from-server", () -> "true");
         registry.add("gateway.registry.bootstrap-retry", () -> "500ms");

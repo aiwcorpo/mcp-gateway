@@ -196,29 +196,29 @@ gateway:
       tools:
         search_issues:
           risk: READ_ONLY
-          title: Wyszukiwanie zgłoszeń (JQL)
+          title: Search issues (JQL)
           description: Searches Jira issues with a JQL query.
         get_issue:
           risk: READ_ONLY
-          title: Pobranie zgłoszenia
+          title: Get issue
           description: Returns one Jira issue by key.
           resource-refs:
             - {argument: issueKey, type: 'Jira::Issue'}
         add_comment:
           risk: UPDATE
-          title: Dodanie komentarza
+          title: Add comment
           description: Adds a comment to a Jira issue.
           resource-refs:
             - {argument: issueKey, type: 'Jira::Issue'}
         transition_issue:
           risk: UPDATE
-          title: Zmiana statusu zgłoszenia
+          title: Change issue status
           description: Moves a Jira issue to another status.
           resource-refs:
             - {argument: issueKey, type: 'Jira::Issue'}
         delete_issue:
           risk: DESTRUCTIVE
-          title: Usunięcie zgłoszenia
+          title: Delete issue
           description: Permanently deletes a Jira issue; confirmed with the code of the authenticator app.
           resource-refs:
             - {argument: issueKey, type: 'Jira::Issue'}
@@ -235,15 +235,15 @@ gateway:
       tools:
         search_pages:
           risk: READ_ONLY
-          title: Wyszukiwanie stron
+          title: Search pages
           description: Searches the current pages of one Confluence space for the given words.
         get_page:
           risk: READ_ONLY
-          title: Pobranie strony
+          title: Get page
           description: Returns one Confluence page with its metadata and the body as plain text.
         create_page:
           risk: UPDATE
-          title: Utworzenie strony
+          title: Create page
           description: Creates a Confluence page in a space, under an existing parent page of the same space.
     mcp-gitlab:
       system: gitlab
@@ -261,19 +261,19 @@ gateway:
       tools:
         list_projects:
           risk: READ_ONLY
-          title: Lista projektów grupy
+          title: List group projects
           description: Lists the projects directly in one GitLab group, ordered by path, at most 100.
         get_file:
           risk: READ_ONLY
-          title: Pobranie pliku z repozytorium
+          title: Get repository file
           description: Returns one UTF-8 text file from a GitLab repository at a branch, tag or commit.
         get_merge_request:
           risk: READ_ONLY
-          title: Pobranie merge requesta
+          title: Get merge request
           description: Returns one merge request of a GitLab project by its number.
         comment_merge_request:
           risk: UPDATE
-          title: Komentarz do merge requesta
+          title: Comment on merge request
           description: Adds a comment to a merge request of a GitLab project as the calling user.
     mcp-servicedesk:
       system: servicedesk
@@ -288,15 +288,15 @@ gateway:
       tools:
         search_tickets:
           risk: READ_ONLY
-          title: Wyszukiwanie zgłoszeń
+          title: Search tickets
           description: Searches the tickets of one service desk queue for a text.
         get_ticket:
           risk: READ_ONLY
-          title: Pobranie zgłoszenia
+          title: Get ticket
           description: Returns one service desk ticket with its status, priority and the text.
         add_note:
           risk: UPDATE
-          title: Dodanie notatki
+          title: Add note
           description: Adds a note to a service desk ticket.
     mcp-opensearch:
       system: opensearch
@@ -312,9 +312,9 @@ gateway:
       tools:
         search_logs:
           risk: READ_ONLY
-          title: Wyszukiwanie w logach
+          title: Search logs
           description: Searches log documents in the indices matching one index pattern within a time range.
         get_document:
           risk: READ_ONLY
-          title: Pobranie dokumentu
+          title: Get document
           description: Returns one document by index and id.

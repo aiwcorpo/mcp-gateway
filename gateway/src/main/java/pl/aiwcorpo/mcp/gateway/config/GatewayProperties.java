@@ -16,7 +16,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 
-/** All gateway settings; environment variable names are in application.yml and README. */
+/** All gateway settings; environment variable names are in application.yml and in mcp-docs (docs/reference/env-gateway.md). */
 @Validated
 @ConfigurationProperties(prefix = "gateway")
 public record GatewayProperties(

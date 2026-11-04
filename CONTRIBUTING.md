@@ -1,6 +1,6 @@
 # Contributing
 
-Changes go through a pull request. Read the README sections "Budowanie i testy" and "CI" first.
+Changes go through a pull request. Read the README sections "Build and test" first.
 
 - Run `make ci` (same as `ci/run.sh verify`) before pushing. It needs JDK 25, git and `./mvnw`, and a container
   runtime for the integration tests (Testcontainers); on Windows use WSL2.

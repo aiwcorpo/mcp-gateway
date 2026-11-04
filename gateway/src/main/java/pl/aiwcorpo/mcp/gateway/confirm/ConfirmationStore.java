@@ -18,7 +18,7 @@ public interface ConfirmationStore {
     /**
      * Start of the current epoch of the state: the moment the store was found without its continuity marker. A marker
      * that is missing (first start, lost or flushed data) is written now, so the answer says "continuity cannot be shown
-     * since this moment" (README, loss of the state).
+     * since this moment".
      */
     long epochStartedAt(long nowEpochMillis) throws StoreUnavailableException;
 

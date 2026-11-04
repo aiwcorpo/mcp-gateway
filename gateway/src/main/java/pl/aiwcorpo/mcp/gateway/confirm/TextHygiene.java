@@ -1,7 +1,7 @@
 package pl.aiwcorpo.mcp.gateway.confirm;
 
 /**
- * The forbidden character set of CC-121 (README "Higiena tekstu"), used here only to escape what the owner is shown:
+ * The forbidden character set of CC-121, used here only to escape what the owner is shown:
  * a control or bidirectional character in an argument must not reshape the preview or the description.
  */
 public final class TextHygiene {
