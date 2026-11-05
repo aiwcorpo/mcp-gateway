@@ -344,7 +344,12 @@ public class McpGatewayService {
     private DefinitionGuard.Reading awaitRead(McpServer server, CompletableFuture<DefinitionGuard.Reading> running) throws RpcFailure {
         try {
             return running.get(toolsListTimeout.toNanos(), TimeUnit.NANOSECONDS);
-        } catch (ExecutionException | TimeoutException e) {
+        } catch (ExecutionException e) {
+            if (e.getCause() instanceof RpcFailure failure) {
+                throw failure;
+            }
+            throw new RpcFailure(-32603, "upstream_unavailable: the MCP server is unavailable.", 502);
+        } catch (TimeoutException e) {
             throw new RpcFailure(-32603, "upstream_unavailable: the MCP server is unavailable.", 502);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
