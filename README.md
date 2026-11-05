@@ -33,6 +33,11 @@ JDK 25 and Docker are required (Testcontainers starts Redis with an ACL and Post
 docker build -t mcp-gateway:dev .
 ```
 
+Run it locally without anything else than Docker: the run configuration `LocalGateway` (`.run/`, IntelliJ picks it up) or
+`MCP_DEVSTACK_ACKNOWLEDGED=true ./mvnw spring-boot:test-run -Dspring-boot.run.mainClass=pl.aiwcorpo.mcp.gateway.LocalGatewayApplication`.
+It starts Redis and PostgreSQL in containers and the stand-ins of the integration tests (IdP, broker, policy server, test MCP
+servers), then the gateway on `http://localhost:18600/mcp`, and writes a user token for it to `target/local-gateway.token`.
+
 One Maven module (Spring Boot 4.1.0, Java 25); IntelliJ opens the directory as a Maven project. `src/test/java/.../testserver` is a
 minimal MCP server and a broker stub that the integration tests start in place of the real components; it is test code, not a
 product. The gateway was load tested in a separate private suite; the method and results are in the scaling chapter of `mcp-docs`.

@@ -66,7 +66,7 @@ gateway:
   component-id: mcp-gateway
   version: 0.1.0
   # Public origin (publicBaseUrl, CC-089): required, never derived from the Host of a request.
-  public-url: ${MCP_PUBLIC_URL}
+  public-url: ${MCP_PUBLIC_URL:http://localhost:8080}
   allowed-origins: ${MCP_ALLOWED_ORIGINS:}
   allow-plain-http: ${MCP_ALLOW_PLAIN_HTTP:false}
   oidc:

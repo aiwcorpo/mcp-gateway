@@ -1,0 +1,14 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="LocalGateway" type="Application" factoryName="Application">
+    <option name="MAIN_CLASS_NAME" value="pl.aiwcorpo.mcp.gateway.LocalGatewayApplication" />
+    <module name="mcp-gateway" />
+    <option name="VM_PARAMETERS" value="--enable-native-access=ALL-UNNAMED" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <envs>
+      <env name="MCP_DEVSTACK_ACKNOWLEDGED" value="true" />
+    </envs>
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>
