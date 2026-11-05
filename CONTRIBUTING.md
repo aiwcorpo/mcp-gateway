@@ -2,8 +2,8 @@
 
 Changes go through a pull request. Read the README sections "Build and test" first.
 
-- Run `make ci` (same as `ci/run.sh verify`) before pushing. It needs JDK 25, git and `./mvnw`, and a container
-  runtime for the integration tests (Testcontainers); on Windows use WSL2.
+- Run `./mvnw -B verify` before pushing. It needs JDK 25 and a container runtime for the integration tests
+  (Testcontainers); on Windows use WSL2.
 - Behaviour that a client or another component sees follows `mcp-contracts` (`openapi/gateway-admin.v1.yaml`,
   `schemas/`, `test-vectors/`). A change of an operation, a status code, an audit reason or a vector is made there first
   (`CONTRACT_CHANGES.md`); here you bump `mcp-contracts.version` and follow it. The vector tests must pass.

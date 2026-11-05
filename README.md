@@ -29,23 +29,22 @@ actuator.
 JDK 25 and Docker are required (Testcontainers starts Redis with an ACL and PostgreSQL 18.6). On Windows use WSL2.
 
 ```bash
-./mvnw -B install                                    # tests and jars of both modules
+./mvnw -B verify                                     # tests and target/mcp-gateway.jar
 docker build -t mcp-gateway:dev .
-make ci                                              # ci/run.sh verify: text checks, mvnw clean verify, zero-test guard
 ```
 
-Modules: `gateway` (Spring Boot 4.1.0, Java 25) and `test-server` (a minimal MCP server plus a broker stub for tests and demos;
-not a product). The gateway was load tested in a separate private suite; the method and results are in the scaling chapter of `mcp-docs`.
+One Maven module (Spring Boot 4.1.0, Java 25); IntelliJ opens the directory as a Maven project. `src/test/java/.../testserver` is a
+minimal MCP server and a broker stub that the integration tests start in place of the real components; it is test code, not a
+product. The gateway was load tested in a separate private suite; the method and results are in the scaling chapter of `mcp-docs`.
 
-`ci/run.sh` has the steps `verify`, `hygiene` and `image` (image `mcp-gateway:<MCP_IMAGE_STAGE>-<sha>`, built from a clean tree).
-An unknown or empty step exits with 2. The `mcp-contracts` artifacts come from Maven Central, so no registry login is needed.
-The GitLab, Jenkins and GitHub files only call this script; write access and the Docker socket are granted by the CI system,
-not by files in a branch. The release workflow (`release.yml`) has three jobs: build (read-only), publish (`packages: write`,
-only `docker load` and `docker push`) and release (`contents: write`, only `gh release create`).
+The `mcp-contracts` artifacts come from Maven Central, so no registry login is needed. The GitHub, GitLab and Jenkins files run
+`./mvnw -B verify`; write access and the Docker socket are granted by the CI system, not by files in a branch. The release
+workflow (`release.yml`) has three jobs: build (read-only), publish (`packages: write`, only `docker load` and `docker push`) and
+release (`contents: write`, only `gh release create`).
 
 ## Configuration
 
-All settings are environment variables read from `gateway/src/main/resources/application.yml`. The generated table of
+All settings are environment variables read from `src/main/resources/application.yml`. The generated table of
 variables, defaults and which ones are mandatory is in mcp-docs: `docs/reference/env-gateway.md`. Do not copy it here.
 
 The shortest set that is needed to start outside the dev profile:

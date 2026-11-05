@@ -1,5 +1,4 @@
-# Thin wrapper: all logic is in ci/run.sh, which also runs in a developer's shell. The mcp-contracts artifacts come from Maven
-# Central, so no job needs a credential. The tests start PostgreSQL and Redis with Testcontainers: use a runner with the Docker
+# The mcp-contracts artifacts come from Maven Central, so no job needs a credential. The tests start PostgreSQL and Redis with Testcontainers: use a runner with the Docker
 # socket mounted that is dedicated to this project, or set DOCKER_HOST to a Docker-in-Docker service.
 stages:
   - verify
@@ -23,27 +22,23 @@ verify-merge-request:
     policy: pull
     paths: [.m2/repository]
   script:
-    - ci/self-test.sh
-    - ci/run.sh verify
+    - ./mvnw -B verify
   artifacts:
     when: always
     reports:
       junit:
-        - "gateway/target/surefire-reports/TEST-*.xml"
-        - "test-server/target/surefire-reports/TEST-*.xml"
+        - "target/surefire-reports/TEST-*.xml"
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
 verify:
   stage: verify
   script:
-    - ci/self-test.sh
-    - ci/run.sh verify
+    - ./mvnw -B verify
   artifacts:
     when: always
     reports:
       junit:
-        - "gateway/target/surefire-reports/TEST-*.xml"
-        - "test-server/target/surefire-reports/TEST-*.xml"
+        - "target/surefire-reports/TEST-*.xml"
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

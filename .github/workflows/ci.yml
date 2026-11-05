@@ -1,5 +1,5 @@
-# Thin wrapper: all logic is in ci/run.sh. No job needs a registry login or a secret: the mcp-contracts artifacts come from
-# Maven Central.
+# No job needs a registry login or a secret: the mcp-contracts artifacts come from Maven Central. The tests start PostgreSQL and
+# Redis with Testcontainers; the Docker of the GitHub runner provides them.
 name: ci
 on:
   push:
@@ -21,9 +21,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-      - run: ci/self-test.sh
-      - run: ci/run.sh hygiene
-      - run: ./mvnw -B test
+      - run: ./mvnw -B verify
   verify:
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
@@ -38,5 +36,4 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-      - run: ci/self-test.sh
-      - run: ci/run.sh verify
+      - run: ./mvnw -B verify

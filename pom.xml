@@ -12,10 +12,9 @@
     </parent>
 
     <groupId>pl.aiwcorpo.mcp</groupId>
-    <artifactId>mcp-gateway-parent</artifactId>
-    <version>1.0.0</version>
-    <packaging>pom</packaging>
-    <name>MCP Gateway :: Parent</name>
+    <artifactId>mcp-gateway</artifactId>
+    <version>1.1.0-SNAPSHOT</version>
+    <name>MCP Gateway</name>
     <description>The single entry point of the MCP platform for AI clients: authentication, authorization of every tool call, credentials from the broker, audit.</description>
     <url>https://github.com/aiwcorpo/mcp-gateway</url>
     <licenses>
@@ -30,11 +29,6 @@
         <connection>scm:git:https://github.com/aiwcorpo/mcp-gateway.git</connection>
     </scm>
 
-    <modules>
-        <module>test-server</module>
-        <module>gateway</module>
-    </modules>
-
     <properties>
         <java.version>25</java.version>
         <maven.compiler.release>25</maven.compiler.release>
@@ -42,58 +36,159 @@
         <mcp-contracts.version>6.3.2</mcp-contracts.version>
         <bouncycastle.version>1.86</bouncycastle.version>
         <json-schema-validator.version>3.0.8</json-schema-validator.version>
-        <!-- Same line as spring-security-oauth2-jose of Spring Boot 4.1.0; the test server has no Spring Security. -->
-        <nimbus-jose-jwt.version>10.9</nimbus-jose-jwt.version>
     </properties>
 
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>pl.aiwcorpo.mcp</groupId>
-                <artifactId>mcp-gateway-test-server</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>pl.aiwcorpo.mcp</groupId>
-                <artifactId>mcp-contracts</artifactId>
-                <version>${mcp-contracts.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>pl.aiwcorpo.mcp</groupId>
-                <artifactId>mcp-contracts</artifactId>
-                <version>${mcp-contracts.version}</version>
-                <classifier>test-vectors</classifier>
-            </dependency>
-            <dependency>
-                <groupId>pl.aiwcorpo.mcp</groupId>
-                <artifactId>mcp-cedar-entities</artifactId>
-                <version>${mcp-contracts.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>pl.aiwcorpo.mcp</groupId>
-                <artifactId>mcp-manifest</artifactId>
-                <version>${mcp-contracts.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>pl.aiwcorpo.mcp</groupId>
-                <artifactId>mcp-policy-bundle</artifactId>
-                <version>${mcp-contracts.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>com.nimbusds</groupId>
-                <artifactId>nimbus-jose-jwt</artifactId>
-                <version>${nimbus-jose-jwt.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>com.networknt</groupId>
-                <artifactId>json-schema-validator</artifactId>
-                <version>${json-schema-validator.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.bouncycastle</groupId>
-                <artifactId>bcpkix-jdk18on</artifactId>
-                <version>${bouncycastle.version}</version>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security-oauth2-resource-server</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-flyway</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>pl.aiwcorpo.mcp</groupId>
+            <artifactId>mcp-contracts</artifactId>
+            <version>${mcp-contracts.version}</version>
+        </dependency>
+        <!-- PublishedTestKeys (rejected signing keys) and ResourceIds. -->
+        <dependency>
+            <groupId>pl.aiwcorpo.mcp</groupId>
+            <artifactId>mcp-cedar-entities</artifactId>
+            <version>${mcp-contracts.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>pl.aiwcorpo.mcp</groupId>
+            <artifactId>mcp-manifest</artifactId>
+            <version>${mcp-contracts.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>pl.aiwcorpo.mcp</groupId>
+            <artifactId>mcp-policy-bundle</artifactId>
+            <version>${mcp-contracts.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.networknt</groupId>
+            <artifactId>json-schema-validator</artifactId>
+            <version>${json-schema-validator.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>pl.aiwcorpo.mcp</groupId>
+            <artifactId>mcp-contracts</artifactId>
+            <version>${mcp-contracts.version}</version>
+            <classifier>test-vectors</classifier>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcpkix-jdk18on</artifactId>
+            <version>${bouncycastle.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>mcp-gateway</finalName>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- The second acknowledgement of the devstack profile is a variable of the process (DevstackGuard). -->
+                    <environmentVariables>
+                        <MCP_DEVSTACK_ACKNOWLEDGED>true</MCP_DEVSTACK_ACKNOWLEDGED>
+                    </environmentVariables>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!-- The SBOM of a release: mvn -Prelease package writes target/mcp-gateway-<version>-sbom.json -->
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.cyclonedx</groupId>
+                        <artifactId>cyclonedx-maven-plugin</artifactId>
+                        <version>2.9.1</version>
+                        <configuration>
+                            <projectType>application</projectType>
+                            <schemaVersion>1.6</schemaVersion>
+                            <outputFormat>json</outputFormat>
+                            <outputName>mcp-gateway-${project.version}-sbom</outputName>
+                            <includeTestScope>false</includeTestScope>
+                            <!-- The jar is not deployed to a Maven repository, and CycloneDX skips such modules by default. -->
+                            <skipNotDeployed>false</skipNotDeployed>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>release-sbom</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>makeBom</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

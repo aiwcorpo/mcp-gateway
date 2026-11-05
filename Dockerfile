@@ -7,7 +7,7 @@ LABEL org.opencontainers.image.source="https://github.com/aiwcorpo/mcp-gateway" 
 RUN groupadd --system gateway && useradd --system --gid gateway --no-create-home --home-dir /app gateway \
     && mkdir -p /app/state && chown gateway:gateway /app/state
 WORKDIR /app
-COPY --chown=root:root gateway/target/mcp-gateway.jar /app/app.jar
+COPY --chown=root:root target/mcp-gateway.jar /app/app.jar
 
 USER gateway
 # Heap 60% of the container limit: the rest is for metaspace, threads, direct buffers and Cedar's native library (measured about 250 MB

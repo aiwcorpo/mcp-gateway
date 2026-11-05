@@ -1,8 +1,6 @@
-// Thin wrapper: all logic is in ci/run.sh.
-//
 // The tests start containers, so the full run needs the Docker socket, and a socket is root on the agent. It is given to the
 // branch main only, on an agent labelled 'docker-trusted' that runs nothing from change requests. A change request gets a job
-// without the socket and without credentials: hygiene checks and the self-test of ci/run.sh (the full run follows after the merge).
+// without the socket and without credentials that only compiles; the full run follows after the merge.
 // No credentials are bound: the mcp-contracts artifacts come from Maven Central.
 // BRANCH_NAME exists in multibranch jobs only; a plain pipeline job has GIT_BRANCH ("origin/main"). A change request has CHANGE_ID.
 def onMain() {
@@ -17,8 +15,7 @@ pipeline {
             when { expression { !onMain() } }
             agent { docker { image 'maven:3.9.12-eclipse-temurin-25' } }
             steps {
-                sh 'ci/self-test.sh'
-                sh 'ci/run.sh hygiene'
+                sh './mvnw -B -DskipTests verify'
             }
         }
         stage('verify') {
@@ -31,12 +28,11 @@ pipeline {
                 }
             }
             steps {
-                sh 'ci/self-test.sh'
-                sh 'ci/run.sh verify'
+                sh './mvnw -B verify'
             }
             post {
                 always {
-                    junit allowEmptyResults: false, testResults: '*/target/surefire-reports/TEST-*.xml'
+                    junit allowEmptyResults: false, testResults: 'target/surefire-reports/TEST-*.xml'
                 }
             }
         }

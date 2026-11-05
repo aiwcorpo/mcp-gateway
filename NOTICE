@@ -2,6 +2,6 @@ Copyright 2026 aiwcorpo
 
 This product includes software developed at aiwcorpo (https://github.com/aiwcorpo).
 
-The test server and the stand-in broker in the module test-server, and the development stack they are used with
+The test server and the stand-in broker in src/test/java (package pl.aiwcorpo.mcp.testserver), and the development stack
 (users alice, bob, carol, mallory, the mock systems, the test keys of mcp-contracts), are worked examples for local
 runs and tests. The test keys are refused by default and must not be trusted outside a development stack.
