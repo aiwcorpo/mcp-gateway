@@ -8,6 +8,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -86,6 +88,7 @@ public class McpGatewayService {
     private final ToolAccess access;
     private final Duration toolsListTimeout;
     private final Clock clock;
+    private final Map<String, CompletableFuture<DefinitionGuard.Reading>> readsInFlight = new ConcurrentHashMap<>();
     private final ExecutorService listReaders = Executors.newVirtualThreadPerTaskExecutor();
 
     public McpGatewayService(ServerRegistry registry, PublicUrls urls, UpstreamSessions upstream,
@@ -315,6 +318,41 @@ public class McpGatewayService {
         if (fresh.isPresent()) {
             return fresh.get();
         }
+        // One read per server is in flight at a time: N admitted calls that find the reading expired would otherwise send N
+        // tools/list to the very server that is already under load. A failed flight fails its waiters and is not kept.
+        CompletableFuture<DefinitionGuard.Reading> mine = new CompletableFuture<>();
+        CompletableFuture<DefinitionGuard.Reading> running = readsInFlight.putIfAbsent(server.serverId(), mine);
+        if (running != null) {
+            return awaitRead(server, running);
+        }
+        try {
+            Optional<DefinitionGuard.Reading> recorded = definitionGuard.fresh(server.serverId());
+            DefinitionGuard.Reading reading = recorded.isPresent() ? recorded.get() : readDefinitionsNow(ctx, server);
+            readsInFlight.remove(server.serverId(), mine);
+            mine.complete(reading);
+            return reading;
+        } catch (RpcFailure | RuntimeException e) {
+            log.warn("{}: the definitions could not be read: {}", server.serverId(), e.getClass().getSimpleName());
+            readsInFlight.remove(server.serverId(), mine);
+            mine.completeExceptionally(e);
+            throw e instanceof RpcFailure failure ? failure : new RpcFailure(-32603, "upstream_unavailable: the MCP server is unavailable.", 502);
+        } finally {
+            readsInFlight.remove(server.serverId(), mine);
+        }
+    }
+
+    private DefinitionGuard.Reading awaitRead(McpServer server, CompletableFuture<DefinitionGuard.Reading> running) throws RpcFailure {
+        try {
+            return running.get(toolsListTimeout.toNanos(), TimeUnit.NANOSECONDS);
+        } catch (ExecutionException | TimeoutException e) {
+            throw new RpcFailure(-32603, "upstream_unavailable: the MCP server is unavailable.", 502);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RpcFailure(-32603, "upstream_unavailable: the MCP server is unavailable.", 502);
+        }
+    }
+
+    private DefinitionGuard.Reading readDefinitionsNow(CallContext ctx, McpServer server) throws RpcFailure {
         // A reading judged against approvals that changed meanwhile is dropped and made again; a server whose approvals keep
         // changing under the read is refused (fail-closed) rather than served from a stale verdict.
         for (int attempt = 0; attempt < 3; attempt++) {

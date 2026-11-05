@@ -47,7 +47,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Saturation of one gateway on a small heap: far more callers than the gateway can serve, against a slow system. The gateway must
- * shed what it cannot serve at once with 503 and Retry-After (fail-closed) and stay alive. Pinned: the process lives, nothing but ok, 503 and a rare refusal of an admitted call comes back and the system behind sees no more than the
+ * shed what it cannot serve at once with 503 and Retry-After (fail-closed) and stay alive. Pinned: the process lives, nothing but ok and 503 comes back and the system behind sees no more than the
  * limit; no heap threshold is set. The default run is the production setting (limit 128, the heap of an image under 2 GiB at 60%). The system
  * properties {@code saturation.limit}, {@code saturation.callers}, {@code saturation.heap} and {@code saturation.seconds} scale the run
  * (for example a limit of 100000 shows what the same load does to a gateway that sheds nothing).
@@ -63,12 +63,12 @@ class SaturationTest {
     private static final boolean WITH_LIMIT = Boolean.parseBoolean(System.getProperty("saturation.limited", "true"));
 
     /**
-     * A call that was admitted and then could not be served: the check of the definitions of the server (repeated every second in the
-     * tests, by every admitted call at once) ran into a starved fake server or a timeout. The gateway refuses such a call fail-closed with
-     * this result; shedding (503) is only for the callers that were not admitted.
+     * An admitted call whose check of the definitions of the server failed is refused fail-closed with this result (shedding, 503, is
+     * only for callers that were not admitted). The check is one read per server at a time, so under this load it must not fail: a
+     * count above the bound means the server was unreachable or the reads multiply again, and is shown as such and not as an unknown outcome.
      */
     private static final String UPSTREAM_UNAVAILABLE = "upstream_unavailable";
-    private static final double MOST_ADMITTED_CALLS_UNAVAILABLE = 0.10;
+    private static final int MOST_CALLS_UNAVAILABLE = 0;
 
     private static GatewayTestEnvironment env;
     private static Path dir;
@@ -235,11 +235,10 @@ class SaturationTest {
             assertThat(summary.getOrDefault("503", 0)).as("callers over the limit are shed").isPositive();
             assertThat(shedWithRetryAfter.get()).as("every 503 carries Retry-After").isEqualTo(summary.getOrDefault("503", 0));
             assertThat(summary.getOrDefault("ok", 0)).isPositive();
-            assertThat(summary.keySet()).as("nothing but ok, 503 and now and then an admitted call the server could not serve: %s", report)
+            assertThat(summary.keySet()).as("nothing but ok and 503: %s", report)
                     .allMatch(k -> k.equals("ok") || k.equals("503") || k.equals(UPSTREAM_UNAVAILABLE));
-            int unavailable = summary.getOrDefault(UPSTREAM_UNAVAILABLE, 0);
-            assertThat(unavailable).as("a server that cannot be reached is the exception among the admitted calls: %s", report)
-                    .isLessThanOrEqualTo((int) ((summary.get("ok") + unavailable) * MOST_ADMITTED_CALLS_UNAVAILABLE));
+            assertThat(summary.getOrDefault(UPSTREAM_UNAVAILABLE, 0)).as("admitted calls refused because the server could not be read: %s", report)
+                    .isLessThanOrEqualTo(MOST_CALLS_UNAVAILABLE);
             assertThat(jira.mostCallsInFlight()).as("the system behind sees no more than the limit").isLessThanOrEqualTo(LIMIT);
             assertThat(withoutToken.statusCode()).as("a request without a token is answered 401 even when the gateway is full").isEqualTo(401);
         }
