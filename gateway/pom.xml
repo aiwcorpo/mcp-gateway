@@ -148,9 +148,12 @@
                             <outputFormat>json</outputFormat>
                             <outputName>mcp-gateway-${project.version}-sbom</outputName>
                             <includeTestScope>false</includeTestScope>
+                            <!-- The jar is not deployed to a Maven repository, and CycloneDX skips such modules by default. -->
+                            <skipNotDeployed>false</skipNotDeployed>
                         </configuration>
                         <executions>
                             <execution>
+                                <id>release-sbom</id>
                                 <phase>package</phase>
                                 <goals>
                                     <goal>makeBom</goal>
