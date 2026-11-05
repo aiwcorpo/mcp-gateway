@@ -338,21 +338,26 @@ public class McpGatewayService {
             throw e instanceof RpcFailure failure ? failure : new RpcFailure(-32603, "upstream_unavailable: the MCP server is unavailable.", 502);
         } finally {
             readsInFlight.remove(server.serverId(), mine);
+            mine.completeExceptionally(new IllegalStateException("the read ended without a result"));
         }
     }
 
+    /**
+     * Waits for the read in flight. There is no timer of its own: the read ends by itself, every request of it is bound by the timeout of
+     * the upstream client, and it always completes the future (also on an Error), so a waiter fails exactly when the read fails. A shorter
+     * wait would refuse calls the read is about to serve.
+     */
     private DefinitionGuard.Reading awaitRead(McpServer server, CompletableFuture<DefinitionGuard.Reading> running) throws RpcFailure {
         try {
-            return running.get(toolsListTimeout.toNanos(), TimeUnit.NANOSECONDS);
+            return running.get();
         } catch (ExecutionException e) {
             if (e.getCause() instanceof RpcFailure failure) {
                 throw failure;
             }
             throw new RpcFailure(-32603, "upstream_unavailable: the MCP server is unavailable.", 502);
-        } catch (TimeoutException e) {
-            throw new RpcFailure(-32603, "upstream_unavailable: the MCP server is unavailable.", 502);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            log.warn("{}: the wait for the definitions was interrupted", server.serverId());
             throw new RpcFailure(-32603, "upstream_unavailable: the MCP server is unavailable.", 502);
         }
     }

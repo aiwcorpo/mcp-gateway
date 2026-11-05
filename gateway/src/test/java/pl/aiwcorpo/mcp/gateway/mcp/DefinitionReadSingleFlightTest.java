@@ -63,6 +63,7 @@ class DefinitionReadSingleFlightTest {
 
     private final AtomicInteger toolsListCalls = new AtomicInteger();
     private final AtomicBoolean serverFails = new AtomicBoolean();
+    private Duration toolsListTimeout = Duration.ofSeconds(5);
     private McpGatewayService service;
 
     private void setUp() throws Exception {
@@ -97,7 +98,7 @@ class DefinitionReadSingleFlightTest {
                 new RateLimitAuditThrottle(Duration.ofSeconds(10), System::nanoTime, meters),
                 new EndpointAuditThrottle(Duration.ofSeconds(10), 50, System::currentTimeMillis, meters, audit, "mcp-gateway", () -> null),
                 new ToolsListCursor("0123456789abcdef".getBytes(), JSON), killSwitches, new ToolAccess(authorizer),
-                Duration.ofSeconds(5), Clock.systemUTC());
+                toolsListTimeout, Clock.systemUTC());
     }
 
     private String callOnce() throws Exception {
@@ -130,6 +131,14 @@ class DefinitionReadSingleFlightTest {
         setUp();
         assertThat(concurrentCalls()).hasSize(CALLERS).allMatch("tool_disabled"::equals);
         assertThat(toolsListCalls.get()).as("tools/list requests to the server").isEqualTo(1);
+    }
+
+    @Test
+    void aWaiterDoesNotGiveUpBeforeTheReadItWaitsForIsOver() throws Exception {
+        toolsListTimeout = Duration.ofMillis(50);
+        setUp();
+        assertThat(concurrentCalls()).hasSize(CALLERS).allMatch("tool_disabled"::equals);
+        assertThat(toolsListCalls.get()).isEqualTo(1);
     }
 
     @Test

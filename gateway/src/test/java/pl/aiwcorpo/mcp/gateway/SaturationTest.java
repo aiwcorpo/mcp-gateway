@@ -168,6 +168,7 @@ class SaturationTest {
         }
 
         Map<String, AtomicInteger> outcomes = new ConcurrentHashMap<>();
+        Map<String, AtomicInteger> unavailableMessages = new ConcurrentHashMap<>();
         AtomicInteger shedWithRetryAfter = new AtomicInteger();
         AtomicLong slowestShed = new AtomicLong();
         long end = System.nanoTime() + LOAD.toNanos();
@@ -192,6 +193,8 @@ class SaturationTest {
                         } else if (response.statusCode() == 200 && response.body().contains("\"isError\":true")
                                 && response.body().contains("\"error\\\":\\\"upstream_unavailable\\\"")) {
                             outcome = UPSTREAM_UNAVAILABLE;
+                            java.util.regex.Matcher said = java.util.regex.Pattern.compile("message\\\\\":\\\\\"([^\\\\]*)").matcher(response.body());
+                            unavailableMessages.computeIfAbsent(said.find() ? said.group(1) : "?", k -> new AtomicInteger()).incrementAndGet();
                         } else {
                             outcome = response.statusCode() + (response.body().length() > 220 ? response.body().substring(0, 220) : response.body());
                         }
@@ -226,6 +229,7 @@ class SaturationTest {
         outcomes.forEach((k, v) -> summary.put(k, v.get()));
         String report = "limit=" + (WITH_LIMIT ? LIMIT : "none") + " callers=" + CALLERS + " heap=" + HEAP_MB + "m alive=" + gateway.alive()
                 + "\noutcomes=" + summary + "\nshedWithRetryAfter=" + shedWithRetryAfter + " slowestShedMs=" + slowestShed
+                + "\nunavailableMessages=" + unavailableMessages + "\ngateway warnings about the server:\n" + warnings()
                 + "\nmostCallsInFlightAtTheServer=" + jira.mostCallsInFlight() + "\nheap used:\n" + heap + histogram;
         Files.writeString(Path.of(System.getProperty("saturation.report", dir.resolve("report.txt").toString())), report);
         System.out.println(report);
@@ -242,6 +246,11 @@ class SaturationTest {
             assertThat(jira.mostCallsInFlight()).as("the system behind sees no more than the limit").isLessThanOrEqualTo(LIMIT);
             assertThat(withoutToken.statusCode()).as("a request without a token is answered 401 even when the gateway is full").isEqualTo(401);
         }
+    }
+
+    private static String warnings() throws IOException {
+        return gateway.output().lines().filter(l -> l.contains(" WARN ") && !l.contains("policy-sync")).limit(20)
+                .reduce("", (a, b) -> a + b + "\n");
     }
 
     private static String call(HttpClient http, String token) throws Exception {
