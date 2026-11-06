@@ -21,9 +21,9 @@ import io.micrometer.core.instrument.MeterRegistry;
  * is acknowledged twice, by a property and by an environment variable of the process (the variable is read from the process
  * environment only, never from a property source). The acknowledgements live in the configuration of the deployment, not in the
  * image: a deployment block that carries both of them with the profile is carried as a whole, so this protects against a
- * setting that slips in alone, not against copying the whole block (the gauge and the WARN make it visible). The relaxations are: signing keys named {@code test-*} (internal JWT and policy bundles),
- * a bootstrap of the registry from the manifest a server serves itself, tools from the configuration instead of an approved
- * manifest, plain http for the public URL, the IdP and the policy bundles, and no state directory for the rollback protection, and keys or cursor keys that are not shared (generated per process), and a private key of the public TLS port that every user of the host can read.
+ * setting that slips in alone, not against copying the whole block (the gauge and the WARN make it visible). The relaxations are: signing keys named {@code test-*} (internal JWT),
+ * a bootstrap of the registry from the manifest a server serves itself (its tools and its policies are approved on first use),
+ * plain http for the public URL and the IdP, and keys or cursor keys that are not shared (generated per process), and a private key of the public TLS port that every user of the host can read.
  * The pattern is the one of the server starter (profile {@code devstack}, {@code aiwcorpo.mcp.platform.devstack.acknowledged}).
  */
 public final class DevstackGuard {
@@ -40,14 +40,8 @@ public final class DevstackGuard {
         if (p.internalJwt().allowTestKeys()) {
             used.add("gateway.internal-jwt.allow-test-keys");
         }
-        if (p.policy().allowTestKeys()) {
-            used.add("gateway.policy.allow-test-keys");
-        }
         if (p.registry().bootstrapFromServer()) {
             used.add("gateway.registry.bootstrap-from-server");
-        }
-        if (ServerRegistryModes.anyStatic(p)) {
-            used.add("gateway.registry.mode / gateway.servers.*.manifest = static");
         }
         if (p.allowPlainHttp()) {
             used.add("gateway.allow-plain-http");
@@ -60,12 +54,6 @@ public final class DevstackGuard {
         }
         if (present(p.oidc().tokenUri()) && !https(p.oidc().tokenUri())) {
             used.add("gateway.oidc.token-uri is not https");
-        }
-        if (!https(p.policy().mainUrl())) {
-            used.add("gateway.policy.main-url is not https");
-        }
-        if (present(p.policy().overridesUrl()) && !https(p.policy().overridesUrl())) {
-            used.add("gateway.policy.overrides-url is not https");
         }
         // Keys that every instance must share: a random one per process breaks a second instance (tokens for the servers that the
         // other instance cannot sign for, cursors that the other instance refuses).
@@ -80,9 +68,6 @@ public final class DevstackGuard {
         }
         if (p.redis().waitReplicas() < 1) {
             used.add("gateway.redis.wait-replicas is 0 (a burned code is not confirmed by a replica)");
-        }
-        if (p.policy().stateDir() == null || p.policy().stateDir().isBlank()) {
-            used.add("gateway.policy.state-dir is empty");
         }
         if (p.publicTls().enabled() && keyReadableByOthers(p.publicTls().privateKey())) {
             used.add("gateway.public-tls.private-key is readable by all users");
@@ -201,20 +186,5 @@ public final class DevstackGuard {
 
     private static boolean present(URI uri) {
         return uri != null && !uri.toString().isBlank();
-    }
-
-    /** The registry mode of a server, as the registry reads it. */
-    private static final class ServerRegistryModes {
-        static boolean anyStatic(GatewayProperties p) {
-            if ("static".equals(p.registry().mode())) {
-                return true;
-            }
-            for (Map.Entry<String, GatewayProperties.Server> e : p.servers().entrySet()) {
-                if ("static".equals(e.getValue().manifest())) {
-                    return true;
-                }
-            }
-            return false;
-        }
     }
 }

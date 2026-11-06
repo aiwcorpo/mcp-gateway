@@ -44,11 +44,23 @@ public record GatewayProperties(
         @DefaultValue @Valid Activity activity,
         @DefaultValue @Valid RateLimit rateLimit,
         @DefaultValue @Valid Registry registry,
-        @Valid @NotNull Policy policy,
         /* Dev only: allows http for the IdP token endpoint (token exchange); never for the broker or servers. */
         @DefaultValue("false") boolean allowPlainHttp,
         @DefaultValue List<String> allowedOrigins,
-        @Valid @NotEmpty Map<String, Server> servers) {
+        /*
+         * AI clients (azp of the IdP token) that may call tools. Checked in code before Cedar (C7); a server gets the same list in its policy
+         * data. A change raises the revision of the policy data.
+         */
+        @DefaultValue({"claude-code", "claude-ai"}) @NotEmpty List<String> allowedClients) {
+
+    private static final java.util.regex.Pattern CLIENT_ID = java.util.regex.Pattern.compile("^[A-Za-z0-9._-]{1,128}$");
+
+    public GatewayProperties {
+        if (allowedClients.stream().anyMatch(client -> !CLIENT_ID.matcher(client).matches())) {
+            throw new IllegalArgumentException("gateway.allowed-clients (MCP_ALLOWED_CLIENTS) holds a value that is not a client id: [A-Za-z0-9._-], 1 to 128 characters");
+        }
+        allowedClients = List.copyOf(allowedClients.stream().distinct().toList());
+    }
 
     public record Oidc(
             @NotBlank String issuer,
@@ -215,39 +227,12 @@ public record GatewayProperties(
             @DefaultValue("3") @Min(1) int pendingLimit) {
     }
 
-    /**
-     * Where the signed policy bundles come from (C7). The gateway does not start without a main bundle (CC-068). Keys are PEM
-     * files of the Ed25519 public keys; identifiers starting with {@code test-} need {@code allowTestKeys} (CC-044).
-     */
-    public record Policy(
-            @NotNull URI mainUrl,
-            URI overridesUrl,
-            @NotBlank String mainKeyId,
-            @NotBlank String mainKeyFile,
-            String overridesKeyId,
-            String overridesKeyFile,
-            @DefaultValue("false") boolean allowTestKeys,
-            /* Directory of the rollback protection state (CC-066), one per instance; empty = in memory only. */
-            String stateDir,
-            /* Lowest revision ever accepted per channel (raised after an incident); empty = none. */
-            String minimumMainRevision,
-            String minimumOverridesRevision,
-            @DefaultValue("30s") Duration mainInterval,
-            @DefaultValue("5s") Duration overridesInterval,
-            /* How long the start waits for the main bundle before the gateway gives up. */
-            @DefaultValue("2m") Duration startupTimeout,
-            /* After a restart with an overrides bundle active: how long to wait for it before an alarm and serving anyway. */
-            @DefaultValue("1m") Duration overridesGrace) {
-    }
-
     /** Approved definitions of the servers (C6). */
     public record Registry(
-            /* required: a server serves only tools of an approved manifest; static: the tools of this configuration. */
-            @DefaultValue("required") String mode,
             /*
-             * A required server with no stored approval gets, once, the manifest it serves itself at /mcp-manifest (trust on
-             * first use: the server then declares the risk of its own new tools). Development only; production registers
-             * through CI.
+             * A server with no stored approval gets, once, the manifest it serves itself at /mcp-manifest (trust on first use: the
+             * server then declares the risk of its own new tools and its policies are approved with them). Development only;
+             * production registers through CI and approves in the portal.
              */
             @DefaultValue("false") boolean bootstrapFromServer,
             @DefaultValue("10s") Duration bootstrapRetry,
@@ -306,50 +291,5 @@ public record GatewayProperties(
     /** Prometheus endpoint on the internal port: only client certificates with these names (empty = nobody). */
     public record Metrics(
             @DefaultValue List<String> allowedClientCns) {
-    }
-
-    /** Static configuration of one MCP server (stand-in for the registry, C5). */
-    public record Server(
-            @NotBlank String system,
-            @NotNull URI internalUrl,
-            @DefaultValue("0.1.0") @NotBlank String version,
-            @DefaultValue("true") boolean enabled,
-            /* required or static; empty = gateway.registry.mode. */
-            String manifest,
-            @Valid @NotNull Credential credential,
-            @Valid @NotNull Map<String, Tool> tools,
-            /*
-             * The server is a foreign MCP server behind an adapter (CC-193, CC-206): its manifest comes from the adapter on its own channel
-             * (submitAdapterManifest), never from the pipeline, and an administrator classifies its tools. Needs manifest "required".
-             * The tools listed here are only minimum risks for tools of the same name; a server built on the starter lists them all.
-             */
-            @DefaultValue("false") boolean adapter) {
-    }
-
-    public record Credential(
-            @DefaultValue("true") boolean required,
-            @DefaultValue List<String> acceptedTypes,
-            @DefaultValue List<String> scopes,
-            /* token-exchange systems need the user's token exchanged for the broker (C4 subjectToken). */
-            @DefaultValue("false") boolean tokenExchange,
-            /*
-             * The credential type of the system for context.credentialType (CC-136), one of accepted-types. Optional when only
-             * one type is accepted (or token-exchange is on); required when a user may hold several.
-             */
-            String type) {
-    }
-
-    /** {@code action} defaults from the risk (read, update, delete); {@code title} is optional (CC-082). */
-    public record Tool(
-            @NotBlank String risk,
-            @NotBlank String description,
-            String title,
-            String action,
-            @DefaultValue("false") boolean disabled,
-            /* Resource identifiers among the arguments (C6 resourceRefs); the manifest replaces this from M3 K3 on. */
-            @DefaultValue List<ResourceRefConfig> resourceRefs) {
-    }
-
-    public record ResourceRefConfig(@NotBlank String argument, @NotBlank String type) {
     }
 }
