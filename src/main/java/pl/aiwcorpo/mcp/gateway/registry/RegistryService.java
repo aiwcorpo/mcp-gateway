@@ -829,7 +829,9 @@ public final class RegistryService {
         // A state that is gone from the store (a server was removed, or an operator emptied the tables) is gone from here too: nothing
         // stays approved on memory alone.
         for (String serverId : List.copyOf(held.keySet())) {
-            if (all.stream().noneMatch(stored -> stored.serverId().equals(serverId)) || servers.find(serverId).isEmpty()) {
+            // The list was read before this loop: a server created and registered in between is in held but not in the list, so the store is asked again.
+            if ((all.stream().noneMatch(stored -> stored.serverId().equals(serverId)) && store.findServer(serverId).isEmpty())
+                    || servers.find(serverId).isEmpty()) {
                 RegisteredServer gone = held.remove(serverId);
                 servers.forgetState(serverId);
                 guard.forget(serverId);
