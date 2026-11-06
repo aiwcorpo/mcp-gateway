@@ -11,6 +11,9 @@ target/
 *.key
 *.crt
 *.env
+# Templates of deploy/, filled in after download, never in this repository.
+!deploy/gateway.env
+!deploy/systemd/mcp-gateway.env
 *.log
 /keys/
 .DS_Store

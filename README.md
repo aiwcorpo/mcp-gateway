@@ -6,8 +6,7 @@ internal JWT and forwards the call to the MCP server over mutual TLS. Every tool
 `requestId`.
 
 It is a deployable component (container image `mcp-gateway`), not a library. The intended readers are platform operators.
-Installation and day-to-day operation of the whole platform are described in
-[mcp-docs](https://github.com/aiwcorpo/mcp-docs), starting from `docs/operator/index.md`.
+Installation: [deploy/README.md](deploy/README.md) (Docker Compose, or systemd on a virtual machine).
 
 Contracts: `mcp-contracts` 6.3.2. What works, what is missing and the known deviations: [STATUS.md](STATUS.md) (in Polish).
 License: Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). Changes: [CHANGELOG.md](CHANGELOG.md). Contributing:
@@ -18,7 +17,8 @@ License: Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). Changes: [CHANGELOG.
 PostgreSQL (registry, kill switches, activity; Flyway creates the schema at start), Redis with a `gateway` account
 (sessions, confirmations, rate limits; `noeviction`, `appendonly yes`), an OIDC identity provider (Keycloak or Entra),
 `mcp-credential-broker`, a policy server with signed bundles (`mcp-policies`) and MCP servers reachable over mTLS with
-certificates from one internal CA. The Compose install in `mcp-docs` (`examples/compose`) gives a single-machine stack for trying it out; its settings are not for production.
+certificates from one internal CA.
+`deploy/compose.yaml` brings its own PostgreSQL and Redis with a replica.
 
 Ports: `8080` for MCP clients (public) and `8443` for TLS with the gateway certificate (internal JWKS, `/actuator/health`,
 `/actuator/prometheus`, `/admin/v1/*`). The internal port does not serve MCP paths and the public one serves neither JWKS nor
@@ -62,6 +62,9 @@ The shortest set that is needed to start outside the dev profile:
 - `MCP_BROKER_URL`, `MCP_BROKER_TLS_NAME`.
 - `MCP_POLICY_MAIN_URL`, `MCP_POLICY_MAIN_KEY_ID`, `MCP_POLICY_MAIN_KEY_FILE`, `MCP_POLICY_STATE_DIR` (one state directory per instance).
 - `MCP_INTERNAL_JWT_KEYS_FILE`, `MCP_INTERNAL_JWT_ACTIVE_KID`, `MCP_LIST_CURSOR_KEY`, `MCP_ACTIVITY_CURSOR_KEY`: shared by all instances.
+  `java -jar mcp-gateway.jar init <dir>` generates the ones that are not set (and the PostgreSQL and Redis passwords) into `<dir>`
+  once, then checks the configuration and the connections; the gateway reads them with
+  `SPRING_CONFIG_IMPORT=optional:configtree:<dir>/gateway/env/`. Both files in `deploy/` do this.
 - `MCP_SERVER_<SYSTEM>_MCP_URL` and, for a foreign server behind the adapter, `MCP_SERVER_<SYSTEM>_ADAPTER=true`.
 
 With two or more instances, share Redis, PostgreSQL, the C2 key file and the cursor keys. Registry and kill switch changes reach the

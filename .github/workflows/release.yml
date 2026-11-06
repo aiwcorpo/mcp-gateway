@@ -6,7 +6,8 @@
 #            docker save tarball in an artifact. The mcp-contracts artifacts come from Maven Central.
 #   publish  packages: write. No checkout, no cache; docker load and docker push only. The token is in the environment
 #            of the push step.
-#   release  contents: write. No checkout; creates the draft release with the SBOM through gh (GH_REPO instead of a clone).
+#   release  contents: write. No checkout; creates the draft release with the SBOM, the jar and deploy/ as
+#            mcp-gateway-deploy.tar.gz through gh (GH_REPO instead of a clone).
 name: release
 on:
   push:
@@ -35,6 +36,7 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           test "$(./mvnw -q -B -N org.apache.maven.plugins:maven-help-plugin:3.5.1:evaluate -Dexpression=project.version -DforceStdout)" = "$version"
+          grep -qF "mcp-gateway:\${MCP_GATEWAY_VERSION:-$version}" deploy/compose.yaml
       - name: Verify, build the jar and the SBOM
         run: |
           ./mvnw -B verify
@@ -45,11 +47,12 @@ jobs:
           docker build -t "$IMAGE:$version" .
           mkdir -p out
           docker save "$IMAGE:$version" -o out/image.tar
-          cp target/*-sbom.json out/
+          cp target/*-sbom.json target/mcp-gateway.jar out/
+          tar -czf out/mcp-gateway-deploy.tar.gz --transform 's|^deploy|mcp-gateway-deploy|' deploy
       - name: Check the artifact file list
         run: |
           cd out
-          unexpected="$(find . -mindepth 1 | sed 's|^\./||' | grep -Evx 'image\.tar|[A-Za-z0-9._-]+-sbom\.json' || true)"
+          unexpected="$(find . -mindepth 1 | sed 's|^\./||' | grep -Evx 'image\.tar|mcp-gateway\.jar|mcp-gateway-deploy\.tar\.gz|[A-Za-z0-9._-]+-sbom\.json' || true)"
           if [ -n "$unexpected" ]; then echo "unexpected files in the artifact:" >&2; echo "$unexpected" >&2; exit 1; fi
           test -f image.tar
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -72,7 +75,7 @@ jobs:
       - name: Check the artifact file list
         run: |
           cd out
-          unexpected="$(find . -mindepth 1 | sed 's|^\./||' | grep -Evx 'image\.tar|[A-Za-z0-9._-]+-sbom\.json' || true)"
+          unexpected="$(find . -mindepth 1 | sed 's|^\./||' | grep -Evx 'image\.tar|mcp-gateway\.jar|mcp-gateway-deploy\.tar\.gz|[A-Za-z0-9._-]+-sbom\.json' || true)"
           if [ -n "$unexpected" ]; then echo "unexpected files in the artifact:" >&2; echo "$unexpected" >&2; exit 1; fi
           test -f image.tar
       - name: Push the image
@@ -99,11 +102,13 @@ jobs:
       - name: Check the artifact file list
         run: |
           cd out
-          unexpected="$(find . -mindepth 1 | sed 's|^\./||' | grep -Evx 'image\.tar|[A-Za-z0-9._-]+-sbom\.json' || true)"
+          unexpected="$(find . -mindepth 1 | sed 's|^\./||' | grep -Evx 'image\.tar|mcp-gateway\.jar|mcp-gateway-deploy\.tar\.gz|[A-Za-z0-9._-]+-sbom\.json' || true)"
           if [ -n "$unexpected" ]; then echo "unexpected files in the artifact:" >&2; echo "$unexpected" >&2; exit 1; fi
           test -f image.tar
-      - name: Attach the SBOM to the release
-        run: gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" out/*-sbom.json
+      - name: Attach the SBOM, the jar and the deploy directory to the release
+        run: |
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" out/*-sbom.json out/mcp-gateway.jar \
+            out/mcp-gateway-deploy.tar.gz
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}

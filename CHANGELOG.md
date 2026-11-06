@@ -3,6 +3,17 @@
 The gateway ships as a container image (`ghcr.io/aiwcorpo/mcp-gateway`); the version in `pom.xml` follows SemVer. Local and
 integration builds tag the image `m6-<short sha>`.
 
+## Unreleased (1.1.0)
+
+- `deploy/`: installation next to the component. `compose.yaml` with the gateway's own PostgreSQL and Redis (primary and replica),
+  one configuration file `gateway.env` and the certificates in `certs/`; `systemd/` for a virtual machine. The release attaches it
+  as `mcp-gateway-deploy.tar.gz`, together with the jar.
+- `init` (`java -jar mcp-gateway.jar init <dir>`) runs before every start: it generates once what nothing outside the installation
+  needs to know (PostgreSQL and Redis passwords, internal JWT keys, cursor keys) and checks the settings, the certificate files, the
+  policy key and the connections to the identity provider, the policy server, the broker and the MCP servers, with the likely cause
+  of each failure.
+- One Maven module instead of three; the test MCP server is test code. The image creates `/secrets/*` for the volumes of `init`.
+
 ## 1.0.0
 
 First public release. Built on `mcp-contracts` 6.3.2.

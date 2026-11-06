@@ -92,6 +92,11 @@ public final class SigningKeys {
         return publicSet;
     }
 
+    /** Two new private keys as the content of a keys file; the first is meant to be the active one. */
+    public static JWKSet newKeysFile() {
+        return new JWKSet(generate().stream().map(k -> (JWK) k).toList());
+    }
+
     private static List<ECKey> generate() {
         String date = LocalDate.now(ZoneOffset.UTC).format(DateTimeFormatter.BASIC_ISO_DATE);
         byte[] nonce = new byte[3];

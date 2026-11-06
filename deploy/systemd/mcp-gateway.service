@@ -1,0 +1,50 @@
+# systemd unit: /etc/systemd/system/mcp-gateway.service
+#   systemctl daemon-reload && systemctl enable --now mcp-gateway
+[Unit]
+Description=MCP platform: mcp-gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gateway
+Group=gateway
+# Addresses and secrets (deploy/systemd/mcp-gateway.env); logs go to journald.
+EnvironmentFile=/etc/mcp-gateway/mcp-gateway.env
+# Generates the internal JWT keys and the cursor keys once into the state directory, then checks the configuration and the
+# connections; the gateway does not start when it fails (journalctl -u mcp-gateway shows why).
+ExecStartPre=/usr/bin/java -jar /opt/mcp-gateway/gateway.jar init /var/lib/mcp-gateway/secrets
+ExecStart=/usr/bin/java -XX:+UseG1GC -XX:MaxRAMPercentage=60 -XX:G1PeriodicGCInterval=60000 --enable-native-access=ALL-UNNAMED -XX:+ExitOnOutOfMemoryError -jar /opt/mcp-gateway/gateway.jar
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+# The Cedar native library is unpacked into the temporary directory and loaded from there: it must be writable and executable.
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+# The JIT needs writable and executable memory.
+MemoryDenyWriteExecute=false
+ReadOnlyPaths=/etc/mcp-gateway /opt/mcp-gateway
+StateDirectory=mcp-gateway
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectProc=invisible
+ProcSubset=pid
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+UMask=0077
+# One gateway needs about 2 GiB (heap is 60 percent of what the unit may use); set the limit to the host's budget.
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target
