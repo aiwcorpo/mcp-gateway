@@ -132,4 +132,38 @@ class AdditionalGroupTest extends GatewayTestBase {
         assertThat(String.join(",", listed(token("mcp-ops-destructive", "mcp-ops-ops", "mcp-ops-audit")))).as("what was approved stays in force")
                 .contains("ops__delete_issue");
     }
+
+    @Test
+    void removingOrChangingTheGroupOfAReadOnlyToolWaitsForAnAdministratorAndTheOldEntryStaysInForce() throws Exception {
+        ops.additionalGroup("get_issue", null);
+        assertThat(register(ops.manifest()).statusCode()).isEqualTo(200);
+
+        JsonNode entry = tool(JSON.readTree(adminCall("GET", "/admin/v1/registry/servers", null).body()), "get_issue");
+        assertThat(entry.path("status").asString()).as("a READ_ONLY tool, but the review of a commit does not widen who may call it")
+                .isEqualTo("pending_approval");
+        JsonNode diff = JSON.readTree(adminCall("GET", REGISTRY + "/tools/get_issue/pending", null).body());
+        assertThat(diff.path("approvedEntry").path("additionalGroup").asString()).isEqualTo("mcp-ops-ops");
+        assertThat(diff.path("pendingEntry").has("additionalGroup")).isFalse();
+        assertThat(toolError(call(token("mcp-ops-read"))).path("error").asString()).as("the approved entry, with its group, is still enforced")
+                .isEqualTo("not_found_or_denied");
+        assertThat(toolError(call(token("mcp-ops-read", "mcp-ops-ops"))).path("error").asString()).isEmpty();
+
+        ops.additionalGroup("get_issue", "audit");
+        assertThat(register(ops.manifest()).statusCode()).isEqualTo(200);
+        assertThat(tool(JSON.readTree(adminCall("GET", "/admin/v1/registry/servers", null).body()), "get_issue").path("status").asString())
+                .as("changing it is no better than removing it").isEqualTo("pending_approval");
+        assertThat(toolError(call(token("mcp-ops-read", "mcp-ops-audit"))).path("error").asString()).isEqualTo("not_found_or_denied");
+    }
+
+    @Test
+    void addingAGroupToAReadOnlyToolIsApprovedByTheReviewOfTheCommit() throws Exception {
+        ops.additionalGroup("search_issues", "ops");
+        assertThat(register(ops.manifest()).statusCode()).isEqualTo(200);
+
+        JsonNode entry = tool(JSON.readTree(adminCall("GET", "/admin/v1/registry/servers", null).body()), "search_issues");
+        assertThat(entry.path("status").asString()).as("it only narrows access").isEqualTo("approved");
+        assertThat(entry.path("additionalGroup").asString()).isEqualTo("mcp-ops-ops");
+        assertThat(listed(token("mcp-ops-read"))).doesNotContain("ops__search_issues");
+        assertThat(listed(token("mcp-ops-read", "mcp-ops-ops"))).contains("ops__search_issues");
+    }
 }

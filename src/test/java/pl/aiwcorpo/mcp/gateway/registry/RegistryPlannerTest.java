@@ -214,4 +214,59 @@ class RegistryPlannerTest {
                 new LinkedHashMap<>(plan.tools()), plan.risks(), Map.of(), false);
         assertThat(next.tools().get("delete_issue").pending().riskLowered()).isTrue();
     }
+
+    private static JsonNode entryOf(JsonNode described) {
+        ObjectNode entry = JSON.createObjectNode();
+        entry.put("name", "get_thing");
+        entry.put("risk", described.path("risk").asString());
+        entry.put("action", "READ_ONLY".equals(described.path("risk").asString()) ? "read" : "update");
+        entry.putArray("resourceRefs");
+        entry.set("definition", Manifests.definition(Tool.readOnly("get_thing")));
+        entry.put("definitionHash", described.path("definitionHash").asString());
+        if (described.has("additionalGroup")) {
+            entry.put("additionalGroup", described.path("additionalGroup").asString());
+        }
+        return entry;
+    }
+
+    /** The registration vectors of registry-approval/ (CC-245): what a registration does to an additionalGroup, whatever the risk. */
+    @org.junit.jupiter.api.TestFactory
+    List<org.junit.jupiter.api.DynamicTest> theRegistrationVectors() {
+        List<org.junit.jupiter.api.DynamicTest> tests = new java.util.ArrayList<>();
+        for (pl.aiwcorpo.mcp.gateway.support.Vectors.Vector vector : pl.aiwcorpo.mcp.gateway.support.Vectors.of("registry-approval")) {
+            if (!vector.name().startsWith("registration-")) {
+                continue;
+            }
+            tests.add(org.junit.jupiter.api.DynamicTest.dynamicTest(vector.name(), () -> {
+                JsonNode input = vector.document().path("input");
+                JsonNode expected = vector.document().path("expected");
+                Map<String, RegisteredTool> existing = new LinkedHashMap<>();
+                if (!input.path("approved").isNull()) {
+                    JsonNode entry = entryOf(input.path("approved"));
+                    existing.put("get_thing", new RegisteredTool("get_thing", new RegisteredTool.Approved(entry,
+                            entry.path("definitionHash").asString(), "1.0.0", CREDENTIAL), null));
+                }
+                ObjectNode manifest = JSON.createObjectNode();
+                manifest.put("version", "1.1.0");
+                manifest.putArray("tools").add(entryOf(input.path("submitted")));
+
+                RegisteredTool next = plan(manifest, existing).tools().get("get_thing");
+
+                boolean approved = next.pending() == null;
+                assertThat(approved ? "approved" : "pending_approval").as(vector.document().path("description").asString())
+                        .isEqualTo(expected.path("state").asString());
+                if (approved) {
+                    assertThat(next.approved().hash()).isEqualTo(input.path("submitted").path("definitionHash").asString());
+                } else {
+                    assertThat(next.pending().change()).isEqualTo(expected.path("change").asString());
+                    if (!existing.isEmpty()) {
+                        assertThat(next.approved().entry().path("additionalGroup").asString(null))
+                                .as("what was approved stays in force").isEqualTo(input.path("approved").path("additionalGroup").asString(null));
+                    }
+                }
+            }));
+        }
+        assertThat(tests).hasSize(8);
+        return tests;
+    }
 }

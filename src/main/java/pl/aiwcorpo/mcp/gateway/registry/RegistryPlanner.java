@@ -70,6 +70,18 @@ public final class RegistryPlanner {
     }
 
     /**
+     * Removing or changing the additionalGroup of a tool that is registered widens or moves who may call it, which the review of a commit does
+     * not approve (CC-245): the entry waits for an administrator, whatever its risk, and the approved one stays in force. Adding a group only
+     * narrows access and follows the normal rule.
+     */
+    private static boolean dropsAdditionalGroup(RegisteredTool.Approved approved, JsonNode entry) {
+        if (approved == null || !approved.entry().has("additionalGroup")) {
+            return false;
+        }
+        return !approved.entry().get("additionalGroup").asString().equals(entry.path("additionalGroup").asString(null));
+    }
+
+    /**
      * @param floors the highest risk ever reported per tool (ordinal), pending entries included (CC-167): a tool below it does not
      *        reject the manifest, it waits for an administrator who accepts the lowering
      * @param configuredMinimum risk ordinal per tool below which a manifest may never go: the operator's configuration
@@ -109,7 +121,7 @@ public final class RegistryPlanner {
                 next.put(name, new RegisteredTool(name, approved, null));
                 continue;
             }
-            if (risk == Risk.READ_ONLY.ordinal() || approveAll) {
+            if ((risk == Risk.READ_ONLY.ordinal() && !dropsAdditionalGroup(approved, entry)) || approveAll) {
                 next.put(name, new RegisteredTool(name, new RegisteredTool.Approved(entry, hash, version, credentialJson), null));
                 changes.add(new Change("definition_registered", name, hash));
                 risks.put(name, risk);
