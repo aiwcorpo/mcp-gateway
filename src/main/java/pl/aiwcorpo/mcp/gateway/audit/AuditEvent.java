@@ -130,8 +130,12 @@ public final class AuditEvent {
         return put("definitionHash", hash);
     }
 
-    public AuditEvent policyRevision(String revision) {
-        return put("policyRevision", revision);
+    /** Revision of the policy data the decision was made with (C7); 0 is not recorded: it names no data. */
+    public AuditEvent policyRevision(long revision) {
+        if (revision > 0) {
+            fields.put("policyRevision", revision);
+        }
+        return this;
     }
 
     public AuditEvent credentialType(String type) {

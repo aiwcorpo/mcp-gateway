@@ -5,7 +5,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 import java.util.List;
-import java.util.function.Supplier;
+import java.util.function.LongSupplier;
 
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.JOSEObjectType;
@@ -29,10 +29,10 @@ public final class InternalTokenIssuer {
     private final SigningKeys keys;
     private final String issuer;
     private final Duration lifetime;
-    private final Supplier<String> policyRevision;
+    private final LongSupplier policyRevision;
     private final Clock clock;
 
-    public InternalTokenIssuer(SigningKeys keys, String issuer, Duration lifetime, Supplier<String> policyRevision, Clock clock) {
+    public InternalTokenIssuer(SigningKeys keys, String issuer, Duration lifetime, LongSupplier policyRevision, Clock clock) {
         if (lifetime.isNegative() || lifetime.isZero() || lifetime.compareTo(Duration.ofSeconds(60)) > 0) {
             throw new IllegalStateException("internal JWT lifetime must be in (0, 60 s] (C2)");
         }
@@ -89,7 +89,7 @@ public final class InternalTokenIssuer {
                 .issuer(issuer)
                 .audience(audience)
                 .claim("rid", requestId)
-                .claim("prv", policyRevision.get())
+                .claim("prv", policyRevision.getAsLong())
                 .issueTime(Date.from(now))
                 .expirationTime(Date.from(now.plus(lifetime)))
                 .jwtID(UuidV7.next());

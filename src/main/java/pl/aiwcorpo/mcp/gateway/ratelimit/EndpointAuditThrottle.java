@@ -6,7 +6,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
-import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,12 +35,12 @@ public final class EndpointAuditThrottle implements AutoCloseable {
     private final MeterRegistry meters;
     private final AuditLog audit;
     private final String componentId;
-    private final Supplier<String> policyRevision;
+    private final java.util.function.LongSupplier policyRevision;
     private final DistributionSummary summaryTargets;
     private final ScheduledExecutorService timer;
 
     public EndpointAuditThrottle(Duration interval, int maxTargetsPerUserAndReason, LongSupplier millis, MeterRegistry meters, AuditLog audit,
-                                 String componentId, Supplier<String> policyRevision) {
+                                 String componentId, java.util.function.LongSupplier policyRevision) {
         this.core = new AuditThrottleCore<>(interval.toMillis(), maxTargetsPerUserAndReason);
         this.millis = millis;
         this.meters = meters;
@@ -103,7 +102,7 @@ public final class EndpointAuditThrottle implements AutoCloseable {
     private void write(List<AuditThrottleCore.Summary<GatewayUser>> summaries) {
         for (AuditThrottleCore.Summary<GatewayUser> summary : summaries) {
             AuditEvent event = AuditEvent.of("policy_decision", UuidV7.next(), componentId).user(summary.user())
-                    .decision("deny", summary.reason()).policyRevision(policyRevision.get());
+                    .decision("deny", summary.reason()).policyRevision(policyRevision.getAsLong());
             switch (summary.reason()) {
                 case "invalid_filter", "invalid_cursor" -> event.outcome("error");
                 case "filter_mismatch" -> event.outcome("denied");

@@ -2,8 +2,6 @@ package pl.aiwcorpo.mcp.gateway.config;
 
 import java.nio.file.Path;
 import java.time.Clock;
-import java.util.LinkedHashMap;
-import java.util.Map;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -51,8 +49,12 @@ import pl.aiwcorpo.mcp.gateway.confirm.RedisConfirmationStore;
 import pl.aiwcorpo.mcp.gateway.auth.PublicUrls;
 import pl.aiwcorpo.mcp.gateway.auth.ResourceMetadata;
 import pl.aiwcorpo.mcp.gateway.authz.CedarToolAuthorizer;
-import pl.aiwcorpo.mcp.gateway.policy.BundleFetcher;
+import pl.aiwcorpo.mcp.gateway.admin.PolicyController;
+import pl.aiwcorpo.mcp.gateway.admin.PolicyDataController;
+import pl.aiwcorpo.mcp.gateway.admin.ServerController;
+import pl.aiwcorpo.mcp.gateway.policy.PolicyDataStore;
 import pl.aiwcorpo.mcp.gateway.policy.PolicyService;
+import pl.aiwcorpo.mcp.gateway.registry.ServerAdmin;
 import pl.aiwcorpo.mcp.gateway.authz.ToolAccess;
 import pl.aiwcorpo.mcp.gateway.authz.ToolAuthorizer;
 import pl.aiwcorpo.mcp.gateway.broker.BrokerClient;
@@ -74,7 +76,6 @@ import pl.aiwcorpo.mcp.gateway.mcp.McpGatewayService;
 import pl.aiwcorpo.mcp.gateway.ratelimit.EndpointAuditThrottle;
 import pl.aiwcorpo.mcp.gateway.mcp.ToolsListCursor;
 import pl.aiwcorpo.mcp.gateway.mcp.ToolErrors;
-import pl.aiwcorpo.mcp.gateway.server.McpServer;
 import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
 import pl.aiwcorpo.mcp.gateway.tls.InternalTls;
 import pl.aiwcorpo.mcp.gateway.upstream.StreamableHttpClient;
@@ -96,8 +97,8 @@ public class GatewayConfiguration {
 
     @Bean
     @DependsOn("devstackGuard")
-    ServerRegistry serverRegistry(GatewayProperties properties, MeterRegistry meters) {
-        ServerRegistry registry = new ServerRegistry(properties.servers(), properties.registry().mode());
+    ServerRegistry serverRegistry(MeterRegistry meters) {
+        ServerRegistry registry = new ServerRegistry();
         registry.bindTo(meters);
         return registry;
     }
@@ -240,8 +241,9 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    ChangeWatcher changeWatcher(ChangeCounter counter, RegistryService registry, KillSwitches killSwitches, GatewayProperties properties) {
-        return new ChangeWatcher(counter, registry, killSwitches, properties.mcp().changePollInterval(), java.util.List.of());
+    ChangeWatcher changeWatcher(ChangeCounter counter, RegistryService registry, KillSwitches killSwitches, PolicyService policies,
+                                GatewayProperties properties) {
+        return new ChangeWatcher(counter, registry, killSwitches, policies, properties.mcp().changePollInterval(), java.util.List.of());
     }
 
     /** Created before anything that uses a relaxed setting: the start is refused here, not after a bundle was pulled over http. */
@@ -263,16 +265,15 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    BundleFetcher bundleFetcher() {
-        return new BundleFetcher();
+    PolicyDataStore policyDataStore(JdbcClient jdbc, JsonMapper gatewayJson) {
+        return new PolicyDataStore(jdbc, gatewayJson);
     }
 
-    /** Does not return before a signed main bundle is loaded: the gateway has no start without policies (CC-068). */
+    /** Reads the policy data before the first request: without it every decision is a deny (policy_unavailable). */
     @Bean
     @DependsOn("devstackGuard")
-    PolicyService policyService(GatewayProperties properties, BundleFetcher fetcher, MeterRegistry meters,
-                                org.springframework.core.env.Environment environment) {
-        return new PolicyService(properties.policy(), fetcher, meters, DevstackGuard.devstackActive(environment)).start();
+    PolicyService policyService(RegistryStore store, PolicyDataStore data, AuditLog audit, JsonMapper gatewayJson, GatewayProperties properties) {
+        return new PolicyService(store, data, audit, properties.componentId(), gatewayJson, properties.allowedClients()).start();
     }
 
     @Bean
@@ -362,14 +363,10 @@ public class GatewayConfiguration {
     @Bean
     UpstreamSessions upstreamSessions(GatewayProperties properties, ServerRegistry servers, InternalTls tls,
                                       InternalTokenIssuer tokens, JsonMapper gatewayJson, Clock clock) {
-        Map<String, StreamableHttpClient> clients = new LinkedHashMap<>();
         GatewayProperties.Upstream upstream = properties.upstream();
-        for (McpServer server : servers.all()) {
-            clients.put(server.serverId(), new StreamableHttpClient(server.internalUrl(),
-                    tls.clientFor(server.tlsName(), java.time.Duration.ofSeconds(5)), gatewayJson, upstream.timeout(),
-                    upstream.maxResponseBytes()));
-        }
-        return new UpstreamSessions(clients, tokens, gatewayJson, properties.sessions().upstreamIdleTimeout(), clock,
+        return new UpstreamSessions(server -> new StreamableHttpClient(server.internalUrl(),
+                tls.clientFor(server.tlsName(), java.time.Duration.ofSeconds(5)), gatewayJson, upstream.timeout(),
+                upstream.maxResponseBytes()), tokens, gatewayJson, properties.sessions().upstreamIdleTimeout(), clock,
                 properties.componentId(), properties.version());
     }
 
@@ -534,8 +531,9 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    RegistryStore registryStore(JdbcClient jdbc, JsonMapper gatewayJson, PlatformTransactionManager transactions, ChangeCounter changes) {
-        return new RegistryStore(jdbc, gatewayJson, transactions, changes);
+    RegistryStore registryStore(JdbcClient jdbc, JsonMapper gatewayJson, PlatformTransactionManager transactions, ChangeCounter changes,
+                                PolicyDataStore policyData) {
+        return new RegistryStore(jdbc, gatewayJson, transactions, changes, policyData);
     }
 
     @Bean
@@ -546,12 +544,33 @@ public class GatewayConfiguration {
     @Bean
     RegistryService registryService(ServerRegistry servers, RegistryStore store, ManifestFetcher fetcher, DefinitionGuard guard,
                                     DefinitionCheck definitionCheck, AuditLog audit, GatewayProperties properties, JsonMapper gatewayJson,
-                                    org.springframework.core.env.Environment environment) {
+                                    org.springframework.core.env.Environment environment, PolicyService policies) {
         RegistryService registry = new RegistryService(servers, store,
                 new ManifestValidator(gatewayJson, DevstackGuard.devstackActive(environment)), fetcher, guard, definitionCheck, audit,
-                properties.componentId(), gatewayJson);
+                properties.componentId(), gatewayJson, policies);
         registry.load();
         return registry;
+    }
+
+    @Bean
+    ServerAdmin serverAdmin(RegistryStore store, RegistryService registry, PolicyService policies, AuditLog audit, GatewayProperties properties,
+                            JsonMapper gatewayJson, UpstreamSessions upstream) {
+        return new ServerAdmin(store, registry, policies, audit, properties.componentId(), gatewayJson, upstream::forgetServer);
+    }
+
+    @Bean
+    ServerController serverController(ServerAdmin servers, JsonMapper gatewayJson) {
+        return new ServerController(servers, gatewayJson);
+    }
+
+    @Bean
+    PolicyController policyController(PolicyService policies, JsonMapper gatewayJson) {
+        return new PolicyController(policies, gatewayJson);
+    }
+
+    @Bean
+    PolicyDataController policyDataController(PolicyService policies, ServerRegistry servers, JsonMapper gatewayJson) {
+        return new PolicyDataController(policies, servers, gatewayJson);
     }
 
     /** Servers that wait for a manifest get the one they serve, retried until it works. */

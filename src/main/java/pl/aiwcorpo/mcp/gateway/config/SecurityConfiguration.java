@@ -38,6 +38,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import pl.aiwcorpo.mcp.gateway.admin.AdminClientCertificateFilter;
 import pl.aiwcorpo.mcp.gateway.admin.AdminOperations;
 import pl.aiwcorpo.mcp.gateway.admin.ClientCertificateVerifier;
+import pl.aiwcorpo.mcp.gateway.admin.ServerCertificateFilter;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
 import pl.aiwcorpo.mcp.gateway.auth.AuthenticationAudit;
 import pl.aiwcorpo.mcp.gateway.auth.AuthenticationEventLimiter;
@@ -167,6 +168,27 @@ public class SecurityConfiguration {
                 .logout(logout -> logout.disable())
                 .addFilterBefore(new AdminClientCertificateFilter(AdminOperations.certificateOnly(properties.admin().offboardingClientCns()),
                         true, certificates, authenticationAudit), org.springframework.security.web.access.intercept.AuthorizationFilter.class)
+                .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
+        return http.build();
+    }
+
+    /**
+     * {@code GET /internal/v1/policy-data}: the certificate of a server of the internal CA, nothing else (no user, no token). Which CNs
+     * are servers is the registry of servers, so the controller decides that; this chain only proves the certificate.
+     */
+    @Bean
+    @Order(0)
+    SecurityFilterChain policyDataFilterChain(HttpSecurity http, ClientCertificateVerifier certificates,
+                                              AuthenticationAudit authenticationAudit) throws Exception {
+        http.securityMatcher("/internal/v1/policy-data")
+                .csrf(csrf -> csrf.disable())
+                .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .requestCache(cache -> cache.disable())
+                .formLogin(form -> form.disable())
+                .httpBasic(basic -> basic.disable())
+                .logout(logout -> logout.disable())
+                .addFilterBefore(new ServerCertificateFilter(certificates, authenticationAudit),
+                        org.springframework.security.web.access.intercept.AuthorizationFilter.class)
                 .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
         return http.build();
     }

@@ -30,11 +30,13 @@ public final class InternalPortFilter extends OncePerRequestFilter {
         // "/%61dmin/v1/x" must not slip past a prefix test on the public port.
         String path = request.getServletPath();
         boolean admin = path.equals("/admin/v1") || path.startsWith("/admin/v1/");
-        boolean infrastructure = JwksController.PATH.equals(path) || path.equals("/actuator") || path.startsWith("/actuator/");
+        boolean internalApi = path.equals("/internal/v1") || path.startsWith("/internal/v1/");
+        boolean infrastructure = JwksController.PATH.equals(path) || path.equals("/actuator") || path.startsWith("/actuator/") || internalApi;
         // On the public port the method does not matter: a 405 there would confirm that the path exists behind the proxy.
         boolean allowed = internal
                 ? admin || "GET".equals(request.getMethod())
-                        && (JwksController.PATH.equals(path) || "/actuator/health".equals(path) || "/actuator/prometheus".equals(path))
+                        && (JwksController.PATH.equals(path) || "/actuator/health".equals(path) || "/actuator/prometheus".equals(path)
+                                || "/internal/v1/policy-data".equals(path))
                 : !admin && !infrastructure;
         if (!allowed) {
             response.sendError(HttpServletResponse.SC_NOT_FOUND);

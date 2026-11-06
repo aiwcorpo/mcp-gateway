@@ -8,7 +8,7 @@ import pl.aiwcorpo.mcp.gateway.server.ToolDefinition;
 import tools.jackson.databind.JsonNode;
 
 /**
- * Tool-level authorization (C7): the Cedar {@code call} evaluation from the policy bundle. Used for the tools/list filter and the
+ * Tool-level authorization (C7): the Cedar {@code call} evaluation with the platform policies and the overrides. Used for the tools/list filter and the
  * catalog (no arguments, so no resource references), and before every call (with the arguments). Deny is the default, and any
  * failure to decide is a deny (invariant 6).
  */
@@ -38,9 +38,17 @@ public interface ToolAuthorizer {
      */
     ToolDecision toolLevel(GatewayUser user, McpServer server, ToolDefinition tool);
 
+    /**
+     * What the catalog of the portal shows: whether the user may call the tool as the user of an AI client. The caller of the catalog is the
+     * portal, whose own client name says nothing of the AI clients the user works with, so the clients that may call are not asked.
+     */
+    default ToolDecision forCatalog(GatewayUser user, McpServer server, ToolDefinition tool) {
+        return decide(user, server, tool);
+    }
+
     /** Groups (C9) that usually grant the tool; shown in the catalog and in access_denied. Informational: the policy decides. */
     List<String> requiredEntitlements(McpServer server, ToolDefinition tool);
 
-    /** Revision of the main policy bundle in force, for {@code prv} (C2) and {@code policyRevision} (C8); null before the first. */
-    String policyRevision();
+    /** Revision of the policy data in force, for {@code prv} (C2) and {@code policyRevision} (C8); 0 before the first load. */
+    long policyRevision();
 }
