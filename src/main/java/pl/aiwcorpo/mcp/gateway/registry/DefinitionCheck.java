@@ -52,6 +52,9 @@ public final class DefinitionCheck {
             entry.put("risk", approved.risk().name());
             entry.put("action", approved.action());
         }
+        if (approved.additionalGroup() != null) {
+            entry.put("additionalGroup", approved.additionalGroup());
+        }
         ArrayNode refs = entry.putArray("resourceRefs");
         approved.resourceRefs().forEach(ref -> refs.addObject().put("argument", ref.argument()).put("type", ref.type()));
         return entry;

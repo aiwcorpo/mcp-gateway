@@ -1,0 +1,135 @@
+package pl.aiwcorpo.mcp.gateway;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.net.http.HttpResponse;
+import java.util.List;
+import java.util.UUID;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import pl.aiwcorpo.mcp.testserver.TestMcpServer;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ObjectNode;
+
+/**
+ * A tool whose manifest entry names an additionalGroup (CC-242) is called only by members of that group as well as of the group of its risk.
+ * The group is part of the definition hash, so a change of it goes through the approval of the tool like any other change.
+ */
+class AdditionalGroupTest extends GatewayTestBase {
+
+    private static final String REGISTRY = "/admin/v1/registry/servers/mcp-ops";
+
+    private TestMcpServer ops;
+    private ObjectNode manifest;
+
+    @BeforeEach
+    void addTheServer() throws Exception {
+        ops = env.startServer("mcp-ops");
+        ops.additionalGroup("get_issue", "ops");
+        String body = "{\"serverId\":\"mcp-ops\",\"system\":\"ops\",\"internalUrl\":\"https://127.0.0.1:" + ops.port() + "/mcp\","
+                + "\"credential\":{\"required\":true,\"acceptedTypes\":[\"user-secret\"],\"type\":\"user-secret\"}}";
+        assertThat(adminCall("POST", "/admin/v1/servers", body).statusCode()).isEqualTo(201);
+        manifest = ops.manifest();
+        assertThat(register(manifest).statusCode()).isEqualTo(200);
+        assertThat(adminCall("POST", REGISTRY + "/policies/approve", "{\"policiesHash\":\"" + manifest.path("policiesHash").asString() + "\"}")
+                .statusCode()).isEqualTo(200);
+    }
+
+    @AfterEach
+    void removeTheServer() throws Exception {
+        adminCall("DELETE", "/admin/v1/servers/mcp-ops", null);
+        ops.close();
+    }
+
+    private HttpResponse<String> register(ObjectNode body) throws Exception {
+        return admin(env.pipelineTls("mcp-ops"), "PUT", REGISTRY, null, JSON.writeValueAsString(body));
+    }
+
+    private String token(String... groups) {
+        return env.idp.token(UUID.randomUUID().toString(), "olga", List.of(groups));
+    }
+
+    private List<String> listed(String token) throws Exception {
+        return JSON.readTree(sendModern(token, "/mcp?systems=ops", "tools/list", null, "{}").body()).path("result").path("tools")
+                .findValuesAsString("name");
+    }
+
+    private HttpResponse<String> call(String token) throws Exception {
+        return sendModern(token, "/mcp", "tools/call", "ops__get_issue", "{\"name\":\"ops__get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
+    }
+
+    private static JsonNode tool(JsonNode registry, String name) {
+        for (JsonNode server : registry) {
+            if ("mcp-ops".equals(server.path("serverId").asString())) {
+                for (JsonNode tool : server.path("tools")) {
+                    if (name.equals(tool.path("name").asString())) {
+                        return tool;
+                    }
+                }
+            }
+        }
+        throw new AssertionError(name);
+    }
+
+    @Test
+    void theCallNeedsTheGroupOfTheRiskAndTheAdditionalOne() throws Exception {
+        String both = token("mcp-ops-read", "mcp-ops-ops");
+        String riskOnly = token("mcp-ops-read");
+        String additionalOnly = token("mcp-ops-ops");
+
+        assertThat(toolError(call(both)).path("error").asString()).as("both groups").isEmpty();
+        assertThat(toolError(call(riskOnly)).path("error").asString()).as("only the group of the risk").isEqualTo("not_found_or_denied");
+        assertThat(toolError(call(additionalOnly)).path("error").asString()).as("the additional group narrows, it never replaces").isEqualTo("not_found_or_denied");
+        assertThat(listed(both)).contains("ops__get_issue", "ops__search_issues");
+        assertThat(listed(riskOnly)).as("a tool the user may not call is not listed").contains("ops__search_issues").doesNotContain("ops__get_issue");
+    }
+
+    @Test
+    void theCatalogShowsTheAccessAndBothGroups() throws Exception {
+        JsonNode catalog = JSON.readTree(admin("GET", "/admin/v1/catalog", UUID.randomUUID().toString(), "olga", List.of("mcp-ops-read"), null).body());
+        JsonNode riskOnly = null;
+        for (JsonNode server : catalog.path("servers")) {
+            if ("mcp-ops".equals(server.path("serverId").asString())) {
+                for (JsonNode tool : server.path("tools")) {
+                    if ("ops__get_issue".equals(tool.path("name").asString())) {
+                        riskOnly = tool;
+                    }
+                }
+            }
+        }
+        assertThat(riskOnly.path("access").asString()).isEqualTo("denied");
+        assertThat(riskOnly.path("requiredEntitlements").toString()).isEqualTo("[\"mcp-ops-read\",\"mcp-ops-ops\"]");
+    }
+
+    @Test
+    void theRegistryShowsTheGroupAndAChangeOfItWaitsForApprovalLikeAnyDefinitionChange() throws Exception {
+        JsonNode registry = JSON.readTree(adminCall("GET", "/admin/v1/registry/servers", null).body());
+        assertThat(tool(registry, "get_issue").path("additionalGroup").asString()).isEqualTo("mcp-ops-ops");
+
+        // delete_issue is DESTRUCTIVE: its entry waits for an administrator whatever changes in it.
+        ops.additionalGroup("delete_issue", "ops");
+        ObjectNode withGroup = ops.manifest();
+        assertThat(register(withGroup).statusCode()).isEqualTo(200);
+        String first = tool(JSON.readTree(adminCall("GET", "/admin/v1/registry/servers", null).body()), "delete_issue").path("definitionHash").asString();
+        assertThat(adminCall("POST", REGISTRY + "/tools/delete_issue/approve", "{\"definitionHash\":\"" + first + "\"}").statusCode()).isEqualTo(204);
+        assertThat(tool(JSON.readTree(adminCall("GET", "/admin/v1/registry/servers", null).body()), "delete_issue").path("status").asString())
+                .isEqualTo("approved");
+
+        ops.additionalGroup("delete_issue", "audit");
+        ObjectNode changed = ops.manifest();
+        assertThat(register(changed).statusCode()).isEqualTo(200);
+
+        JsonNode pending = tool(JSON.readTree(adminCall("GET", "/admin/v1/registry/servers", null).body()), "delete_issue");
+        assertThat(pending.path("status").asString()).isEqualTo("pending_approval");
+        assertThat(pending.path("additionalGroup").asString()).isEqualTo("mcp-ops-audit");
+        assertThat(pending.path("definitionHash").asString()).isNotEqualTo(first);
+        JsonNode diff = JSON.readTree(adminCall("GET", REGISTRY + "/tools/delete_issue/pending", null).body());
+        assertThat(diff.path("approvedEntry").path("additionalGroup").asString()).isEqualTo("mcp-ops-ops");
+        assertThat(diff.path("pendingEntry").path("additionalGroup").asString()).isEqualTo("mcp-ops-audit");
+        assertThat(String.join(",", listed(token("mcp-ops-destructive", "mcp-ops-ops", "mcp-ops-audit")))).as("what was approved stays in force")
+                .contains("ops__delete_issue");
+    }
+}

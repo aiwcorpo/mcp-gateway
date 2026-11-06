@@ -77,8 +77,13 @@ public final class CedarToolAuthorizer implements ToolAuthorizer {
         Caller caller = Caller.of(user.sub(), user.username(), user.mcpGroups(), user.client());
         // Without arguments there is nothing a reference could name, so the decision at the level of a tool does not depend on the
         // resource types of the server (a server whose policies wait for approval has none that count yet).
-        ToolDescriptor descriptor = new ToolDescriptor(server.serverId(), server.system(), tool.name(), tool.risk().name(),
-                tool.action(), arguments == null ? List.of() : tool.resourceRefs());
+        ToolDescriptor descriptor;
+        try {
+            descriptor = descriptor(server, tool, arguments == null ? List.of() : tool.resourceRefs());
+        } catch (IllegalArgumentException e) {
+            // A group that does not fit the server cannot come from a manifest that passed the rules; it is never read as no group.
+            return new Evaluation(ToolDecision.deny("policy_error", List.of()), java.util.Set.of());
+        }
         if (arguments != null && oversized(tool, arguments)) {
             return new Evaluation(ToolDecision.deny("invalid_argument", List.of()), java.util.Set.of());
         }
@@ -167,10 +172,15 @@ public final class CedarToolAuthorizer implements ToolAuthorizer {
                 : ToolDecision.deny("not_granted", entitlements), success.getReason());
     }
 
+    private static ToolDescriptor descriptor(McpServer server, ToolDefinition tool, List<pl.aiwcorpo.mcp.cedar.entities.ResourceRef> refs) {
+        ToolDescriptor descriptor = new ToolDescriptor(server.serverId(), server.system(), tool.name(), tool.risk().name(), tool.action(), refs);
+        return tool.additionalGroup() == null ? descriptor : descriptor.withAdditionalGroup(tool.additionalGroup());
+    }
+
     @Override
     public List<String> requiredEntitlements(McpServer server, ToolDefinition tool) {
-        return List.of(new ToolDescriptor(server.serverId(), server.system(), tool.name(), tool.risk().name(), tool.action(), List.of())
-                .requiredGroup());
+        ToolDescriptor descriptor = descriptor(server, tool, List.of());
+        return descriptor.additionalGroup().map(group -> List.of(descriptor.requiredGroup(), group)).orElse(List.of(descriptor.requiredGroup()));
     }
 
     @Override

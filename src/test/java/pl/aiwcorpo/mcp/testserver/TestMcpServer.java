@@ -202,6 +202,7 @@ public final class TestMcpServer implements AutoCloseable {
     private final java.util.concurrent.atomic.AtomicInteger mostCallsInFlight = new java.util.concurrent.atomic.AtomicInteger();
     private volatile int extraTools;
     private volatile boolean driftedPolicies;
+    private volatile Map<String, String> additionalGroups = Map.of();
     private volatile boolean updateTool;
     private volatile String reportedVersion = "0.1.0";
 
@@ -240,6 +241,17 @@ public final class TestMcpServer implements AutoCloseable {
     /** Serves {@code count} more READ_ONLY tools named {@code bulk_tool_NNN}, in the list and in the manifest: a long list to page. */
     public void extraTools(int count) {
         extraTools = count;
+    }
+
+    /** The manifest names {@code mcp-<system>-<suffix>} as the additional group of the tool (CC-242); a null suffix takes it away. */
+    public void additionalGroup(String tool, String suffix) {
+        Map<String, String> next = new java.util.HashMap<>(additionalGroups);
+        if (suffix == null) {
+            next.remove(tool);
+        } else {
+            next.put(tool, suffix);
+        }
+        additionalGroups = Map.copyOf(next);
     }
 
     /** From now on the manifest this server serves has one more policy file: a server whose policies changed after they were approved. */
@@ -296,6 +308,9 @@ public final class TestMcpServer implements AutoCloseable {
             entry.put("action", destructive ? "delete" : update ? "update" : "read");
             entry.putArray("resourceRefs").addObject().put("argument", "search_issues".equals(name) ? "project" : "issueKey")
                     .put("type", namespace + ("search_issues".equals(name) ? "::Project" : "::Issue"));
+            if (additionalGroups.containsKey(name)) {
+                entry.put("additionalGroup", "mcp-" + system + "-" + additionalGroups.get(name));
+            }
             entry.set("definition", definition);
             entry.put("definitionHash", pl.aiwcorpo.mcp.manifest.DefinitionHash.compute(JSON.writeValueAsString(definition),
                     JSON.writeValueAsString(entry), system, JSON.writeValueAsString(credential)));

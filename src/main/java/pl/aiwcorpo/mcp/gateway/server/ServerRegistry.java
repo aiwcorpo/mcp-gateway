@@ -145,7 +145,8 @@ public final class ServerRegistry {
             List<pl.aiwcorpo.mcp.cedar.entities.ResourceRef> refs = refs(entry);
             JsonNode definition = entry.path("definition");
             tools.put(name, new ToolDefinition(name, risk, entry.path("action").asString(), definition.path("title").asString(null),
-                    definition.path("description").asString(""), false, refs, approved.hash(), definition, approved.credentialJson()));
+                    definition.path("description").asString(""), false, refs, approved.hash(), definition, approved.credentialJson(),
+                    entry.path("additionalGroup").asString(null)));
         });
     }
 
@@ -166,7 +167,7 @@ public final class ServerRegistry {
         return new ToolDefinition(name, classified ? Risk.valueOf(entry.path("risk").asString()) : Risk.DESTRUCTIVE,
                 classified ? entry.path("action").asString() : "admin",
                 entry.path("definition").path("title").asString(null), entry.path("definition").path("description").asString(""), true,
-                refs(entry));
+                refs(entry), null, null, null, entry.path("additionalGroup").asString(null));
     }
 
     private static CredentialPolicy credential(ServerConfig config) {

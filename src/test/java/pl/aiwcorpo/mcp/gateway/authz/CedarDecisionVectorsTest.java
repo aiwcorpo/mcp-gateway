@@ -67,6 +67,9 @@ class CedarDecisionVectorsTest {
                 tool.path("resourceRefs").forEach(r -> refs.add(new ResourceRef(r.path("argument").asString(), r.path("type").asString())));
                 ToolDescriptor descriptor = new ToolDescriptor(tool.path("serverId").asString(), tool.path("system").asString(),
                         tool.path("name").asString(), tool.path("risk").asString(), tool.path("action").asString(), refs);
+                if (tool.has("additionalGroup")) {
+                    descriptor = descriptor.withAdditionalGroup(tool.path("additionalGroup").asString());
+                }
                 JsonNode c = input.path("caller");
                 List<String> groups = new ArrayList<>();
                 c.path("grp").forEach(g -> groups.add(g.asString()));
