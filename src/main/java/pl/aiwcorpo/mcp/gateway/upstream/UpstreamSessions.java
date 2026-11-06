@@ -32,8 +32,8 @@ public class UpstreamSessions {
     private record Session(String sub, String sessionId, String protocolVersion, Instant lastUsed) {
     }
 
-    /** The client of a server and what it was made for: a change of the address or of the TLS name of the server makes another client. */
-    private record Connection(java.net.URI url, String tlsName, StreamableHttpClient client) {
+    /** The client of a server and what it was made for: a change of its address makes another client. */
+    private record Connection(java.net.URI url, StreamableHttpClient client) {
     }
 
     private final Map<String, Connection> clients = new ConcurrentHashMap<>();
@@ -50,7 +50,7 @@ public class UpstreamSessions {
     private volatile Instant lastSweep = Instant.EPOCH;
 
     /**
-     * @param clientFactory makes the HTTP client for a server from its address and TLS name; called again when either changes, because the
+     * @param clientFactory makes the HTTP client for a server from its address and identity; called again when the address changes, because the
      *                      servers are data of the registry and not fixed at start
      */
     public UpstreamSessions(java.util.function.Function<McpServer, StreamableHttpClient> clientFactory, InternalTokenIssuer tokens,
@@ -224,17 +224,17 @@ public class UpstreamSessions {
 
     private StreamableHttpClient client(McpServer server) {
         Connection connection = clients.get(server.serverId());
-        if (connection != null && connection.url().equals(server.internalUrl()) && connection.tlsName().equals(server.tlsName())) {
+        if (connection != null && connection.url().equals(server.internalUrl())) {
             return connection.client();
         }
         synchronized (clients) {
             connection = clients.get(server.serverId());
-            if (connection == null || !connection.url().equals(server.internalUrl()) || !connection.tlsName().equals(server.tlsName())) {
+            if (connection == null || !connection.url().equals(server.internalUrl())) {
                 if (connection != null) {
                     // Sessions of the old address mean nothing to the new one.
                     sessions.keySet().removeIf(key -> key.startsWith(server.serverId() + "|"));
                 }
-                connection = new Connection(server.internalUrl(), server.tlsName(), clientFactory.apply(server));
+                connection = new Connection(server.internalUrl(), clientFactory.apply(server));
                 clients.put(server.serverId(), connection);
             }
             return connection.client();

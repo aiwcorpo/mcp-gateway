@@ -112,6 +112,7 @@ public final class TestIdp implements AutoCloseable {
                 .issuer(ISSUER).subject(sub).audience(audiences)
                 .issueTime(Date.from(now)).expirationTime(Date.from(now.plusSeconds(lifetimeSeconds)))
                 .claim("azp", azp).claim("preferred_username", username).claim("groups", groups)
+                .claim("auth_time", now.getEpochSecond()).claim("amr", List.of("pwd", "otp"))
                 .jwtID(UUID.randomUUID().toString()).build();
         try {
             SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.ES256).keyID(key.getKeyID())
@@ -121,6 +122,29 @@ public final class TestIdp implements AutoCloseable {
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    /**
+     * The token of an administrator as the portal exchanges it for the gateway, with what the test wants to say about the login:
+     * {@code authAgeSeconds} (null: no {@code auth_time}), the {@code amr} methods and an {@code acr}.
+     */
+    public String adminToken(String sub, String username, List<String> groups, Long authAgeSeconds, List<String> amr, String acr) {
+        Instant now = Instant.now();
+        JWTClaimsSet.Builder claims = new JWTClaimsSet.Builder()
+                .issuer(ISSUER).subject(sub).audience(List.of("mcp-gateway-admin"))
+                .issueTime(Date.from(now)).expirationTime(Date.from(now.plusSeconds(900)))
+                .claim("azp", "mcp-portal-bff").claim("preferred_username", username).claim("groups", groups)
+                .jwtID(UUID.randomUUID().toString());
+        if (authAgeSeconds != null) {
+            claims.claim("auth_time", now.getEpochSecond() - authAgeSeconds);
+        }
+        if (amr != null) {
+            claims.claim("amr", amr);
+        }
+        if (acr != null) {
+            claims.claim("acr", acr);
+        }
+        return sign(claims.build());
     }
 
     /** Claims of a valid alice token for {@code mcp-gateway}; tests change what they want to break. */

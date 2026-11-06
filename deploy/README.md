@@ -64,7 +64,10 @@ the change within a few seconds.
 
 1. In the portal (Administration, Servers), or with the admin API, add the server: its `serverId` is `mcp-<system>`, the address is its
    internal HTTPS URL, and the credential says how the broker gets the user's credential for it. The certificate of the server comes
-   from the internal CA with CN `mcp-<system>` and SAN `mcp-<system>.internal`.
+   from the internal CA with CN `mcp-<system>` and SAN `mcp-<system>.internal` (server and client use); the gateway accepts no other
+   certificate for it. Adding, changing (except switching off with `enabled: false`) and removing a server, and approving policies,
+   need a token of a fresh MFA login (`auth_time` within 5 minutes and an `amr` of `mfa`, `otp`, `hwk` or `totp`, or an `acr` listed in
+   `MCP_ADMIN_MFA_ACR_VALUES`).
 
     ```bash
     curl --cert bff.crt --key bff.key --cacert ca.crt -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
@@ -85,7 +88,8 @@ scope mapping for its resource types, and its name is free again. The system in 
 
 ### Change a server
 
-`PATCH /admin/v1/servers/mcp-notes` with the fields to change and `If-Match` set to the `ETag` of the last `GET`. `enabled: false` takes a
+`PATCH /admin/v1/servers/mcp-notes` with `internalUrl`, `credential` or `enabled` and `If-Match` set to the `ETag` of the last `GET`
+(whether a server is an adapter is set when it is added). `enabled: false` takes a
 server out of service and keeps its approvals.
 
 ## Certificate of the identity provider

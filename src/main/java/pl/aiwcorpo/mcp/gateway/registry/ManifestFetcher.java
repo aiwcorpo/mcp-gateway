@@ -33,7 +33,7 @@ public class ManifestFetcher {
     private final InternalTls tls;
     private final InternalTokenIssuer tokens;
     private final JsonMapper json;
-    /** One client per TLS name: the running servers are read on every check of their definitions, which would build a TLS context each time. */
+    /** One client per server: the running servers are read on every check of their definitions, which would build a TLS context each time. */
     private final java.util.Map<String, HttpClient> clients = new java.util.concurrent.ConcurrentHashMap<>();
 
     public ManifestFetcher(InternalTls tls, InternalTokenIssuer tokens, JsonMapper json) {
@@ -45,7 +45,7 @@ public class ManifestFetcher {
     public Optional<JsonNode> fetch(McpServer server) {
         String requestId = UuidV7.next();
         URI url = server.internalUrl().resolve("/mcp-manifest");
-        HttpClient http = clients.computeIfAbsent(server.tlsName(), name -> tls.clientFor(name, Duration.ofSeconds(5)));
+        HttpClient http = clients.computeIfAbsent(server.serverId(), id -> tls.clientForServer(id, Duration.ofSeconds(5)));
         HttpRequest request = HttpRequest.newBuilder(url).timeout(Duration.ofSeconds(10))
                 .header("Authorization", "Bearer " + tokens.forService(server.serverId(), requestId))
                 .header("X-Request-Id", requestId).header("Accept", "application/json").GET().build();

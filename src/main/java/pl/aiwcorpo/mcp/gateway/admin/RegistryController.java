@@ -53,11 +53,13 @@ public class RegistryController {
     private static final java.util.Set<String> RISKS = java.util.Set.of("READ_ONLY", "UPDATE", "DESTRUCTIVE");
     private static final java.util.Set<String> ACTIONS = java.util.Set.of("read", "update", "delete", "admin");
 
+    private final FreshMfa mfa;
     private final RegistryService registry;
     private final ServerRegistry servers;
     private final JsonMapper json;
 
-    public RegistryController(RegistryService registry, ServerRegistry servers, JsonMapper json) {
+    public RegistryController(RegistryService registry, ServerRegistry servers, JsonMapper json, FreshMfa mfa) {
+        this.mfa = mfa;
         this.registry = registry;
         this.servers = servers;
         this.json = json;
@@ -151,6 +153,10 @@ public class RegistryController {
         String requestId = requestId(request);
         if (!administrator(token)) {
             return error(HttpStatus.FORBIDDEN, requestId, "access_denied", null, null);
+        }
+        if (!mfa.fresh(token)) {
+            mfa.refused(token, requestId, "approveServerPolicies");
+            return error(HttpStatus.UNAUTHORIZED, requestId, "step_up_required", null, null);
         }
         byte[] raw = request.getInputStream().readNBytes(4097);
         String hash = null;

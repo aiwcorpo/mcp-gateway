@@ -91,7 +91,7 @@ class RegistryAdapterTest extends GatewayTestBase {
     }
 
     private static ServerConfig adapterConfig(boolean adapter) {
-        return new ServerConfig(SERVER, SYSTEM, URI.create("https://mcp-regad.internal:8443/mcp"), "mcp-regad.internal",
+        return new ServerConfig(SERVER, SYSTEM, URI.create("https://mcp-regad.internal:8443/mcp"),
                 new ServerConfig.Credential(true, List.of("user-secret"), "user-secret"), true, adapter);
     }
 

@@ -24,8 +24,8 @@ import tools.jackson.databind.json.JsonMapper;
 
 /**
  * The gateway-level vectors of policy-decisions/ (mcp-contracts 7.0.0) through the gateway's own authorizer: the platform policies of the
- * contracts jar, the resource types and the scope mapping the vector names, and the decision the vector expects. The step-up rule is an
- * example of an override, not a platform policy, so the vectors that only it decides are not applicable.
+ * contracts jar and the step-up override of the examples (an override of the administrator, not a platform policy), the resource types and the
+ * scope mapping the vector names, and the decision the vector expects.
  */
 class CedarDecisionVectorsTest {
 
@@ -42,9 +42,6 @@ class CedarDecisionVectorsTest {
             }
             Set<String> expectedPolicies = new TreeSet<>();
             document.path("expected").path("determiningPolicies").forEach(p -> expectedPolicies.add(p.asString()));
-            if (expectedPolicies.contains("destructive-requires-fresh-mfa")) {
-                continue;
-            }
             if (document.path("builder").has("adjustment")) {
                 // The vector takes the refs out of the request after the builder made it, which the gateway never does: its builder always
                 // gives them, and a request without them is the contract's own fail-closed case (the entity builder vectors).
@@ -62,7 +59,8 @@ class CedarDecisionVectorsTest {
                 ResourceTypes types = ResourceTypes.union(declared);
                 ScopeMapping mapping = ScopeMapping.fromJson(types, Vectors.contractFile(builder.path("scopeMapping").asString()), true);
                 CedarToolAuthorizer authorizer = new CedarToolAuthorizer(
-                        Snapshots.source(Snapshots.of(1, types, mapping, Map.of(), CLIENTS)), JSON);
+                        Snapshots.source(Snapshots.of(1, types, mapping,
+                                Map.of("step-up.cedar", Vectors.contractFile("cedar/examples/overrides/step-up.cedar")), CLIENTS)), JSON);
                 JsonNode input = builder.path("input");
                 JsonNode tool = input.path("tool");
                 List<ResourceRef> refs = new ArrayList<>();
@@ -73,6 +71,9 @@ class CedarDecisionVectorsTest {
                 List<String> groups = new ArrayList<>();
                 c.path("grp").forEach(g -> groups.add(g.asString()));
                 Caller caller = Caller.of(c.path("sub").asString(), c.path("usr").asString(), groups, c.path("azp").asString());
+                if (c.has("mfa")) {
+                    caller = caller.withMfaAge(c.path("mfa").asLong());
+                }
                 CedarToolAuthorizer.Evaluation result = authorizer.evaluate(caller, descriptor,
                         JSON.convertValue(input.path("arguments"), Map.class), List.of(), input.path("credentialType").asString(null));
                 assertThat(result.decision().allowed()).as(document.path("description").asString())

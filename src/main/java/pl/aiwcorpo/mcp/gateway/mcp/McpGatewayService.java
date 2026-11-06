@@ -363,10 +363,11 @@ public class McpGatewayService {
             Map<String, Verdict> observed = registryService.observe(current, live, upstream.serverVersion(server.serverId()));
             // The policies a server evaluates with are part of what was approved: a server that presents others is blocked as a whole.
             Map<String, Verdict> verdicts = observed;
-            if (registryService.observePolicies(current) == RegistryService.PoliciesVerdict.CHANGED) {
+            RegistryService.PoliciesVerdict onPolicies = registryService.observePolicies(current);
+            if (onPolicies == RegistryService.PoliciesVerdict.CHANGED || onPolicies == RegistryService.PoliciesVerdict.UNVERIFIED) {
                 verdicts = new LinkedHashMap<>();
                 for (String name : current.tools().keySet()) {
-                    verdicts.put(name, Verdict.POLICIES_CHANGED);
+                    verdicts.put(name, onPolicies == RegistryService.PoliciesVerdict.CHANGED ? Verdict.POLICIES_CHANGED : Verdict.POLICIES_UNVERIFIED);
                 }
             }
             Map<String, Verdict> judged = verdicts;
@@ -379,6 +380,7 @@ public class McpGatewayService {
                         log.warn("{}: the tool {} is blocked ({}): {}", server.serverId(), name, verdict.reason(),
                                 verdict == Verdict.CHANGED ? "the definition differs from the approved one"
                                         : verdict == Verdict.POLICIES_CHANGED ? "the policies of the server differ from the approved ones"
+                                        : verdict == Verdict.POLICIES_UNVERIFIED ? "the policies of the server could not be verified"
                                         : "the server does not list it");
                     }
                 });

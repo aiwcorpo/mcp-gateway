@@ -40,11 +40,13 @@ public class ServerController {
     private static final int MAX_BODY = 16 * 1024;
     private static final Pattern SERVER_ID = Pattern.compile("^mcp-[a-z][a-z0-9]{1,30}$");
 
+    private final FreshMfa mfa;
     private final ServerAdmin servers;
     private final AdminResponses responses;
     private final JsonMapper json;
 
-    public ServerController(ServerAdmin servers, JsonMapper json) {
+    public ServerController(ServerAdmin servers, JsonMapper json, FreshMfa mfa) {
+        this.mfa = mfa;
         this.servers = servers;
         this.responses = new AdminResponses(json);
         this.json = json;
@@ -66,6 +68,10 @@ public class ServerController {
         String requestId = AdminResponses.requestId(request);
         if (!RegistryController.administrator(token)) {
             return responses.error(HttpStatus.FORBIDDEN, requestId, "access_denied", null, null);
+        }
+        if (!mfa.fresh(token)) {
+            mfa.refused(token, requestId, "createServer");
+            return responses.error(HttpStatus.UNAUTHORIZED, requestId, "step_up_required", null, null);
         }
         JsonNode body = body(request);
         Outcome<ServerAdmin.Item> outcome = servers.create(requestId, body, GatewayUser.from(token));
@@ -104,6 +110,10 @@ public class ServerController {
             return responses.error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
         }
         JsonNode body = body(request);
+        if (!FreshMfa.onlyDisables(body) && !mfa.fresh(token)) {
+            mfa.refused(token, requestId, "updateServer");
+            return responses.error(HttpStatus.UNAUTHORIZED, requestId, "step_up_required", null, null);
+        }
         Outcome<ServerAdmin.Item> outcome = servers.update(requestId, serverId, ifMatch, body, GatewayUser.from(token));
         if (outcome.status() == Outcome.Status.OK) {
             return withEtag(HttpStatus.OK, requestId, outcome.value()).contentType(org.springframework.http.MediaType.APPLICATION_JSON)
@@ -120,6 +130,10 @@ public class ServerController {
         }
         if (!SERVER_ID.matcher(serverId).matches()) {
             return responses.error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
+        }
+        if (!mfa.fresh(token)) {
+            mfa.refused(token, requestId, "deleteServer");
+            return responses.error(HttpStatus.UNAUTHORIZED, requestId, "step_up_required", null, null);
         }
         Outcome<Void> outcome = servers.delete(requestId, serverId, GatewayUser.from(token));
         return outcome.succeeded() ? responses.noContent(requestId) : failure(outcome, requestId);

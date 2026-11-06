@@ -95,7 +95,7 @@ public final class ServerRegistry {
                 tools(config, state, tools, waiting, config.serverId().equals(applying));
             }
             waitingByServer.put(config.serverId(), Map.copyOf(waiting));
-            built.put(config.serverId(), new McpServer(config.serverId(), config.system(), config.internalUrl(), config.tlsName(),
+            built.put(config.serverId(), new McpServer(config.serverId(), config.system(), config.internalUrl(),
                     state == null ? "0.0.0" : state.version(), config.enabled() && (state == null || state.manifestAccepted()),
                     credential(config), Map.copyOf(tools), config.adapter()));
         });

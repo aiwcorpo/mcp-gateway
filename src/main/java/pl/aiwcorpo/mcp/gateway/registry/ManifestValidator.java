@@ -150,7 +150,7 @@ public final class ManifestValidator {
             URI declared = URI.create(manifestUrl);
             URI actual = configured.internalUrl();
             boolean hostOk = declared.getHost() != null
-                    && (declared.getHost().equalsIgnoreCase(actual.getHost()) || declared.getHost().equalsIgnoreCase(configured.tlsName()));
+                    && (declared.getHost().equalsIgnoreCase(actual.getHost()) || declared.getHost().equalsIgnoreCase(configured.serverId() + ".internal"));
             return hostOk && port(declared) == port(actual);
         } catch (IllegalArgumentException e) {
             return false;

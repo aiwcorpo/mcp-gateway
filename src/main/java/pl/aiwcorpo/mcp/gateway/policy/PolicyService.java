@@ -110,16 +110,20 @@ public final class PolicyService implements PolicySource {
     }
 
     /**
-     * First load. When the allowed clients of this configuration differ from the ones the data was last served with, the revision is raised
-     * (a server learns the new list from the policy data), in the same transaction as the counter of changes.
+     * First load. The allowed clients are policy data: the list in the database is the one every instance enforces and every server is
+     * served. The configuration ({@code MCP_ALLOWED_CLIENTS}) only seeds it, once, when the database has none; a configuration that differs from
+     * what the database holds is logged and otherwise ignored, so two instances never decide with different lists.
      */
     public PolicyService start() {
         String configured = String.join(",", allowedClients);
         store.policyLocked(tx -> {
-            if (!configured.equals(tx.state().allowedClients())) {
+            String stored = tx.state().allowedClients();
+            if (stored.isBlank()) {
                 data.saveAllowedClients(configured);
                 tx.raiseRevision();
-                log.info("the allowed clients are now {}; the revision of the policy data was raised", configured);
+                log.info("the allowed clients of the database were empty and are now {}", configured);
+            } else if (!stored.equals(configured)) {
+                log.warn("MCP_ALLOWED_CLIENTS ({}) differs from the allowed clients in the database ({}); the database is in force", configured, stored);
             }
             return null;
         });
@@ -139,11 +143,17 @@ public final class PolicyService implements PolicySource {
 
     /** Reads the policy data again. A failure of the database leaves the snapshot as it is and is thrown to the caller, which tries again. */
     public synchronized void reload() {
-        PolicyDataStore.State state = data.state();
-        List<PolicyOverride> overrides = data.overrides();
-        Map<String, StoredPolicies> policies = store.allPolicies();
+        record Read(PolicyDataStore.State state, List<PolicyOverride> overrides, Map<String, StoredPolicies> policies,
+                    List<ServerConfig> configs) {
+        }
+        // One read: a writer raises the revision in the transaction of its change, so all of this belongs to one revision.
+        Read read = store.consistentRead(() -> new Read(data.state(), data.overrides(), store.allPolicies(), store.configs()));
+        PolicyDataStore.State state = read.state();
+        List<PolicyOverride> overrides = read.overrides();
+        Map<String, StoredPolicies> policies = read.policies();
         Set<String> registered = new LinkedHashSet<>();
-        store.configs().forEach(config -> registered.add(config.serverId()));
+        read.configs().forEach(config -> registered.add(config.serverId()));
+        List<String> clients = state.allowedClients().isBlank() ? allowedClients : List.of(state.allowedClients().split(","));
         Snapshot before = snapshot;
         Snapshot next;
         List<ScopeMapping.Ignored> ignored = List.of();
@@ -160,7 +170,7 @@ public final class PolicyService implements PolicySource {
                     hashes.put(serverId, stored.approvedHash());
                 }
             });
-            next = new Snapshot(state.revision(), types, mapping, gateway, allowedClients, Map.copyOf(namespaces), Map.copyOf(hashes),
+            next = new Snapshot(state.revision(), types, mapping, gateway, clients, Map.copyOf(namespaces), Map.copyOf(hashes),
                     List.copyOf(overrides), null);
         } catch (RuntimeException e) {
             String why = e.getClass().getSimpleName() + ": " + e.getMessage();
@@ -170,7 +180,7 @@ public final class PolicyService implements PolicySource {
                 audit.emit(AuditEvent.of("admin_change", pl.aiwcorpo.mcp.gateway.jwt.UuidV7.next(), componentId).reason("policy_data_invalid")
                         .outcome("error", "internal_error").policyRevision(state.revision()));
             }
-            next = new Snapshot(state.revision(), ResourceTypes.empty(), ScopeMapping.empty(), null, allowedClients, Map.of(), Map.of(),
+            next = new Snapshot(state.revision(), ResourceTypes.empty(), ScopeMapping.empty(), null, clients, Map.of(), Map.of(),
                     List.of(), why);
         }
         if (next.error() == null) {
@@ -181,7 +191,7 @@ public final class PolicyService implements PolicySource {
         if (changed) {
             for (ScopeMapping.Ignored entry : ignored) {
                 audit.emit(AuditEvent.of("admin_change", pl.aiwcorpo.mcp.gateway.jwt.UuidV7.next(), componentId)
-                        .reason("scope_mapping_entry_ignored").outcome("denied").policyRevision(next.revision())
+                        .reason("scope_mapping_entry_ignored").outcome("denied").policyRevision(next.revision()).group(entry.group())
                         .resource(resourceOf(entry.scope())));
                 log.warn("scope mapping entry of group {} ignored ({}): {}", entry.group(), entry.reason(), entry.scope());
             }
@@ -401,11 +411,13 @@ public final class PolicyService implements PolicySource {
         }
         String target = body.get("target").asString();
         String text = body.get("text").asString();
+        String[] before = {null};
         Outcome<PolicyOverride> result = store.policyLocked(tx -> {
             Optional<PolicyOverride> existing = tx.override(id);
             if (createOnly ? existing.isPresent() : existing.isEmpty() || !etag(existing.get()).equals(ifMatch)) {
                 return Outcome.of(Outcome.Status.PRECONDITION_FAILED);
             }
+            existing.ifPresent(found -> before[0] = found.text());
             Outcome<PolicyOverride> invalid = validate(id, text, target, tx.allPolicies(), tx.configs());
             if (invalid != null) {
                 return invalid;
@@ -417,11 +429,11 @@ public final class PolicyService implements PolicySource {
         });
         if (result.succeeded()) {
             audit.emit(AuditEvent.of("admin_change", requestId, componentId).userWithoutClient(administrator).reason("override_set")
-                    .outcome("ok"));
+                    .override(id, target, text, before[0]).outcome("ok"));
             refreshAfterWrite();
         } else if (result.status() == Outcome.Status.REJECTED && !"invalid_request".equals(result.reason())) {
             audit.emit(AuditEvent.of("admin_change", requestId, componentId).userWithoutClient(administrator).reason("override_rejected")
-                    .outcome("denied"));
+                    .override(id, target, text, null).outcome("denied"));
         }
         return result;
     }
@@ -487,6 +499,7 @@ public final class PolicyService implements PolicySource {
         if (ifMatch == null) {
             return Outcome.of(Outcome.Status.PRECONDITION_REQUIRED);
         }
+        PolicyOverride[] removed = {null};
         Outcome<Void> result = store.policyLocked(tx -> {
             Optional<PolicyOverride> existing = tx.override(id);
             if (existing.isEmpty()) {
@@ -495,13 +508,14 @@ public final class PolicyService implements PolicySource {
             if (!etag(existing.get()).equals(ifMatch)) {
                 return Outcome.of(Outcome.Status.PRECONDITION_FAILED);
             }
+            removed[0] = existing.get();
             tx.deleteOverride(id);
             tx.raiseRevision();
             return Outcome.noContent();
         });
         if (result.succeeded()) {
             audit.emit(AuditEvent.of("admin_change", requestId, componentId).userWithoutClient(administrator).reason("override_removed")
-                    .outcome("ok"));
+                    .override(id, removed[0].target(), removed[0].text(), null).outcome("ok"));
             refreshAfterWrite();
         }
         return result;
@@ -527,7 +541,7 @@ public final class PolicyService implements PolicySource {
             if (verdict != null) {
                 invalid.add(override.id());
                 audit.emit(AuditEvent.of("admin_change", requestId, componentId).server(serverId).reason("override_invalid")
-                        .outcome("denied"));
+                        .override(override.id(), override.target(), override.text(), null).outcome("denied"));
                 log.error("the override {} no longer validates against the policies of {}: {}", override.id(), serverId, verdict.message());
             }
         }

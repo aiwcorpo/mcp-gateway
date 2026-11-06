@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 import java.net.URI;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -84,7 +85,7 @@ class RegistryServiceTest extends GatewayTestBase {
     }
 
     private static ServerConfig configOf(String credentialType) {
-        return new ServerConfig(SERVER, SYSTEM, URI.create("https://mcp-regtest.internal:8443/mcp"), "mcp-regtest.internal",
+        return new ServerConfig(SERVER, SYSTEM, URI.create("https://mcp-regtest.internal:8443/mcp"),
                 new ServerConfig.Credential(true, List.of(credentialType), credentialType), true, false);
     }
 
@@ -518,8 +519,7 @@ class RegistryServiceTest extends GatewayTestBase {
     void aNamespaceBelongsToTheFirstServerThatDeclaredIt() {
         register(manifest("1.4.0", Tool.readOnly("get_issue")));
         store.locked("mcp-regother", tx -> {
-            tx.saveConfig(new ServerConfig("mcp-regother", "regother", URI.create("https://mcp-regother.internal:8443/mcp"),
-                    "mcp-regother.internal", new ServerConfig.Credential(true, List.of("user-secret"), "user-secret"), true, false), true);
+            tx.saveConfig(new ServerConfig("mcp-regother", "regother", URI.create("https://mcp-regother.internal:8443/mcp"), new ServerConfig.Credential(true, List.of("user-secret"), "user-secret"), true, false), true);
             return null;
         });
         try {
@@ -579,6 +579,163 @@ class RegistryServiceTest extends GatewayTestBase {
         when(fetcher.fetch(any())).thenReturn(Optional.empty());
         assertThat(service.observePolicies(server())).as("a server that cannot be read is no proof of a change")
                 .isEqualTo(RegistryService.PoliciesVerdict.UNKNOWN);
+    }
+
+    private static ServerConfig otherConfig(String serverId, String system) {
+        return new ServerConfig(serverId, system, URI.create("https://" + serverId + ".internal:8443/mcp"),
+                new ServerConfig.Credential(true, List.of("user-secret"), "user-secret"), true, false);
+    }
+
+    private void addServer(String serverId, String system) {
+        store.locked(serverId, tx -> {
+            tx.saveConfig(otherConfig(serverId, system), true);
+            return null;
+        });
+        service.reloadChanged();
+    }
+
+    private void forgetServer(String serverId) {
+        for (String table : List.of("registry_tools", "registry_servers", "registry_policies", "registry_namespaces", "servers")) {
+            jdbc.sql("DELETE FROM " + table + " WHERE server_id = ?").param(serverId).update();
+        }
+    }
+
+    /** A manifest of {@code serverId} that declares the namespace of {@code fragmentOf}. */
+    private ObjectNode declaring(String serverId, String system, String fragmentOf) {
+        ObjectNode manifest = Manifests.manifest(serverId, system, "1.0.0", List.of(Manifests.USER_SECRET), Tool.readOnly("get_thing"));
+        Fragments.apply(manifest, fragmentOf);
+        return manifest;
+    }
+
+    @Test
+    void aRegistrationClaimsNoNamespaceAndOnlyTheApprovalOfTheFirstServerOwnsIt() {
+        addServer("mcp-regother", "regother");
+        try {
+            ObjectNode squatter = declaring("mcp-regother", "regother", "regtest");
+            assertThat(service.register(requestId, "mcp-regother", squatter, "ci")).as("a pending registration holds nothing")
+                    .isInstanceOf(Result.Accepted.class);
+
+            register(manifest("1.4.0", Tool.readOnly("get_issue")));
+            assertThat(server().tools()).as("the rightful server is not kept out by the registration that came first").containsOnlyKeys("get_issue");
+
+            assertThat(service.approvePolicies(requestId, "mcp-regother", squatter.path("policiesHash").asString(), admin()))
+                    .isInstanceOfSatisfying(RegistryService.PoliciesApproval.Rejected.class, r -> assertThat(r.reason()).isEqualTo("namespace_conflict"));
+            assertThat(store.policiesOf("mcp-regother").approved()).isFalse();
+        } finally {
+            forgetServer("mcp-regother");
+        }
+    }
+
+    @Test
+    void anApprovalThatChangesTheNamespaceFreesTheOldOneWithItsMappingEntriesAndAnotherServerCanTakeIt(CapturedOutput output) {
+        addServer("mcp-regother", "regother");
+        try {
+            ObjectNode waiting = declaring("mcp-regother", "regother", "regtest");
+            assertThat(service.register(requestId, "mcp-regother", waiting, "ci")).isInstanceOf(Result.Accepted.class);
+            register(manifest("1.4.0", Tool.readOnly("get_issue")));
+            jdbc.sql("UPDATE policy_state SET scope_mapping = ?::jsonb WHERE id = 1").param("[{\"group\":\"mcp-regtest-team\",\"scopes\":"
+                    + "[\"Regtest::Project/ABC\",\"Jira::Project/ABC\"]},{\"group\":\"mcp-regtest-only\",\"scopes\":[\"Regtest::Project/XYZ\"]}]").update();
+            assertThat(service.approvePolicies(requestId, "mcp-regother", waiting.path("policiesHash").asString(), admin()))
+                    .isInstanceOf(RegistryService.PoliciesApproval.Rejected.class);
+
+            ObjectNode moved = declaring(SERVER, SYSTEM, "regmoved");
+            assertThat(service.register(requestId, SERVER, moved, "ci")).isInstanceOf(Result.Accepted.class);
+            assertThat(service.approvePolicies(requestId, SERVER, moved.path("policiesHash").asString(), admin()))
+                    .isInstanceOf(RegistryService.PoliciesApproval.Approved.class);
+
+            String mapping = jdbc.sql("SELECT scope_mapping::text FROM policy_state WHERE id = 1").query(String.class).single();
+            assertThat(mapping).as("the grants given for the old owner of Regtest are gone, the others stay").contains("Jira::Project/ABC")
+                    .doesNotContain("Regtest::");
+            List<JsonNode> removed = auditEvents(output, requestId).stream()
+                    .filter(e -> "scope_mapping_entry_removed".equals(e.path("reason").asString())).toList();
+            assertThat(removed.stream().map(e -> e.path("group").asString() + " " + e.path("resource").path("type").asString() + "/"
+                    + e.path("resource").path("id").asString())).containsExactlyInAnyOrder("mcp-regtest-team Regtest::Project/ABC",
+                    "mcp-regtest-only Regtest::Project/XYZ");
+
+            assertThat(service.approvePolicies(requestId, "mcp-regother", waiting.path("policiesHash").asString(), admin()))
+                    .as("the namespace is free: whoever approves first owns it").isInstanceOf(RegistryService.PoliciesApproval.Approved.class);
+        } finally {
+            forgetServer("mcp-regother");
+            jdbc.sql("UPDATE policy_state SET scope_mapping = '[]'::jsonb WHERE id = 1").update();
+            policies.reload();
+        }
+    }
+
+    @Test
+    void aWriteForAServerThatWasRemovedMeanwhileFindsNothing() {
+        ObjectNode manifest = manifest("1.4.0", Tool.readOnly("get_issue"), Tool.update("update_issue"));
+        register(manifest);
+        // This instance still holds the server; the row is gone, as when another instance deleted it while the call waited for its lock.
+        jdbc.sql("DELETE FROM servers WHERE server_id = ?").param(SERVER).update();
+
+        assertThat(service.register(requestId, SERVER, manifest("1.5.0", Tool.readOnly("get_issue")), "ci")).isInstanceOf(Result.UnknownServer.class);
+        assertThat(service.approve(requestId, SERVER, "update_issue", hash(manifest, "update_issue"), false, admin())).isInstanceOf(Approval.NotFound.class);
+        assertThat(service.approvePolicies(requestId, SERVER, manifest.path("policiesHash").asString(), admin()))
+                .isInstanceOf(RegistryService.PoliciesApproval.NotFound.class);
+        assertThat(store.tools(SERVER)).as("nothing was written").containsOnlyKeys("get_issue", "update_issue");
+        assertThat(store.findServer(SERVER).orElseThrow().manifest().path("version").asString()).isEqualTo("1.4.0");
+    }
+
+    @Test
+    void aServerWhoseManifestCannotBeVerifiedIsBlockedAfterSomeChecksOrSomeTimeAndFreedByAnIntactOne(CapturedOutput output) {
+        ObjectNode approved = manifest("1.4.0", Tool.readOnly("get_issue"));
+        register(approved);
+        Instant[] now = {Instant.parse("2026-11-06T12:00:00Z")};
+        java.time.Clock clock = new java.time.Clock() {
+            @Override
+            public java.time.ZoneId getZone() {
+                return java.time.ZoneOffset.UTC;
+            }
+
+            @Override
+            public java.time.Clock withZone(java.time.ZoneId zone) {
+                return this;
+            }
+
+            @Override
+            public Instant instant() {
+                return now[0];
+            }
+        };
+        RegistryService bounded = new RegistryService(servers, store, new ManifestValidator(JSON, false), fetcher,
+                new DefinitionGuard(Clock.systemUTC(), Duration.ofSeconds(30)), new DefinitionCheck(JSON), audit, "mcp-gateway", JSON, policies,
+                3, Duration.ofMinutes(5), clock);
+        bounded.load();
+        when(fetcher.fetch(any())).thenReturn(Optional.empty());
+
+        assertThat(bounded.observePolicies(server())).isEqualTo(RegistryService.PoliciesVerdict.UNKNOWN);
+        assertThat(bounded.observePolicies(server())).isEqualTo(RegistryService.PoliciesVerdict.UNKNOWN);
+        assertThat(bounded.observePolicies(server())).as("the third check in a row").isEqualTo(RegistryService.PoliciesVerdict.UNVERIFIED);
+        assertThat(bounded.observePolicies(server())).isEqualTo(RegistryService.PoliciesVerdict.UNVERIFIED);
+
+        when(fetcher.fetch(any())).thenReturn(Optional.of(approved));
+        assertThat(bounded.observePolicies(server())).as("unblocked at the next intact check").isEqualTo(RegistryService.PoliciesVerdict.INTACT);
+        assertThat(bounded.observePolicies(server())).isEqualTo(RegistryService.PoliciesVerdict.INTACT);
+
+        when(fetcher.fetch(any())).thenReturn(Optional.empty());
+        assertThat(bounded.observePolicies(server())).isEqualTo(RegistryService.PoliciesVerdict.UNKNOWN);
+        now[0] = now[0].plus(Duration.ofMinutes(6));
+        assertThat(bounded.observePolicies(server())).as("one failure is enough after the longest time without a verification")
+                .isEqualTo(RegistryService.PoliciesVerdict.UNVERIFIED);
+        List<String> reasons = output.getOut().lines().filter(l -> l.contains("\"server\":\"mcp-regtest\"") && l.contains("policies_"))
+                .map(l -> l.contains("policies_unverified") ? "unverified" : "verified").toList();
+        assertThat(reasons).containsSubsequence("unverified", "verified", "unverified");
+    }
+
+    @Test
+    void aHeldManifestOfAnotherKindThanTheServerIsRegisteredAsDisablesTheServer() {
+        ObjectNode adapterManifest = Manifests.adapter(SERVER, SYSTEM, "0.1.0", Tool.readOnly("get_issue"));
+        jdbc.sql("UPDATE servers SET adapter = true WHERE server_id = ?").param(SERVER).update();
+        service.reloadChanged();
+        assertThat(service.submitAdapter(requestId, SERVER, adapterManifest)).isInstanceOf(Result.Accepted.class);
+        assertThat(server().enabled()).isTrue();
+
+        // The settings now say it is no adapter (an operator's edit of the table, the only way: adapter is set when a server is added).
+        jdbc.sql("UPDATE servers SET adapter = false WHERE server_id = ?").param(SERVER).update();
+        ServerRegistry restarted = new ServerRegistry();
+        service(restarted, false).load();
+
+        assertThat(restarted.find(SERVER).orElseThrow().enabled()).as("an adapter manifest is no manifest of a server that is none").isFalse();
     }
 
     private record StoredPoliciesView(String approvedHash, String pendingHash, String pendingSource) {

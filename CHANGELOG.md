@@ -32,6 +32,24 @@ platform, and removed again, without restarting anything and without a policy re
 - **`GET /internal/v1/policy-data`** on the internal port for servers: the certificate must come from the internal CA and its CN must be a
   registered `serverId`; the answer holds the revision, the scope mapping reduced to the namespace of the server, the allowed clients, the
   overrides for that server and for all servers and the policies hash approved for it; `ETag` and `If-None-Match`.
+- **Identity of a server:** there is no `tlsName`. The gateway accepts for a server only a certificate of the internal CA with the SAN
+  `<serverId>.internal` and one CN equal to `serverId` (`V12` drops the column). `adapter` is set when a server is added and never patched; a
+  held manifest of another kind than the server is registered as disables it.
+- **Fresh MFA:** `approveServerPolicies`, `putScopeMapping`, `deleteOverride`, `createServer`, `deleteServer` and every `updateServer` except a
+  body that only sets `enabled: false` need `auth_time` within 300 s and proof of a second factor in the token (an `amr` of `mfa`, `otp`, `hwk`
+  or `totp`, or an `acr` listed in `MCP_ADMIN_MFA_ACR_VALUES`; `MCP_ADMIN_MFA_AMR_VALUES`); otherwise `401 step_up_required`, audited.
+- **Namespaces** are claimed by the approval of policies, not by a registration; an approval that changes or frees one removes the grants of
+  the freed namespace from the scope mapping (audited per entry). Risk floors survive `DELETE /admin/v1/servers/{serverId}`; rows a removal
+  leaves behind are purged when the id is added again (rows of 1.x are taken again, once).
+- **Allowed clients** are policy data in the database: `MCP_ALLOWED_CLIENTS` only seeds them, once, and a different value is logged; every
+  instance enforces and serves the same list. The revision is `max(previous + 1, clock in ms)` and the policy state is read in one
+  repeatable-read transaction.
+- A running server whose `/mcp-manifest` could not be verified for `MCP_REGISTRY_POLICY_CHECK_FAILURES` (3) checks in a row, or for
+  `MCP_REGISTRY_POLICY_CHECK_MAX_AGE` (5m), has its tools blocked (`policies_unverified`, audited) until a check finds it intact.
+- Audit: override events carry `overrideId`, `overrideTarget` and `textSha256` (`textSha256Before`), `server_updated` the `changedFields`, the
+  removal of a server one event for each tool, switch, policy, namespace, override and mapping entry (with its `group`); `policies_approved`
+  is written before the data is read back. Overrides that an approval makes invalid are in the audit only (the answer has no place for them).
+- `deploy/`: no `gateway-state` volume or `/app/state` mount (nothing uses it); the systemd `StateDirectory` stays, it holds the generated secrets.
 - `InvalidationListener` and the other places that listed systems use the generic pattern of a system id.
 - **Removed:** the policy bundles (`mcp-policy-bundle`, `BundleFetcher`, the state directory, `MCP_POLICY_*`), the five static servers and their
   tool lists in `application.yml` (`MCP_SERVER_<SYSTEM>_*`, `MCP_REGISTRY_MODE`), `registry.mode=static`, the tool switches of the configuration.
@@ -49,7 +67,7 @@ platform, and removed again, without restarting anything and without a policy re
 ### Upgrade from 1.x
 
 1. Servers: nothing of `MCP_SERVER_<SYSTEM>_*` is read any more and the migration cannot copy it. Before users return, add each server with
-   `POST /admin/v1/servers` (or in the portal) with the address, `tlsName` (default `<serverId>.internal`) and the credential
+   `POST /admin/v1/servers` (or in the portal) with the address and the credential
    (`required`, `acceptedTypes`, `type`) that the old configuration had; an adapter server gets `adapter: true`. Manifests and approvals
    stored under the same `serverId` are taken again, but a 1.x manifest has no policies: build the server with the starter 4.0.0, register
    its manifest and approve its policies.
@@ -60,7 +78,9 @@ platform, and removed again, without restarting anything and without a policy re
 4. Delete `MCP_POLICY_*`, `MCP_REGISTRY_MODE`, `MCP_SERVER_*` and `certs/policies-main.public.pem` from your configuration, and the
    volume that held `/app/state`. Set `MCP_ALLOWED_CLIENTS` only if the AI clients are not `claude-code` and `claude-ai` (it was a Cedar
    policy of the bundle). Every instance needs the same value.
-5. `prv` in the internal JWT and `policyRevision` in the audit events are integers now; a server on starter 3.x does not understand them.
+5. Server certificates: each MCP server needs CN `<serverId>` and SAN `<serverId>.internal`, with `serverAuth` and `clientAuth`.
+6. The portal token for the gateway must carry `auth_time` and `amr` (or an `acr` you list); without them the operations above are refused.
+7. `prv` in the internal JWT and `policyRevision` in the audit events are integers now; a server on starter 3.x does not understand them.
 
 ## 1.0.0
 

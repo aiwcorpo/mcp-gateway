@@ -41,11 +41,20 @@ public final class InternalTls {
         }
     }
 
-    /** Client that presents the gateway certificate and accepts only a server certificate naming {@code tlsName}. */
+    /** Client that presents the gateway certificate and accepts only a server certificate naming {@code tlsName} (the broker). */
     public HttpClient clientFor(String tlsName, Duration connectTimeout) {
+        return client(new PinnedNameTrustManager(pkix, tlsName), tlsName, connectTimeout);
+    }
+
+    /** Client for an MCP server: its certificate must have the SAN {@code <serverId>.internal} and the CN {@code serverId}. */
+    public HttpClient clientForServer(String serverId, Duration connectTimeout) {
+        return client(PinnedNameTrustManager.forServer(pkix, serverId), serverId, connectTimeout);
+    }
+
+    private HttpClient client(PinnedNameTrustManager trust, String tlsName, Duration connectTimeout) {
         try {
             SSLContext context = SSLContext.getInstance("TLS");
-            context.init(keyManagers.getKeyManagers(), new TrustManager[] {new PinnedNameTrustManager(pkix, tlsName)}, null);
+            context.init(keyManagers.getKeyManagers(), new TrustManager[] {trust}, null);
             SSLParameters parameters = context.getDefaultSSLParameters();
             parameters.setProtocols(new String[] {"TLSv1.3", "TLSv1.2"});
             return HttpClient.newBuilder()

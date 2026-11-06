@@ -75,7 +75,8 @@ overrides and kill switches reach the other instances within a second (`MCP_CHAN
 The list of servers, the scope mapping and the emergency overrides are data in PostgreSQL, changed through the admin API
 (`/admin/v1/servers`, `/admin/v1/policy/*`, the portal calls them) and never through the environment. Adding a server: `POST
 /admin/v1/servers`; its pipeline registers the manifest (`PUT /admin/v1/registry/servers/{serverId}`), an administrator approves the policies
-and the tools that wait; it has tools for nobody before that. Removing it: `DELETE /admin/v1/servers/{serverId}`. Nothing restarts.
+and the tools that wait; it has tools for nobody before that. Its certificate must have the CN `serverId` and the SAN
+`<serverId>.internal`. Adding, removing, changing (except switching off) and approving need a token of a fresh MFA login. Removing it: `DELETE /admin/v1/servers/{serverId}`. Nothing restarts.
 
 Gateway decisions on `call` use the platform policies of `mcp-contracts` (a user needs the group `mcp-<system>-read`, `-write` or
 `-destructive`, and a write needs the scopes of the resources it names) and the overrides of the administrator. The policies of a system

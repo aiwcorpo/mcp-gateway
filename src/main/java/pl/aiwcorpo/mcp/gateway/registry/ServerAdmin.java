@@ -36,10 +36,9 @@ public final class ServerAdmin {
     private static final Logger log = LoggerFactory.getLogger(ServerAdmin.class);
     private static final Pattern SERVER_ID = Pattern.compile("^mcp-[a-z][a-z0-9]{1,30}$");
     private static final Pattern SYSTEM = Pattern.compile("^[a-z][a-z0-9]{1,30}$");
-    private static final Pattern TLS_NAME = Pattern.compile("^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$");
     private static final Set<String> CREDENTIAL_TYPES = Set.of("user-oauth", "user-secret", "token-exchange", "service-account");
-    private static final Set<String> CREATE_FIELDS = Set.of("serverId", "system", "internalUrl", "tlsName", "credential", "enabled", "adapter");
-    private static final Set<String> PATCH_FIELDS = Set.of("internalUrl", "tlsName", "credential", "enabled", "adapter");
+    private static final Set<String> CREATE_FIELDS = Set.of("serverId", "system", "internalUrl", "credential", "enabled", "adapter");
+    private static final Set<String> PATCH_FIELDS = Set.of("internalUrl", "credential", "enabled");
 
     /** A server as the API shows it, with the ETag of that document. */
     public record Item(ServerConfig config, String etag) {
@@ -86,7 +85,6 @@ public final class ServerAdmin {
         node.put("serverId", config.serverId());
         node.put("system", config.system());
         node.put("internalUrl", config.internalUrl().toString());
-        node.put("tlsName", config.tlsName());
         ObjectNode credential = node.putObject("credential");
         credential.put("required", config.credential().required());
         ArrayNode types = credential.putArray("acceptedTypes");
@@ -117,6 +115,7 @@ public final class ServerAdmin {
             if (tx.config().isPresent()) {
                 return Outcome.of(Outcome.Status.EXISTS);
             }
+            tx.purgeLeftovers();
             tx.saveConfig(config, true);
             return Outcome.created(item(config));
         });
@@ -135,6 +134,7 @@ public final class ServerAdmin {
         if (ifMatch == null) {
             return Outcome.of(Outcome.Status.PRECONDITION_REQUIRED);
         }
+        List<String> changed = new ArrayList<>();
         Outcome<Item> written = store.locked(serverId, tx -> {
             Optional<ServerConfig> current = tx.config();
             if (current.isEmpty()) {
@@ -147,11 +147,22 @@ public final class ServerAdmin {
             if (!parsed.succeeded()) {
                 return Outcome.rejected(parsed.reason(), parsed.message());
             }
-            tx.saveConfig(parsed.value(), false);
-            return Outcome.ok(item(parsed.value()));
+            ServerConfig before = current.get();
+            ServerConfig after = parsed.value();
+            if (!before.internalUrl().equals(after.internalUrl())) {
+                changed.add("internalUrl");
+            }
+            if (!before.credential().equals(after.credential())) {
+                changed.add("credential");
+            }
+            if (before.enabled() != after.enabled()) {
+                changed.add("enabled");
+            }
+            tx.saveConfig(after, false);
+            return Outcome.ok(item(after));
         });
         if (written.succeeded()) {
-            audit.emit(base(requestId, administrator, serverId).reason("server_updated").outcome("ok"));
+            audit.emit(base(requestId, administrator, serverId).reason("server_updated").changedFields(changed).outcome("ok"));
             applyHere();
         } else if (written.status() == Outcome.Status.REJECTED && !"invalid_request".equals(written.reason())) {
             audit.emit(base(requestId, administrator, serverId).reason(written.reason()).outcome("denied"));
@@ -190,13 +201,6 @@ public final class ServerAdmin {
                 return Outcome.rejected("invalid_request", null);
             }
         }
-        String tlsName = current == null ? ServerConfig.defaultTlsName(serverId) : current.tlsName();
-        if (body.has("tlsName")) {
-            tlsName = body.get("tlsName").isString() ? body.get("tlsName").asString() : "";
-            if (!TLS_NAME.matcher(tlsName).matches()) {
-                return Outcome.rejected("invalid_request", null);
-            }
-        }
         ServerConfig.Credential credential = current == null ? null : current.credential();
         if (body.has("credential")) {
             Optional<ServerConfig.Credential> parsed = credential(body.get("credential"));
@@ -224,7 +228,7 @@ public final class ServerAdmin {
         if (!credential.acceptedTypes().contains(credential.type())) {
             return Outcome.rejected("credential_type_not_accepted", "type must be one of acceptedTypes");
         }
-        return Outcome.ok(new ServerConfig(serverId, system, url, tlsName, credential, enabled, adapter));
+        return Outcome.ok(new ServerConfig(serverId, system, url, credential, enabled, adapter));
     }
 
     private static Optional<ServerConfig.Credential> credential(JsonNode node) {
@@ -250,42 +254,27 @@ public final class ServerAdmin {
      * are removed and audited one by one.
      */
     public Outcome<Void> delete(String requestId, String serverId, GatewayUser administrator) {
-        List<PendingCall.Resource> removedScopes = new ArrayList<>();
-        List<String> removedOverrides = new ArrayList<>();
+        List<MappingCleanup.Removed> removedScopes = new ArrayList<>();
+        List<pl.aiwcorpo.mcp.gateway.policy.PolicyOverride> removedOverrides = new ArrayList<>();
+        List<RegisteredTool> removedTools = new ArrayList<>();
+        List<String> removedSwitches = new ArrayList<>();
+        List<String> removedNamespaces = new ArrayList<>();
+        boolean[] hadPolicies = {false};
         Outcome<Void> result = store.locked(serverId, tx -> {
             if (tx.config().isEmpty()) {
                 return Outcome.of(Outcome.Status.NOT_FOUND);
             }
             var state = tx.lockPolicyState();
-            Set<String> prefixes = new TreeSet<>();
-            tx.namespaces().forEach(namespace -> prefixes.add(namespace + "::"));
-            ArrayNode kept = json.createArrayNode();
-            for (JsonNode entry : state.scopeMapping()) {
-                ArrayNode scopes = json.createArrayNode();
-                boolean touched = false;
-                for (JsonNode scope : entry.path("scopes")) {
-                    String id = scope.asString();
-                    if (prefixes.stream().anyMatch(id::startsWith)) {
-                        touched = true;
-                        int slash = id.indexOf('/');
-                        removedScopes.add(new PendingCall.Resource(id.substring(0, slash), id.substring(slash + 1), null));
-                    } else {
-                        scopes.add(scope);
-                    }
-                }
-                if (!touched) {
-                    kept.add(entry);
-                } else if (!scopes.isEmpty()) {
-                    ObjectNode rewritten = json.createObjectNode();
-                    rewritten.put("group", entry.path("group").asString());
-                    rewritten.set("scopes", scopes);
-                    kept.add(rewritten);
-                }
-            }
+            removedNamespaces.addAll(tx.namespaces());
+            MappingCleanup.Result cleaned = MappingCleanup.strip(json, state.scopeMapping(), new TreeSet<>(removedNamespaces));
+            removedScopes.addAll(cleaned.removed());
             if (!removedScopes.isEmpty()) {
-                tx.saveScopeMapping(kept);
+                tx.saveScopeMapping(cleaned.mapping());
             }
-            tx.overridesOf().forEach(override -> removedOverrides.add(override.id()));
+            removedTools.addAll(tx.tools().values());
+            removedSwitches.addAll(tx.killSwitchTools());
+            hadPolicies[0] = tx.policies().approved() || tx.policies().pending();
+            removedOverrides.addAll(tx.overridesOf());
             tx.deleteOverridesOf();
             tx.deleteAll();
             tx.raiseRevision();
@@ -293,13 +282,21 @@ public final class ServerAdmin {
         });
         if (result.succeeded()) {
             audit.emit(base(requestId, administrator, serverId).reason("server_deleted").outcome("ok"));
-            removedScopes.forEach(scope -> audit.emit(base(requestId, administrator, serverId).reason("scope_mapping_entry_removed")
-                    .outcome("ok").resource(scope)));
-            removedOverrides.forEach(id -> audit.emit(base(requestId, administrator, serverId).reason("override_removed").outcome("ok")));
-            if (!removedScopes.isEmpty() || !removedOverrides.isEmpty()) {
-                log.info("{} removed: {} scope mapping entries and {} overrides went with it", serverId, removedScopes.size(),
-                        removedOverrides.size());
+            removedScopes.forEach(removed -> audit.emit(base(requestId, administrator, serverId).reason("scope_mapping_entry_removed")
+                    .outcome("ok").group(removed.group()).resource(new PendingCall.Resource(removed.type(), removed.local(), null))));
+            removedOverrides.forEach(override -> audit.emit(base(requestId, administrator, serverId).reason("override_removed")
+                    .override(override.id(), override.target(), override.text(), null).outcome("ok")));
+            removedTools.forEach(tool -> audit.emit(base(requestId, administrator, serverId).reason("tool_removed").tool(tool.name())
+                    .definitionHash(tool.approved() != null ? tool.approved().hash() : tool.pending().hash()).outcome("ok")));
+            removedSwitches.forEach(tool -> audit.emit(base(requestId, administrator, serverId).reason("kill_switch_cleared")
+                    .tool(tool.isEmpty() ? null : tool).outcome("ok")));
+            if (hadPolicies[0]) {
+                audit.emit(base(requestId, administrator, serverId).reason("policies_removed").outcome("ok"));
             }
+            removedNamespaces.forEach(namespace -> audit.emit(base(requestId, administrator, serverId).reason("namespace_released")
+                    .outcome("ok")));
+            log.info("{} removed: {} scope mapping entries and {} overrides went with it", serverId, removedScopes.size(),
+                    removedOverrides.size());
             onDeleted.accept(serverId);
             applyHere();
         }

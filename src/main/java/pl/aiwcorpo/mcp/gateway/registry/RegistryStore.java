@@ -73,15 +73,14 @@ public class RegistryStore {
             wrote = true;
             String credential = json.writeValueAsString(credentialJson(config.credential()));
             if (create) {
-                jdbc.sql("INSERT INTO servers (server_id, system, internal_url, tls_name, credential, enabled, adapter) "
-                                + "VALUES (?, ?, ?, ?, ?::jsonb, ?, ?)")
-                        .params(config.serverId(), config.system(), config.internalUrl().toString(), config.tlsName(), credential,
+                jdbc.sql("INSERT INTO servers (server_id, system, internal_url, credential, enabled, adapter) "
+                                + "VALUES (?, ?, ?, ?::jsonb, ?, ?)")
+                        .params(config.serverId(), config.system(), config.internalUrl().toString(), credential,
                                 config.enabled(), config.adapter()).update();
             } else {
-                jdbc.sql("UPDATE servers SET internal_url = ?, tls_name = ?, credential = ?::jsonb, enabled = ?, adapter = ?, "
-                                + "updated_at = now() WHERE server_id = ?")
-                        .params(config.internalUrl().toString(), config.tlsName(), credential, config.enabled(), config.adapter(),
-                                config.serverId()).update();
+                // adapter is not updated: it is set when the server is added and never changes.
+                jdbc.sql("UPDATE servers SET internal_url = ?, credential = ?::jsonb, enabled = ?, updated_at = now() WHERE server_id = ?")
+                        .params(config.internalUrl().toString(), credential, config.enabled(), config.serverId()).update();
             }
         }
 
@@ -104,7 +103,12 @@ public class RegistryStore {
                             text(policies.pendingResourceTypes()), policies.pendingVersion(), policies.pendingSource()).update();
         }
 
-        /** The serverId that owns the namespace after this call: this server when it was free or already its own. */
+        /** The server whose approved policies own the namespace, if any. */
+        public Optional<String> namespaceOwner(String namespace) {
+            return jdbc.sql("SELECT server_id FROM registry_namespaces WHERE namespace = ?").param(namespace).query(String.class).optional();
+        }
+
+        /** The serverId that owns the namespace after this call: this server when it was free or already its own. Only an approval claims. */
         public String claimNamespace(String namespace) {
             wrote = true;
             jdbc.sql("INSERT INTO registry_namespaces (namespace, server_id) VALUES (?, ?) ON CONFLICT (namespace) DO NOTHING")
@@ -149,11 +153,34 @@ public class RegistryStore {
             policyData.deleteOverridesOf(serverId);
         }
 
-        /** Everything the registry holds of the server, its settings last: no tool, approval, switch, policy or namespace stays. */
+        /**
+         * Everything the registry holds of the server, its settings last: no tool, approval, switch, policy or namespace stays. The risk floors
+         * stay (CC-167): a server added again under the same id cannot bring back a lowered risk without an administrator accepting it.
+         */
         public void deleteAll() {
             wrote = true;
-            for (String table : List.of("registry_tools", "registry_risk_floor", "kill_switches", "registry_policies", "registry_namespaces",
-                    "registry_servers", "servers")) {
+            for (String table : List.of("registry_tools", "kill_switches", "registry_policies", "registry_namespaces", "registry_servers",
+                    "servers")) {
+                jdbc.sql("DELETE FROM " + table + " WHERE server_id = ?").param(serverId).update();
+            }
+        }
+
+        /** Rows of the switches of the server, as (tool or empty), for the audit of its removal. */
+        public List<String> killSwitchTools() {
+            return jdbc.sql("SELECT tool FROM kill_switches WHERE server_id = ? ORDER BY tool").param(serverId).query(String.class).list();
+        }
+
+        /**
+         * Before a server is added: what an earlier removal or a race left under its id is purged (tools, manifests, policies, namespaces and
+         * switches; the risk floors stay). Rows of a build before this one are legacy: they are taken again, once.
+         */
+        public void purgeLeftovers() {
+            wrote = true;
+            boolean legacy = jdbc.sql("DELETE FROM registry_legacy WHERE server_id = ?").param(serverId).update() > 0;
+            if (legacy) {
+                return;
+            }
+            for (String table : List.of("registry_tools", "kill_switches", "registry_policies", "registry_namespaces", "registry_servers")) {
                 jdbc.sql("DELETE FROM " + table + " WHERE server_id = ?").param(serverId).update();
             }
         }
@@ -220,6 +247,7 @@ public class RegistryStore {
 
     private final JdbcClient jdbc;
     private final JsonMapper json;
+    private final PlatformTransactionManager transactionManager;
     private final TransactionTemplate transactions;
     private final ChangeCounter changes;
     private final PolicyDataStore policyData;
@@ -228,6 +256,7 @@ public class RegistryStore {
                          PolicyDataStore policyData) {
         this.jdbc = jdbc;
         this.json = json;
+        this.transactionManager = transactionManager;
         this.transactions = new TransactionTemplate(transactionManager);
         this.changes = changes;
         this.policyData = policyData;
@@ -310,14 +339,25 @@ public class RegistryStore {
         });
     }
 
+    /**
+     * Reads several tables as of one moment (REPEATABLE READ, read only): a writer raises the revision in the transaction of its change,
+     * so what is read together belongs to one revision.
+     */
+    public <T> T consistentRead(java.util.function.Supplier<T> work) {
+        TransactionTemplate read = new TransactionTemplate(transactionManager);
+        read.setIsolationLevel(TransactionTemplate.ISOLATION_REPEATABLE_READ);
+        read.setReadOnly(true);
+        return read.execute(status -> work.get());
+    }
+
     /** Every server of the registry, in serverId order. */
     public List<ServerConfig> configs() {
-        return jdbc.sql("SELECT server_id, system, internal_url, tls_name, credential::text AS credential, enabled, adapter FROM servers "
+        return jdbc.sql("SELECT server_id, system, internal_url, credential::text AS credential, enabled, adapter FROM servers "
                 + "ORDER BY server_id").query(this::mapConfig).list();
     }
 
     public Optional<ServerConfig> config(String serverId) {
-        return jdbc.sql("SELECT server_id, system, internal_url, tls_name, credential::text AS credential, enabled, adapter FROM servers "
+        return jdbc.sql("SELECT server_id, system, internal_url, credential::text AS credential, enabled, adapter FROM servers "
                 + "WHERE server_id = ?").param(serverId).query(this::mapConfig).optional();
     }
 
@@ -358,7 +398,7 @@ public class RegistryStore {
         List<String> accepted = new java.util.ArrayList<>();
         credential.path("acceptedTypes").forEach(type -> accepted.add(type.asString()));
         return new ServerConfig(rs.getString("server_id"), rs.getString("system"), java.net.URI.create(rs.getString("internal_url")),
-                rs.getString("tls_name"), new ServerConfig.Credential(credential.path("required").asBoolean(true), accepted,
+                new ServerConfig.Credential(credential.path("required").asBoolean(true), accepted,
                         credential.path("type").asString(null)), rs.getBoolean("enabled"), rs.getBoolean("adapter"));
     }
 

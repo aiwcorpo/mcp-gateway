@@ -254,19 +254,18 @@ public final class GatewayTestEnvironment {
         org.flywaydb.core.Flyway.configure().dataSource(jdbcUrl(database), "gateway", POSTGRES_PASSWORD).locations("classpath:db/migration")
                 .load().migrate();
         try (java.sql.Connection connection = connection(database);
-             java.sql.PreparedStatement upsert = connection.prepareStatement("INSERT INTO servers (server_id, system, internal_url, tls_name, "
-                     + "credential, enabled, adapter) VALUES (?, ?, ?, ?, ?::jsonb, ?, ?) ON CONFLICT (server_id) DO UPDATE SET "
-                     + "internal_url = EXCLUDED.internal_url, tls_name = EXCLUDED.tls_name, credential = EXCLUDED.credential, "
+             java.sql.PreparedStatement upsert = connection.prepareStatement("INSERT INTO servers (server_id, system, internal_url, "
+                     + "credential, enabled, adapter) VALUES (?, ?, ?, ?::jsonb, ?, ?) ON CONFLICT (server_id) DO UPDATE SET "
+                     + "internal_url = EXCLUDED.internal_url, credential = EXCLUDED.credential, "
                      + "enabled = EXCLUDED.enabled, adapter = EXCLUDED.adapter")) {
             for (ServerRow row : servers()) {
                 upsert.setString(1, row.serverId());
                 upsert.setString(2, row.system());
                 upsert.setString(3, urls.getOrDefault(row.serverId(), row.url()));
-                upsert.setString(4, row.serverId() + ".internal");
-                upsert.setString(5, "{\"required\":" + row.credentialRequired() + ",\"acceptedTypes\":[\"" + row.credentialType()
+                upsert.setString(4, "{\"required\":" + row.credentialRequired() + ",\"acceptedTypes\":[\"" + row.credentialType()
                         + "\"],\"type\":\"" + row.credentialType() + "\"}");
-                upsert.setBoolean(6, row.enabled());
-                upsert.setBoolean(7, row.adapter());
+                upsert.setBoolean(5, row.enabled());
+                upsert.setBoolean(6, row.adapter());
                 upsert.executeUpdate();
             }
             try (java.sql.Statement bump = connection.createStatement()) {

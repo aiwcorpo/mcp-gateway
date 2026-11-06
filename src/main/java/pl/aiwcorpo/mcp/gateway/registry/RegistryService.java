@@ -109,7 +109,9 @@ public final class RegistryService {
 
     /** The policies a running server presents, against the approved ones. {@code UNKNOWN}: no proof either way (not reachable, nothing approved). */
     public enum PoliciesVerdict {
-        INTACT, CHANGED, UNKNOWN
+        INTACT, CHANGED, UNKNOWN,
+        /** The manifest could not be read or verified for too many checks or too long: the tools are blocked until a check finds it intact. */
+        UNVERIFIED
     }
 
     /** The approved and the pending entry of a tool for the diff of the portal. */
@@ -128,6 +130,10 @@ public final class RegistryService {
 
         record NamespaceConflict(String namespace) implements Written {
         }
+
+        /** The server was removed while the registration waited for its lock. */
+        record Unknown() implements Written {
+        }
     }
 
     private final ServerRegistry servers;
@@ -143,10 +149,37 @@ public final class RegistryService {
     private final Map<String, RegisteredServer> held = new ConcurrentHashMap<>();
     private volatile List<ServerConfig> lastConfigs = List.of();
     private volatile Runnable onChange = () -> { };
+    private final int unverifiedAfterChecks;
+    private final java.time.Duration unverifiedAfter;
+    private final java.time.Clock clock;
+    private final Map<String, PolicyCheck> checks = new ConcurrentHashMap<>();
+
+    /** What the checks of the live policies of a server have found: when one last verified them, and how many failed since. */
+    private static final class PolicyCheck {
+        java.time.Instant verifiedAt;
+        int failures;
+        boolean blocked;
+    }
 
     public RegistryService(ServerRegistry servers, RegistryStore store, ManifestValidator validator, ManifestFetcher fetcher,
                            DefinitionGuard guard, DefinitionCheck definitionCheck, AuditLog audit, String componentId,
                            JsonMapper json, PolicyService policies) {
+        this(servers, store, validator, fetcher, guard, definitionCheck, audit, componentId, json, policies, 3, java.time.Duration.ofMinutes(5),
+                java.time.Clock.systemUTC());
+    }
+
+    /**
+     * @param unverifiedAfterChecks consecutive checks in which the manifest of a running server could not be read or verified after which
+     *                              its tools are blocked
+     * @param unverifiedAfter       the longest time since its policies were last verified before its tools are blocked
+     */
+    public RegistryService(ServerRegistry servers, RegistryStore store, ManifestValidator validator, ManifestFetcher fetcher,
+                           DefinitionGuard guard, DefinitionCheck definitionCheck, AuditLog audit, String componentId,
+                           JsonMapper json, PolicyService policies, int unverifiedAfterChecks, java.time.Duration unverifiedAfter,
+                           java.time.Clock clock) {
+        this.unverifiedAfterChecks = unverifiedAfterChecks;
+        this.unverifiedAfter = unverifiedAfter;
+        this.clock = clock;
         this.servers = servers;
         this.store = store;
         this.validator = validator;
@@ -225,6 +258,9 @@ public final class RegistryService {
         String credentialJson = validator.credentialJson(manifest);
         PolicyPlan[] policyEvent = {null};
         Written written = store.locked(serverId, tx -> {
+            if (tx.config().isEmpty()) {
+                return new Written.Unknown();
+            }
             if (bootstrap && tx.server().isPresent()) {
                 return new Written.AlreadyThere();
             }
@@ -235,9 +271,10 @@ public final class RegistryService {
                 return new Written.Lowered(plan.lowered());
             }
             if (!adapterChannel) {
-                // The namespace belongs to the first server that declared it (C5): a second one is refused before anything is written.
+                // A namespace belongs to the first server whose policies were approved with it (C5). Registration claims nothing, so a
+                // registration cannot hold a name that another server would need; it is refused only for a name that has an approved owner.
                 String namespace = manifest.path("policies").path("namespace").asString();
-                if (!tx.claimNamespace(namespace).equals(serverId)) {
+                if (tx.namespaceOwner(namespace).filter(owner -> !owner.equals(serverId)).isPresent()) {
                     return new Written.NamespaceConflict(namespace);
                 }
                 PolicyPlan policyPlan = planPolicies(tx.policies(), manifest, bootstrap);
@@ -286,6 +323,7 @@ public final class RegistryService {
                 yield new Result.Rejected(List.of(new Rejection("risk_lowered", "the risk of " + String.join(", ", lowered.tools())
                         + " is lower than what was approved before")));
             }
+            case Written.Unknown unknown -> new Result.UnknownServer();
             case Written.AlreadyThere there -> {
                 // Another instance (or a registration a moment ago) came first: this instance takes that state.
                 take(serverId);
@@ -313,6 +351,9 @@ public final class RegistryService {
         }
         java.time.Instant now = java.time.Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
         Approval result = store.locked(serverId, tx -> {
+            if (tx.config().isEmpty()) {
+                return new Approval.NotFound();
+            }
             RegisteredTool current = tx.tools().get(tool);
             if (current == null || current.pending() == null) {
                 return new Approval.NotFound();
@@ -426,7 +467,12 @@ public final class RegistryService {
             return new PoliciesApproval.NotFound();
         }
         String[] namespaces = new String[2];
+        List<MappingCleanup.Removed> freedScopes = new java.util.ArrayList<>();
+        long[] revision = {0};
         PoliciesApproval stored = store.locked(serverId, tx -> {
+            if (tx.config().isEmpty()) {
+                return new PoliciesApproval.NotFound();
+            }
             StoredPolicies current = tx.policies();
             if (!current.pending() || !current.pendingHash().equals(hash)) {
                 return new PoliciesApproval.HashMismatch();
@@ -435,10 +481,21 @@ public final class RegistryService {
             if (!tx.claimNamespace(namespace).equals(serverId)) {
                 return new PoliciesApproval.Rejected(ManifestValidator.NAMESPACE_CONFLICT, "the namespace " + namespace + " belongs to another server");
             }
+            // An approval that changes the namespace frees the old one: what was granted for its types goes with it, so that whoever takes
+            // the name next does not inherit the grants (as when the server is deleted).
+            java.util.Set<String> freed = new java.util.TreeSet<>(tx.namespaces());
+            freed.remove(namespace);
+            if (!freed.isEmpty()) {
+                MappingCleanup.Result cleaned = MappingCleanup.strip(json, tx.lockPolicyState().scopeMapping(), freed);
+                freedScopes.addAll(cleaned.removed());
+                if (!freedScopes.isEmpty()) {
+                    tx.saveScopeMapping(cleaned.mapping());
+                }
+            }
             tx.releaseNamespacesExcept(namespace);
             tx.savePolicies(new StoredPolicies(current.pendingHash(), current.pendingPolicies(), current.pendingResourceTypes(),
                     current.pendingVersion(), null, null, null, null, null));
-            tx.raiseRevision();
+            revision[0] = tx.raiseRevision();
             namespaces[0] = namespace;
             namespaces[1] = current.approved() ? current.approvedPolicies().path("namespace").asString() : namespace;
             return new PoliciesApproval.Approved(List.of(), List.of());
@@ -449,13 +506,18 @@ public final class RegistryService {
             }
             return stored;
         }
+        // The decision of the administrator is on record before anything is read back or revalidated.
+        audit.emit(AuditEvent.of("admin_change", requestId, componentId).userWithoutClient(administrator).server(serverId)
+                .reason("policies_approved").definitionHash(hash).outcome("ok").policyRevision(revision[0]));
+        freedScopes.forEach(removed -> audit.emit(AuditEvent.of("admin_change", requestId, componentId).userWithoutClient(administrator)
+                .server(serverId).reason("scope_mapping_entry_removed").outcome("ok").group(removed.group())
+                .resource(new pl.aiwcorpo.mcp.gateway.confirm.PendingCall.Resource(removed.type(), removed.local(), null))));
         take(serverId);
         policies.reload();
         List<ScopeMapping.Ignored> ignored = policies.snapshot().mapping().ignored().stream()
                 .filter(entry -> entry.scope().startsWith(namespaces[0] + "::") || entry.scope().startsWith(namespaces[1] + "::")).toList();
+        // The contract's answer has no place for them: the overrides that no longer validate are in the audit (override_invalid).
         List<String> invalidOverrides = policies.revalidateOverrides(requestId, serverId);
-        audit.emit(AuditEvent.of("admin_change", requestId, componentId).userWithoutClient(administrator).server(serverId)
-                .reason("policies_approved").definitionHash(hash).outcome("ok").policyRevision(policies.revision()));
         return new PoliciesApproval.Approved(ignored, invalidOverrides);
     }
 
@@ -513,13 +575,53 @@ public final class RegistryService {
      * policies and resource types is recomputed, never taken from what the manifest claims. A different hash is not a registration: the
      * policies are left as a pending entry with source {@code server} (unless one of the pipeline is already pending) and the tools of the
      * server are blocked until an administrator approves them. A server that presents the approved policies again loses its own pending
-     * entry. A server that cannot be read is no proof of a change.
+     * entry. A server that cannot be read is no proof of a change, but not for ever: after {@code unverifiedAfterChecks} checks in a row that
+     * could not read it, or {@code unverifiedAfter} since its policies were last verified, its tools are blocked ({@code UNVERIFIED}, audited)
+     * until a check finds them intact.
      */
     public PoliciesVerdict observePolicies(McpServer server) {
         RegisteredServer state = held.get(server.serverId());
         if (server.adapter() || state == null || !state.policies().approved()) {
             return PoliciesVerdict.UNKNOWN;
         }
+        PoliciesVerdict verdict = observeLive(server, state);
+        PolicyCheck check = checks.computeIfAbsent(server.serverId(), id -> {
+            PolicyCheck created = new PolicyCheck();
+            created.verifiedAt = clock.instant();
+            return created;
+        });
+        synchronized (check) {
+            switch (verdict) {
+                case INTACT -> {
+                    check.verifiedAt = clock.instant();
+                    check.failures = 0;
+                    if (check.blocked) {
+                        check.blocked = false;
+                        audit.emit(AuditEvent.of("admin_change", UuidV7.next(), componentId).server(server.serverId())
+                                .reason("policies_verified").outcome("ok"));
+                    }
+                }
+                case CHANGED -> check.failures = 0;
+                default -> {
+                    check.failures++;
+                    if (check.failures >= unverifiedAfterChecks
+                            || java.time.Duration.between(check.verifiedAt, clock.instant()).compareTo(unverifiedAfter) > 0) {
+                        if (!check.blocked) {
+                            check.blocked = true;
+                            audit.emit(AuditEvent.of("admin_change", UuidV7.next(), componentId).server(server.serverId())
+                                    .reason("policies_unverified").outcome("denied"));
+                            log.error("{}: its policies could not be verified for {} checks or {}; its tools are blocked", server.serverId(),
+                                    check.failures, unverifiedAfter);
+                        }
+                        return PoliciesVerdict.UNVERIFIED;
+                    }
+                }
+            }
+        }
+        return verdict;
+    }
+
+    private PoliciesVerdict observeLive(McpServer server, RegisteredServer state) {
         Optional<JsonNode> live = fetcher.fetch(server);
         if (live.isEmpty()) {
             return PoliciesVerdict.UNKNOWN;
@@ -554,13 +656,16 @@ public final class RegistryService {
         boolean valid = reported != null && SEMVER.matcher(reported).matches();
         boolean[] touched = {false};
         store.locked(server.serverId(), tx -> {
+            if (tx.config().isEmpty()) {
+                return null;
+            }
             StoredPolicies current = tx.policies();
             if (!current.approved() || hash.equals(current.approvedHash())
                     || (current.pending() && (hash.equals(current.pendingHash()) || "ci".equals(current.pendingSource())))) {
                 return null;
             }
             String namespace = manifest.path("policies").path("namespace").asString();
-            if (!tx.claimNamespace(namespace).equals(server.serverId())) {
+            if (tx.namespaceOwner(namespace).filter(owner -> !owner.equals(server.serverId())).isPresent()) {
                 return null;
             }
             tx.savePolicies(new StoredPolicies(current.approvedHash(), current.approvedPolicies(), current.approvedResourceTypes(),
@@ -579,6 +684,9 @@ public final class RegistryService {
     private void dropServerPending(String serverId) {
         boolean[] touched = {false};
         store.locked(serverId, tx -> {
+            if (tx.config().isEmpty()) {
+                return null;
+            }
             StoredPolicies current = tx.policies();
             if (current.approved() && current.pending() && "server".equals(current.pendingSource())) {
                 tx.savePolicies(new StoredPolicies(current.approvedHash(), current.approvedPolicies(), current.approvedResourceTypes(),
@@ -622,6 +730,9 @@ public final class RegistryService {
         boolean[] touched = {false};
         String presented = presentedSource(server);
         store.locked(server.serverId(), tx -> {
+            if (tx.config().isEmpty()) {
+                return null;
+            }
             Map<String, RegisteredTool> tools = tx.tools();
             verdicts.forEach((name, verdict) -> {
                 RegisteredTool tool = tools.get(name);
@@ -743,7 +854,11 @@ public final class RegistryService {
             return;
         }
         RegisteredServer state = read(stored.get());
-        List<Rejection> rejections = validator.check(state.manifest(), server.get());
+        List<Rejection> rejections = new java.util.ArrayList<>(validator.check(state.manifest(), server.get()));
+        // The kind of manifest must be the kind of server: the registry says whether it is behind an adapter, and the manifest cannot say otherwise.
+        if ("adapter".equals(state.manifest().path("source").asString(null)) != server.get().adapter()) {
+            rejections.add(new Rejection("adapter_mode_mismatch", "the held manifest is not of the kind the server is registered as"));
+        }
         if (!rejections.isEmpty()) {
             log.error("held manifest of {} is no longer acceptable, the server is disabled: {}", serverId,
                     String.join("; ", rejections.stream().map(r -> r.reason() == null ? r.message() : r.reason()).toList()));

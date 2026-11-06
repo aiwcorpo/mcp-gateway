@@ -42,11 +42,13 @@ public class PolicyController {
     private static final int MAX_BODY = 1024 * 1024;
     private static final Pattern OVERRIDE_ID = Pattern.compile("^override-[a-z0-9][a-z0-9-]{0,54}$");
 
+    private final FreshMfa mfa;
     private final PolicyService policies;
     private final AdminResponses responses;
     private final JsonMapper json;
 
-    public PolicyController(PolicyService policies, JsonMapper json) {
+    public PolicyController(PolicyService policies, JsonMapper json, FreshMfa mfa) {
+        this.mfa = mfa;
         this.policies = policies;
         this.responses = new AdminResponses(json);
         this.json = json;
@@ -70,6 +72,10 @@ public class PolicyController {
         String ifMatch = request.getHeader(HttpHeaders.IF_MATCH);
         if (ifMatch != null && !PolicyService.wellFormedEtag(ifMatch)) {
             return responses.error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
+        }
+        if (!mfa.fresh(token)) {
+            mfa.refused(token, requestId, "putScopeMapping");
+            return responses.error(HttpStatus.UNAUTHORIZED, requestId, "step_up_required", null, null);
         }
         Outcome<PolicyService.MappingDocument> outcome = policies.putMapping(requestId, ifMatch, body(request), GatewayUser.from(token));
         if (outcome.succeeded()) {
@@ -136,6 +142,10 @@ public class PolicyController {
         String ifMatch = request.getHeader(HttpHeaders.IF_MATCH);
         if ((ifMatch != null && !PolicyService.wellFormedEtag(ifMatch)) || !OVERRIDE_ID.matcher(id).matches()) {
             return responses.error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
+        }
+        if (!mfa.fresh(token)) {
+            mfa.refused(token, requestId, "deleteOverride");
+            return responses.error(HttpStatus.UNAUTHORIZED, requestId, "step_up_required", null, null);
         }
         Outcome<Void> outcome = policies.deleteOverride(requestId, id, ifMatch, GatewayUser.from(token));
         return outcome.succeeded() ? responses.noContent(requestId) : failure(outcome, requestId, "override_rejected");

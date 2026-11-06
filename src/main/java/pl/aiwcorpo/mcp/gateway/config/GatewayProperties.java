@@ -169,7 +169,11 @@ public record GatewayProperties(
             /* Certificate names of the operations the contract gives to the BFF (x-allowed-client-cn). */
             @DefaultValue("mcp-portal-bff") @NotEmpty List<String> allowedClientCns,
             /* Certificate names of the offboarding call (x-allowed-client-cn of purgeUser). */
-            @DefaultValue("mcp-offboarding") @NotEmpty List<String> offboardingClientCns) {
+            @DefaultValue("mcp-offboarding") @NotEmpty List<String> offboardingClientCns,
+            /* acr values of the administrator token that stand for MFA; empty = the acr proves nothing. */
+            @DefaultValue List<String> mfaAcrValues,
+            /* amr values that stand for MFA (RFC 8176): one of them in the token proves it. */
+            @DefaultValue({"mfa", "otp", "hwk", "totp"}) List<String> mfaAmrValues) {
     }
 
     /** The client side of the aggregate endpoint (CC-180, CC-181). */
@@ -237,7 +241,11 @@ public record GatewayProperties(
             @DefaultValue("false") boolean bootstrapFromServer,
             @DefaultValue("10s") Duration bootstrapRetry,
             /* How long the last check of the live definitions of a server counts before a call checks them again. */
-            @DefaultValue("30s") Duration definitionCheckTtl) {
+            @DefaultValue("30s") Duration definitionCheckTtl,
+            /* Consecutive checks of a running server's /mcp-manifest that could not verify its policies after which its tools are blocked. */
+            @DefaultValue("3") @Min(1) int policyCheckFailures,
+            /* The longest time since its policies were last verified before the tools of a running server are blocked. */
+            @DefaultValue("5m") Duration policyCheckMaxAge) {
     }
 
     /** The activity views (C5 /activity/calls). */

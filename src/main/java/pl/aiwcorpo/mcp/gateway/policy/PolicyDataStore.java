@@ -42,9 +42,13 @@ public class PolicyDataStore {
                 rs.getString("allowed_clients"))).single();
     }
 
-    /** Raises the revision by one; the caller holds the row lock or is the only writer in its transaction. */
+    /**
+     * Raises the revision to the larger of the next one and the clock in milliseconds (CC-240): it never falls, and a store that was
+     * restored from an older copy still hands out revisions that every server takes as new. The caller holds the row lock.
+     */
     public long raiseRevision() {
-        return jdbc.sql("UPDATE policy_state SET revision = revision + 1 WHERE id = 1 RETURNING revision").query(Long.class).single();
+        return jdbc.sql("UPDATE policy_state SET revision = GREATEST(revision + 1, ?) WHERE id = 1 RETURNING revision")
+                .param(System.currentTimeMillis()).query(Long.class).single();
     }
 
     public void saveScopeMapping(JsonNode document) {

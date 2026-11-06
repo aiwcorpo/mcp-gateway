@@ -90,12 +90,18 @@ gateway:
     authorized-party: ${MCP_ADMIN_AUTHORIZED_PARTY:mcp-portal-bff}
     allowed-client-cns: ${MCP_ADMIN_CLIENT_CNS:mcp-portal-bff}
     offboarding-client-cns: ${MCP_ADMIN_OFFBOARDING_CLIENT_CNS:mcp-offboarding}
+    # What makes a token of the administrator a fresh MFA next to auth_time <= 300 s: an acr from the first list, or an amr from the second.
+    mfa-acr-values: ${MCP_ADMIN_MFA_ACR_VALUES:}
+    mfa-amr-values: ${MCP_ADMIN_MFA_AMR_VALUES:mfa,otp,hwk,totp}
   # AI clients (azp of the IdP token) that may call tools: checked in code before Cedar, served to the servers in their policy data.
   # A change raises the revision of the policy data; every instance needs the same value.
   allowed-clients: ${MCP_ALLOWED_CLIENTS:claude-code,claude-ai}
   registry:
     bootstrap-from-server: ${MCP_REGISTRY_BOOTSTRAP:false}
     definition-check-ttl: ${MCP_REGISTRY_DEFINITION_CHECK_TTL:30s}
+    # Blocks the tools of a running server whose /mcp-manifest could not be verified for this many checks in a row, or for this long.
+    policy-check-failures: ${MCP_REGISTRY_POLICY_CHECK_FAILURES:3}
+    policy-check-max-age: ${MCP_REGISTRY_POLICY_CHECK_MAX_AGE:5m}
   activity:
     cursor-key: ${MCP_ACTIVITY_CURSOR_KEY:}
     retention: ${MCP_ACTIVITY_RETENTION:30d}

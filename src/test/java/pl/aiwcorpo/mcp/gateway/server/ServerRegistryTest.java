@@ -18,7 +18,7 @@ class ServerRegistryTest {
     private static final ServerConfig JIRA = config("mcp-jira", "jira", "user-secret", true, false);
 
     private static ServerConfig config(String serverId, String system, String type, boolean enabled, boolean adapter) {
-        return new ServerConfig(serverId, system, URI.create("https://" + serverId + ".internal:8443/mcp"), serverId + ".internal",
+        return new ServerConfig(serverId, system, URI.create("https://" + serverId + ".internal:8443/mcp"),
                 new ServerConfig.Credential(true, List.of(type), type), enabled, adapter);
     }
 
@@ -44,7 +44,6 @@ class ServerRegistryTest {
         registry.replaceConfigs(List.of(JIRA));
         assertThat(registry.find("mcp-jira")).hasValueSatisfying(server -> {
             assertThat(server.tools()).isEmpty();
-            assertThat(server.tlsName()).isEqualTo("mcp-jira.internal");
         });
         assertThat(registry.resolve("jira__get_issue")).isEmpty();
     }
@@ -89,15 +88,13 @@ class ServerRegistryTest {
         assertThat(credentialType(new ServerConfig.Credential(true, List.of("user-oauth", "user-secret"), "user-oauth"))).isEqualTo("user-oauth");
         assertThat(credentialType(new ServerConfig.Credential(false, List.of("user-secret"), "user-secret"))).as("no credential, no type").isNull();
         ServerRegistry registry = new ServerRegistry();
-        registry.replaceConfigs(List.of(new ServerConfig("mcp-opensearch", "opensearch", URI.create("https://mcp-opensearch.internal:8443/mcp"),
-                "mcp-opensearch.internal", new ServerConfig.Credential(true, List.of("token-exchange"), "token-exchange"), true, false)));
+        registry.replaceConfigs(List.of(new ServerConfig("mcp-opensearch", "opensearch", URI.create("https://mcp-opensearch.internal:8443/mcp"), new ServerConfig.Credential(true, List.of("token-exchange"), "token-exchange"), true, false)));
         assertThat(registry.find("mcp-opensearch").orElseThrow().credential().tokenExchange()).isTrue();
     }
 
     private static String credentialType(ServerConfig.Credential credential) {
         ServerRegistry registry = new ServerRegistry();
-        registry.replaceConfigs(List.of(new ServerConfig("mcp-jira", "jira", URI.create("https://mcp-jira.internal:8443/mcp"),
-                "mcp-jira.internal", credential, true, false)));
+        registry.replaceConfigs(List.of(new ServerConfig("mcp-jira", "jira", URI.create("https://mcp-jira.internal:8443/mcp"), credential, true, false)));
         return registry.find("mcp-jira").orElseThrow().credential().type();
     }
 

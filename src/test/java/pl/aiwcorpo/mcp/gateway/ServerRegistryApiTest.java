@@ -73,7 +73,7 @@ class ServerRegistryApiTest extends GatewayTestBase {
         assertThat(created.statusCode()).as(created.body()).isEqualTo(201);
         assertThat(created.headers().firstValue("Location")).contains(NOTES);
         JsonNode body = json(created);
-        assertThat(body.path("tlsName").asString()).as("default <serverId>.internal").isEqualTo("mcp-notes.internal");
+        assertThat(body.has("tlsName")).as("the certificate is pinned to the serverId, there is no name to set").isFalse();
         assertThat(body.path("enabled").asBoolean()).isTrue();
         assertThat(body.path("adapter").asBoolean()).isFalse();
         assertThat(Contracts.gatewayAdminErrors("ServerConfig", body)).isEmpty();
@@ -96,6 +96,10 @@ class ServerRegistryApiTest extends GatewayTestBase {
                 .as("the old ETag is stale now").isEqualTo(412);
         assertThat(adminCall("PATCH", NOTES, "{\"serverId\":\"mcp-other\"}", Map.of("If-Match", etag(updated))).statusCode())
                 .as("serverId never changes").isEqualTo(400);
+        assertThat(adminCall("PATCH", NOTES, "{\"adapter\":true}", Map.of("If-Match", etag(updated))).statusCode())
+                .as("adapter is set when the server is added").isEqualTo(400);
+        assertThat(adminCall("PATCH", NOTES, "{\"tlsName\":\"mcp-notes.internal\"}", Map.of("If-Match", etag(updated))).statusCode())
+                .as("the name of the certificate is the serverId, there is none to set").isEqualTo(400);
 
         assertThat(adminCall("DELETE", NOTES, null, asRequest).statusCode()).isEqualTo(204);
         assertThat(adminCall("GET", NOTES, null).statusCode()).isEqualTo(404);
@@ -104,6 +108,10 @@ class ServerRegistryApiTest extends GatewayTestBase {
         List<String> reasons = auditEvents(output, requestId).stream().filter(e -> "admin_change".equals(e.path("event").asString()))
                 .map(e -> e.path("reason").asString()).toList();
         assertThat(reasons).containsExactly("server_created", "server_updated", "server_deleted");
+        JsonNode update = auditEvents(output, requestId).stream().filter(e -> "server_updated".equals(e.path("reason").asString())).findFirst()
+                .orElseThrow();
+        assertThat(update.path("changedFields").toString()).as("names, never values").isEqualTo("[\"enabled\"]");
+        assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", update)).isEmpty();
         assertThat(auditEvents(output, requestId)).allSatisfy(event -> {
             assertThat(event.path("server").asString()).isEqualTo("mcp-notes");
             assertThat(event.path("sub").asString()).isEqualTo(ADMIN_SUB);
@@ -202,7 +210,9 @@ class ServerRegistryApiTest extends GatewayTestBase {
         assertThat(toolError(callNotes(token, "{\"issueKey\":\"ABC-1\"}")).path("error").asString()).isEqualTo("not_found_or_denied");
         assertThat(jdbc.sql("SELECT count(*) FROM registry_tools WHERE server_id = 'mcp-notes'").query(Long.class).single()).isZero();
         assertThat(jdbc.sql("SELECT count(*) FROM registry_policies WHERE server_id = 'mcp-notes'").query(Long.class).single()).isZero();
-        assertThat(auditEvents(output, requestId).stream().map(e -> e.path("reason").asString())).contains("server_deleted");
+        assertThat(auditEvents(output, requestId).stream().map(e -> e.path("reason").asString())).contains("server_deleted")
+                .as("one event for each thing the removal took").contains("tool_removed", "policies_removed", "namespace_released");
+        assertThat(auditEvents(output, requestId)).allSatisfy(e -> assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", e)).isEmpty());
         stream.close();
     }
 
@@ -239,6 +249,49 @@ class ServerRegistryApiTest extends GatewayTestBase {
         assertThat(removed.stream().map(e -> e.path("resource").path("type").asString() + "/" + e.path("resource").path("id").asString()))
                 .containsExactlyInAnyOrder("Notes::Project/ABC", "Notes::Project/XYZ");
         assertThat(registerAs("mcp-xnotes", thief).statusCode()).as("the namespace is free again").isEqualTo(200);
+    }
+
+    @Test
+    void theRiskFloorsOutliveTheServerAndLeftoverRowsAreNotTakenByTheServerThatComesNext() throws Exception {
+        String url = "https://127.0.0.1:8443/mcp";
+        assertThat(adminCall("POST", "/admin/v1/servers", serverBody("mcp-floor", "floor", url)).statusCode()).isEqualTo(201);
+        ObjectNode destructive = pl.aiwcorpo.mcp.gateway.support.Manifests.manifest("mcp-floor", "floor", "1.0.0", List.of("user-secret"),
+                pl.aiwcorpo.mcp.gateway.support.Manifests.Tool.destructive("wipe"));
+        assertThat(registerAs("mcp-floor", destructive).statusCode()).isEqualTo(200);
+        assertThat(adminCall("DELETE", "/admin/v1/servers/mcp-floor", null).statusCode()).isEqualTo(204);
+        assertThat(jdbc.sql("SELECT risk FROM registry_risk_floor WHERE server_id = 'mcp-floor' AND tool = 'wipe'").query(Long.class).single())
+                .as("the floor stays when the server is deleted").isEqualTo(2L);
+
+        // A row that a race left behind is not what the new server starts with.
+        jdbc.sql("INSERT INTO registry_policies (server_id, pending_hash, pending_policies, pending_resource_types, pending_version, pending_source) "
+                + "VALUES ('mcp-floor', 'sha256:" + "a".repeat(64) + "', '{}'::jsonb, '[]'::jsonb, '1.0.0', 'ci')").update();
+        assertThat(adminCall("POST", "/admin/v1/servers", serverBody("mcp-floor", "floor", url)).statusCode()).isEqualTo(201);
+        assertThat(jdbc.sql("SELECT count(*) FROM registry_policies WHERE server_id = 'mcp-floor'").query(Long.class).single()).isZero();
+
+        ObjectNode lowered = pl.aiwcorpo.mcp.gateway.support.Manifests.manifest("mcp-floor", "floor", "1.1.0", List.of("user-secret"),
+                pl.aiwcorpo.mcp.gateway.support.Manifests.Tool.readOnly("wipe"));
+        assertThat(registerAs("mcp-floor", lowered).statusCode()).isEqualTo(200);
+        JsonNode entry = null;
+        for (JsonNode server : json(adminCall("GET", "/admin/v1/registry/servers", null))) {
+            if ("mcp-floor".equals(server.path("serverId").asString())) {
+                entry = server;
+            }
+        }
+        assertThat(entry.path("tools").get(0).path("status").asString()).as("not approved as READ_ONLY without an administrator").isEqualTo("pending_approval");
+        assertThat(entry.path("tools").get(0).path("riskLowered").asBoolean()).isTrue();
+
+        // Rows of a build before this one are legacy: they are taken again, once.
+        adminCall("DELETE", "/admin/v1/servers/mcp-floor", null);
+        jdbc.sql("DELETE FROM registry_risk_floor WHERE server_id = 'mcp-floor'").update();
+        jdbc.sql("INSERT INTO registry_legacy (server_id) VALUES ('mcp-floor')").update();
+        jdbc.sql("INSERT INTO registry_policies (server_id, pending_hash, pending_policies, pending_resource_types, pending_version, pending_source) "
+                + "VALUES ('mcp-floor', 'sha256:" + "b".repeat(64) + "', '{}'::jsonb, '[]'::jsonb, '1.0.0', 'ci')").update();
+        assertThat(adminCall("POST", "/admin/v1/servers", serverBody("mcp-floor", "floor", url)).statusCode()).isEqualTo(201);
+        assertThat(jdbc.sql("SELECT count(*) FROM registry_policies WHERE server_id = 'mcp-floor'").query(Long.class).single()).isEqualTo(1L);
+        assertThat(jdbc.sql("SELECT count(*) FROM registry_legacy WHERE server_id = 'mcp-floor'").query(Long.class).single()).isZero();
+        adminCall("DELETE", "/admin/v1/servers/mcp-floor", null);
+        jdbc.sql("DELETE FROM registry_risk_floor WHERE server_id = 'mcp-floor'").update();
+        jdbc.sql("DELETE FROM registry_policies WHERE server_id = 'mcp-floor'").update();
     }
 
     // --- helpers -----------------------------------------------------------------------------------------------

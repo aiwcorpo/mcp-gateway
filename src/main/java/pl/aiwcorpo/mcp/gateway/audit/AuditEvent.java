@@ -174,6 +174,42 @@ public final class AuditEvent {
         return put("action", action);
     }
 
+    /** Group (C9) of a scope mapping entry; the scope itself goes to {@code resource} (type, and the part after the slash as id). */
+    public AuditEvent group(String group) {
+        return put("group", group);
+    }
+
+    /** The override an admin_change concerns (7.0.0): its id, its target and the hash of its text, never the text. */
+    public AuditEvent override(String id, String target, String text, String textBefore) {
+        put("overrideId", id);
+        put("overrideTarget", target);
+        if (text != null) {
+            put("textSha256", sha256(text));
+        }
+        if (textBefore != null) {
+            put("textSha256Before", sha256(textBefore));
+        }
+        return this;
+    }
+
+    /** Names of the fields a PATCH of a server changed, never their values. */
+    public AuditEvent changedFields(java.util.List<String> names) {
+        if (!names.isEmpty()) {
+            fields.put("changedFields", java.util.List.copyOf(names));
+        }
+        return this;
+    }
+
+    /** {@code sha256:<hex>} of the UTF-8 text. */
+    public static String sha256(String text) {
+        try {
+            return "sha256:" + java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 not available", e);
+        }
+    }
+
     public AuditEvent argsLength(int value) {
         fields.put("argsLength", Math.max(0, value));
         return this;

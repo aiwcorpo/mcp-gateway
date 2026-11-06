@@ -35,6 +35,7 @@ class PolicyAdminApiTest extends GatewayTestBase {
     void clean() {
         jdbc.sql("UPDATE policy_state SET scope_mapping = '[]'::jsonb WHERE id = 1").update();
         jdbc.sql("DELETE FROM policy_overrides").update();
+        jdbc.sql("UPDATE policy_state SET allowed_clients = 'claude-ai,claude-code' WHERE id = 1").update();
         policies.reload();
     }
 
@@ -248,5 +249,67 @@ class PolicyAdminApiTest extends GatewayTestBase {
         assertThat(toolError(call).path("error").asString()).isEqualTo("not_found_or_denied");
         HttpResponse<String> list = sendModern(other, "/mcp?systems=jira", "tools/list", null, "{}");
         assertThat(json(list).path("result").path("tools").size()).as("nothing is listed for a client that may not call").isZero();
+    }
+
+    @Test
+    void theAllowedClientsComeFromTheDatabaseAndAreServedAndEnforcedTheSameWay() throws Exception {
+        jdbc.sql("UPDATE policy_state SET allowed_clients = 'claude-code', revision = revision + 1 WHERE id = 1").update();
+        policies.reload();
+
+        String ai = env.idp.token(ALICE_SUB, "alice", ALICE_GROUPS, "mcp-gateway", "claude-ai");
+        assertThat(toolError(callGetIssue(ai)).path("error").asString()).as("the list of the database is the one in force").isEqualTo("not_found_or_denied");
+        assertThat(toolError(callGetIssue(aliceToken())).path("error").asString()).isEmpty();
+        HttpResponse<String> data = java.net.http.HttpClient.newBuilder().sslContext(env.policyClientJiraTls).build().send(
+                java.net.http.HttpRequest.newBuilder(java.net.URI.create("https://localhost:" + env.internalPort + "/internal/v1/policy-data")).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(json(data).path("allowedClients").toString()).isEqualTo("[\"claude-code\"]");
+    }
+
+    @Test
+    void theRevisionIsAtLeastTheClockInMillisecondsAndNeverFalls() throws Exception {
+        long before = policies.snapshot().revision();
+        long start = System.currentTimeMillis();
+
+        assertThat(putMapping("[{\"group\":\"mcp-jira-proj-ABC\",\"scopes\":[\"Jira::Project/ABC\"]}]").statusCode()).isEqualTo(200);
+        long first = policies.snapshot().revision();
+        assertThat(putMapping("[]").statusCode()).isEqualTo(200);
+        long second = policies.snapshot().revision();
+
+        assertThat(first).isGreaterThanOrEqualTo(start);
+        assertThat(second).isGreaterThan(first);
+        assertThat(first).isGreaterThan(before);
+    }
+
+    @Test
+    void overrideEventsCarryTheIdTheTargetAndHashesOfTheTextNeverTheText(CapturedOutput output) throws Exception {
+        String requestId = UuidV7.next();
+        String text = "forbid (principal, action == Action::\"call\", resource is Tool) when { resource.name == \"never_called\" };";
+        String replacement = "forbid (principal, action == Action::\"call\", resource is Tool) when { resource.name == \"never_called_either\" };";
+        HttpResponse<String> created = adminCall("PUT", OVERRIDES + "override-audited", JSON.writeValueAsString(
+                JSON.createObjectNode().put("target", "gateway").put("text", text)), Map.of("If-None-Match", "*", "X-Request-Id", requestId));
+        HttpResponse<String> replaced = adminCall("PUT", OVERRIDES + "override-audited", JSON.writeValueAsString(
+                JSON.createObjectNode().put("target", "gateway").put("text", replacement)), Map.of("If-Match", etag(created), "X-Request-Id", requestId));
+        HttpResponse<String> rejected = adminCall("PUT", OVERRIDES + "override-bad", JSON.writeValueAsString(
+                JSON.createObjectNode().put("target", "gateway").put("text", "permit (principal, action, resource);")),
+                Map.of("If-None-Match", "*", "X-Request-Id", requestId));
+        assertThat(rejected.statusCode()).isEqualTo(422);
+        assertThat(adminCall("DELETE", OVERRIDES + "override-audited", null, Map.of("If-Match", etag(replaced), "X-Request-Id", requestId)).statusCode())
+                .isEqualTo(204);
+
+        List<JsonNode> events = auditEvents(output, requestId).stream().filter(e -> e.path("reason").asString().startsWith("override_")).toList();
+        assertThat(events.stream().map(e -> e.path("reason").asString())).containsExactly("override_set", "override_set", "override_rejected",
+                "override_removed");
+        assertThat(events.get(0).path("overrideId").asString()).isEqualTo("override-audited");
+        assertThat(events.get(0).path("overrideTarget").asString()).isEqualTo("gateway");
+        assertThat(events.get(0).path("textSha256").asString()).isEqualTo(pl.aiwcorpo.mcp.gateway.audit.AuditEvent.sha256(text));
+        assertThat(events.get(0).has("textSha256Before")).as("a create has no text before").isFalse();
+        assertThat(events.get(1).path("textSha256").asString()).isEqualTo(pl.aiwcorpo.mcp.gateway.audit.AuditEvent.sha256(replacement));
+        assertThat(events.get(1).path("textSha256Before").asString()).isEqualTo(pl.aiwcorpo.mcp.gateway.audit.AuditEvent.sha256(text));
+        assertThat(events.get(2).path("overrideId").asString()).isEqualTo("override-bad");
+        assertThat(events.get(3).path("textSha256").asString()).as("the hash of what was removed").isEqualTo(pl.aiwcorpo.mcp.gateway.audit.AuditEvent.sha256(replacement));
+        for (JsonNode event : events) {
+            assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", event)).as(event.toString()).isEmpty();
+            assertThat(event.toString()).doesNotContain("never_called");
+        }
     }
 }

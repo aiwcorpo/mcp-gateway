@@ -92,7 +92,6 @@ services:
     tmpfs: ["/tmp:exec"]
     mem_limit: ${GATEWAY_MEM_LIMIT:-2g}
     volumes:
-      - gateway-state:/app/state
       - gateway-secrets:/secrets/gateway:ro
       - ./certs:/certs:ro
     # 8080: MCP clients, plain HTTP for your TLS reverse proxy. 8443: TLS with the gateway certificate, for the broker and the MCP
@@ -121,7 +120,6 @@ volumes:
   gateway-secrets:
   postgres-secrets:
   redis-secrets:
-  gateway-state:
   postgres-data:
   redis-data:
   redis-replica-data:

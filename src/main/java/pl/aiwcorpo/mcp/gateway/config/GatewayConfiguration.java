@@ -49,6 +49,7 @@ import pl.aiwcorpo.mcp.gateway.confirm.RedisConfirmationStore;
 import pl.aiwcorpo.mcp.gateway.auth.PublicUrls;
 import pl.aiwcorpo.mcp.gateway.auth.ResourceMetadata;
 import pl.aiwcorpo.mcp.gateway.authz.CedarToolAuthorizer;
+import pl.aiwcorpo.mcp.gateway.admin.FreshMfa;
 import pl.aiwcorpo.mcp.gateway.admin.PolicyController;
 import pl.aiwcorpo.mcp.gateway.admin.PolicyDataController;
 import pl.aiwcorpo.mcp.gateway.admin.ServerController;
@@ -365,7 +366,7 @@ public class GatewayConfiguration {
                                       InternalTokenIssuer tokens, JsonMapper gatewayJson, Clock clock) {
         GatewayProperties.Upstream upstream = properties.upstream();
         return new UpstreamSessions(server -> new StreamableHttpClient(server.internalUrl(),
-                tls.clientFor(server.tlsName(), java.time.Duration.ofSeconds(5)), gatewayJson, upstream.timeout(),
+                tls.clientForServer(server.serverId(), java.time.Duration.ofSeconds(5)), gatewayJson, upstream.timeout(),
                 upstream.maxResponseBytes()), tokens, gatewayJson, properties.sessions().upstreamIdleTimeout(), clock,
                 properties.componentId(), properties.version());
     }
@@ -547,7 +548,8 @@ public class GatewayConfiguration {
                                     org.springframework.core.env.Environment environment, PolicyService policies) {
         RegistryService registry = new RegistryService(servers, store,
                 new ManifestValidator(gatewayJson, DevstackGuard.devstackActive(environment)), fetcher, guard, definitionCheck, audit,
-                properties.componentId(), gatewayJson, policies);
+                properties.componentId(), gatewayJson, policies, properties.registry().policyCheckFailures(),
+                properties.registry().policyCheckMaxAge(), Clock.systemUTC());
         registry.load();
         return registry;
     }
@@ -559,13 +561,18 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    ServerController serverController(ServerAdmin servers, JsonMapper gatewayJson) {
-        return new ServerController(servers, gatewayJson);
+    ServerController serverController(ServerAdmin servers, JsonMapper gatewayJson, FreshMfa mfa) {
+        return new ServerController(servers, gatewayJson, mfa);
     }
 
     @Bean
-    PolicyController policyController(PolicyService policies, JsonMapper gatewayJson) {
-        return new PolicyController(policies, gatewayJson);
+    FreshMfa freshMfa(GatewayProperties properties, Clock clock, AuditLog audit) {
+        return new FreshMfa(properties.admin().mfaAcrValues(), properties.admin().mfaAmrValues(), clock, audit, properties.componentId());
+    }
+
+    @Bean
+    PolicyController policyController(PolicyService policies, JsonMapper gatewayJson, FreshMfa mfa) {
+        return new PolicyController(policies, gatewayJson, mfa);
     }
 
     @Bean
@@ -586,7 +593,7 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    RegistryController registryController(RegistryService registry, ServerRegistry servers, JsonMapper gatewayJson) {
-        return new RegistryController(registry, servers, gatewayJson);
+    RegistryController registryController(RegistryService registry, ServerRegistry servers, JsonMapper gatewayJson, FreshMfa mfa) {
+        return new RegistryController(registry, servers, gatewayJson, mfa);
     }
 }
