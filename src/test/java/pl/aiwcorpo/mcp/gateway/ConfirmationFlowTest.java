@@ -239,7 +239,7 @@ class ConfirmationFlowTest extends GatewayTestBase {
         assertThat(body.path("tool").asString()).isEqualTo("jira__delete_issue");
         assertThat(body.path("system").asString()).isEqualTo("jira");
         assertThat(body.path("resource").path("id").asString()).isEqualTo("ABC-8");
-        assertThat(body.path("resource").path("parent").asString()).isEqualTo("Jira::Project::ABC");
+        assertThat(body.path("resource").has("parent")).as("no system knowledge in the gateway: the parent is not derived from the id").isFalse();
         assertThat(body.path("arguments").get(0).path("name").asString()).isEqualTo("issueKey");
 
         for (String method : List.of("GET", "POST")) {

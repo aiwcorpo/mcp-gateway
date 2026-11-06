@@ -28,7 +28,7 @@ class EndpointAuditThrottleTest {
     private EndpointAuditThrottle throttle(Duration interval, int maxTargets) {
         AuditLog audit = new AuditLog();
         audit.listen(event -> events.add(JSON.valueToTree(event.view())));
-        return new EndpointAuditThrottle(interval, maxTargets, System::currentTimeMillis, meters, audit, "mcp-gateway", () -> "20261026120000-a1b2c3d");
+        return new EndpointAuditThrottle(interval, maxTargets, System::currentTimeMillis, meters, audit, "mcp-gateway", () -> 7L);
     }
 
     @Test

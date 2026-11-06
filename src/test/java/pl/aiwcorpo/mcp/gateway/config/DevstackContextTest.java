@@ -13,53 +13,39 @@ import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 
 import pl.aiwcorpo.mcp.gateway.GatewayApplication;
-import pl.aiwcorpo.mcp.gateway.support.PolicyServer;
-import pl.aiwcorpo.mcp.gateway.support.TestBundles;
 import pl.aiwcorpo.mcp.gateway.support.TestIdp;
 
 /**
  * The refusal in a real Spring start (SpringApplication with the initializer of spring.factories), not on a map of properties:
  * with relaxed settings and without the devstack profile the context does not come up, and before it refuses nothing was asked of
- * the bundle server or of the IdP. The process of these tests has MCP_DEVSTACK_ACKNOWLEDGED=true (surefire), so every refusal
+ * the IdP. The process of these tests has MCP_DEVSTACK_ACKNOWLEDGED=true (surefire), so every refusal
  * below is the profile's or the property's doing.
  */
 class DevstackContextTest {
 
-    private PolicyServer policies;
     private TestIdp idp;
     private Map<String, String> relaxed;
 
     @BeforeEach
     void setUp() throws Exception {
-        policies = new PolicyServer();
-        policies.publishMain(TestBundles.main(TestBundles.revision(1), Map.of()));
         idp = new TestIdp();
-        Path keys = Files.createTempDirectory("devstack-context");
-        Files.writeString(keys.resolve("main.pem"), TestBundles.publicKeyPem("test-policy-bundle"));
         relaxed = DevstackGuardTest.production();
-        relaxed.put("gateway.policy.main-url", policies.mainUrl());
-        relaxed.put("gateway.policy.overrides-url", policies.overridesUrl());
-        relaxed.put("gateway.policy.main-key-file", keys.resolve("main.pem").toString());
-        relaxed.put("gateway.policy.main-key-id", "test-policy-bundle");
-        relaxed.put("gateway.policy.allow-test-keys", "true");
+        relaxed.put("gateway.internal-jwt.allow-test-keys", "true");
         relaxed.put("gateway.oidc.jwks-uri", idp.jwksUri());
         relaxed.put("spring.main.banner-mode", "off");
         // The placeholders of application.yml that have no default: a deployment sets them, the initializer needs them to bind.
-        for (String name : new String[] {"MCP_BROKER_TLS_NAME", "MCP_DB_PASSWORD", "MCP_OIDC_ISSUER", "MCP_POLICY_MAIN_KEY_ID",
-                "MCP_REDIS_HOST", "MCP_TLS_KEYSTORE", "MCP_TLS_STORE_PASSWORD", "MCP_TLS_TRUSTSTORE", "MCP_POLICY_MAIN_KEY_FILE"}) {
+        for (String name : new String[] {"MCP_BROKER_TLS_NAME", "MCP_DB_PASSWORD", "MCP_OIDC_ISSUER", "MCP_REDIS_HOST", "MCP_TLS_KEYSTORE",
+                "MCP_TLS_STORE_PASSWORD", "MCP_TLS_TRUSTSTORE"}) {
             relaxed.put(name, "x");
         }
         relaxed.put("MCP_BROKER_URL", "https://broker.internal:8443");
         relaxed.put("MCP_DB_URL", "jdbc:postgresql://localhost:1/none");
         relaxed.put("MCP_OIDC_JWKS_URI", idp.jwksUri());
-        relaxed.put("MCP_POLICY_MAIN_URL", policies.mainUrl());
         relaxed.put("MCP_PUBLIC_URL", "https://mcp.aiwcorpo.pl");
-        relaxed.put("MCP_SERVER_JIRA_URL", "https://mcp-jira.internal:8443");
     }
 
     @AfterEach
     void tearDown() {
-        policies.close();
         idp.close();
     }
 
@@ -105,15 +91,13 @@ class DevstackContextTest {
     }
 
     private void assertNothingWasAsked() {
-        assertThat(policies.requests()).as("requests to the bundle server before the refusal").isZero();
         assertThat(idp.jwksRequests()).as("requests for the IdP keys before the refusal").isZero();
     }
 
     @Test
     void relaxedSettingsWithoutAProfileDoNotStartAndAskForNothing() {
         Throwable failure = start(Map.of());
-        assertThat(refusedByTheGuard(failure, "gateway.policy.allow-test-keys", "gateway.policy.main-url is not https",
-                "gateway.oidc.jwks-uri is not https")).as(String.valueOf(failure)).isTrue();
+        assertThat(refusedByTheGuard(failure, "gateway.internal-jwt.allow-test-keys", "gateway.oidc.jwks-uri is not https")).as(String.valueOf(failure)).isTrue();
         assertThat(raisedByTheInitializer(failure)).as("raised before the first bean").isTrue();
         assertNothingWasAsked();
     }

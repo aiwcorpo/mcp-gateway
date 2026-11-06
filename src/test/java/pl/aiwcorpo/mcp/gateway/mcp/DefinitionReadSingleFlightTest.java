@@ -69,7 +69,7 @@ class DefinitionReadSingleFlightTest {
     private void setUp() throws Exception {
         ToolDefinition tool = new ToolDefinition("get_issue", Risk.READ_ONLY, "read", null, "x", false, List.of());
         McpServer server = new McpServer("mcp-jira", "jira", URI.create("https://mcp-jira.internal:8443/mcp"), "1.0.0", true,
-                new CredentialPolicy(false, Set.of(), List.of(), false, null), Map.of("get_issue", tool), true);
+                new CredentialPolicy(false, Set.of(), List.of(), false, null), Map.of("get_issue", tool));
         ServerRegistry registry = mock(ServerRegistry.class);
         when(registry.resolveForCall("jira__get_issue")).thenReturn(Optional.of(new ServerRegistry.Resolved(server, tool)));
         when(registry.find("mcp-jira")).thenReturn(Optional.of(server));
@@ -96,7 +96,7 @@ class DefinitionReadSingleFlightTest {
                 mock(CredentialService.class), authorizer, audit, new ToolErrors(JSON), JSON, meters, "mcp-gateway",
                 mock(ConfirmationService.class), registryService, new DefinitionGuard(Clock.systemUTC(), Duration.ofSeconds(60)), limiter,
                 new RateLimitAuditThrottle(Duration.ofSeconds(10), System::nanoTime, meters),
-                new EndpointAuditThrottle(Duration.ofSeconds(10), 50, System::currentTimeMillis, meters, audit, "mcp-gateway", () -> null),
+                new EndpointAuditThrottle(Duration.ofSeconds(10), 50, System::currentTimeMillis, meters, audit, "mcp-gateway", () -> 0L),
                 new ToolsListCursor("0123456789abcdef".getBytes(), JSON), killSwitches, new ToolAccess(authorizer),
                 toolsListTimeout, Clock.systemUTC());
     }

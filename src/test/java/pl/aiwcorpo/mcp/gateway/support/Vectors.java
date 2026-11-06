@@ -67,6 +67,22 @@ public final class Vectors {
         }
     }
 
+    /**
+     * A file of the contracts that a vector names by its path from the root of the repository: {@code cedar/...} is in the mcp-contracts jar,
+     * {@code test-vectors/...} in the test-vectors jar.
+     */
+    public static String contractFile(String path) {
+        String resource = "mcp-contracts/" + path;
+        try (InputStream in = Vectors.class.getClassLoader().getResourceAsStream(resource)) {
+            if (in == null) {
+                throw new IllegalArgumentException("no contract file " + path);
+            }
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
     private static JsonNode read(Path file) {
         try {
             return JSON.readTree(Files.readString(file));

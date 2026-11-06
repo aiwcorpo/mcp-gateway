@@ -35,8 +35,20 @@ class KillSwitchApiTest extends GatewayTestBase {
     @Autowired
     KillSwitches switches;
 
+    @Autowired
+    pl.aiwcorpo.mcp.gateway.registry.DefinitionGuard definitions;
+
+    /** Every tool of the manifest is served while a test looks at the whole catalog: a tool the server does not serve is blocked as not approved. */
+    @org.junit.jupiter.api.BeforeEach
+    void serveEveryTool() {
+        env.jira.updateTool(true);
+        definitions.forget("mcp-jira");
+    }
+
     @AfterEach
     void liftEverything() {
+        env.jira.updateTool(false);
+        definitions.forget("mcp-jira");
         store.all().forEach(entry -> store.delete(entry.serverId(), entry.tool()));
         switches.refresh();
     }

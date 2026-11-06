@@ -70,13 +70,13 @@ class HighAvailabilityTest {
     private static TestMcpServer jira;
     private static GatewayProcess a;
     private static GatewayProcess b;
+    private static String database;
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
 
     @BeforeAll
     static void startTwoInstances() throws Exception {
         env = GatewayTestEnvironment.get();
         dir = Files.createTempDirectory("mcp-gateway-ha");
-        env.forgetRegistryOf("mcp-jira");
         redis = new GenericContainer<>("redis:8.8.4-alpine")
                 .withCopyToContainer(Transferable.of(GatewayTestEnvironment.redisAcl()), "/etc/redis-users.acl")
                 .withCommand("redis-server", "--aclfile", "/etc/redis-users.acl", "--appendonly", "no")
@@ -98,6 +98,7 @@ class HighAvailabilityTest {
         jira.extraTools(BULK_TOOLS);
         jira.updateTool(true);
         jira.start();
+        database = env.isolatedDatabase("ha", Map.of("mcp-jira", "https://127.0.0.1:" + jira.port() + "/mcp"));
         broker.grant("ha-pat", 60);
 
         Path jwks = dir.resolve("internal-jwt.jwks");
@@ -138,15 +139,13 @@ class HighAvailabilityTest {
         p.put("spring.data.redis.host", redis.getHost());
         p.put("spring.data.redis.port", Integer.toString(redis.getMappedPort(6379)));
         p.put("gateway.broker.url", "https://127.0.0.1:" + broker.port());
-        p.put("gateway.servers.mcp-jira.internal-url", "https://127.0.0.1:" + jira.port() + "/mcp");
-        p.put("gateway.servers.mcp-jira.manifest", "required");
+        p.put("spring.datasource.url", database);
         p.put("gateway.internal-jwt.keys-file", jwks.toString());
         p.put("gateway.internal-jwt.active-kid", "ha-key-a");
         // The suite shares the machine with other tests; a list of 123 tools must not be skipped for a slow read.
         p.put("gateway.mcp.tools-list-timeout", "5000");
         p.put("gateway.activity.cursor-key", "ha-activity-cursor-key-shared");
         p.put("gateway.mcp.list-cursor-key", "ha-list-cursor-key-shared");
-        p.put("gateway.policy.state-dir", Files.createDirectories(dir.resolve("state-" + instance)).toString());
         return p;
     }
 
@@ -176,7 +175,6 @@ class HighAvailabilityTest {
         if (redis != null) {
             redis.stop();
         }
-        env.forgetRegistryOf("mcp-jira");
     }
 
     // --- helpers -----------------------------------------------------------------------------------------------

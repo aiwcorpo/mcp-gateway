@@ -1,7 +1,6 @@
 package pl.aiwcorpo.mcp.gateway.server;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.net.URI;
 import java.util.List;
@@ -9,17 +8,53 @@ import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 
-import pl.aiwcorpo.mcp.gateway.config.GatewayProperties;
+import pl.aiwcorpo.mcp.gateway.registry.RegisteredTool;
+import pl.aiwcorpo.mcp.gateway.registry.ServerConfig;
+import pl.aiwcorpo.mcp.gateway.support.Manifests;
+import tools.jackson.databind.JsonNode;
 
 class ServerRegistryTest {
 
+    private static final ServerConfig JIRA = config("mcp-jira", "jira", "user-secret", true, false);
+
+    private static ServerConfig config(String serverId, String system, String type, boolean enabled, boolean adapter) {
+        return new ServerConfig(serverId, system, URI.create("https://" + serverId + ".internal:8443/mcp"), serverId + ".internal",
+                new ServerConfig.Credential(true, List.of(type), type), enabled, adapter);
+    }
+
+    private static Map<String, RegisteredTool> approved(Manifests.Tool... tools) {
+        Map<String, RegisteredTool> registered = new java.util.LinkedHashMap<>();
+        for (JsonNode entry : Manifests.jira("1.2.3", tools).path("tools")) {
+            registered.put(entry.path("name").asString(), new RegisteredTool(entry.path("name").asString(),
+                    new RegisteredTool.Approved(entry, entry.path("definitionHash").asString(), "1.2.3", "{}"), null));
+        }
+        return registered;
+    }
+
+    private static ServerRegistry registry(boolean policiesApproved, Manifests.Tool... tools) {
+        ServerRegistry registry = new ServerRegistry();
+        registry.replaceConfigs(List.of(JIRA));
+        registry.apply("mcp-jira", new ServerRegistry.Applied("1.2.3", approved(tools), Map.of(), true, policiesApproved));
+        return registry;
+    }
+
+    @Test
+    void aServerWithoutAManifestIsKnownButHasNoTools() {
+        ServerRegistry registry = new ServerRegistry();
+        registry.replaceConfigs(List.of(JIRA));
+        assertThat(registry.find("mcp-jira")).hasValueSatisfying(server -> {
+            assertThat(server.tools()).isEmpty();
+            assertThat(server.tlsName()).isEqualTo("mcp-jira.internal");
+        });
+        assertThat(registry.resolve("jira__get_issue")).isEmpty();
+    }
+
     @Test
     void resolvesClientNamesToServerAndTool() {
-        ServerRegistry registry = registry("1.2.3", "get_issue", "READ_ONLY", null);
+        ServerRegistry registry = registry(true, Manifests.Tool.readOnly("get_issue"));
         ServerRegistry.Resolved resolved = registry.resolve("jira__get_issue").orElseThrow();
         assertThat(resolved.server().serverId()).isEqualTo("mcp-jira");
         assertThat(resolved.tool().action()).isEqualTo("read");
-        assertThat(resolved.tool().title()).isNull();
         for (String name : new String[] {null, "", "get_issue", "__get_issue", "jira_get_issue", "jira__nope", "gitlab__get_issue",
                 "jira__get_issue__x", "Jira__get_issue"}) {
             assertThat(registry.resolve(name)).as(String.valueOf(name)).isEmpty();
@@ -27,60 +62,77 @@ class ServerRegistryTest {
     }
 
     @Test
-    void actionDefaultsFromTheRiskAndCanBeSetExplicitly() {
-        assertThat(registry("1.0.0", "t", "UPDATE", null).resolve("jira__t").orElseThrow().tool().action()).isEqualTo("update");
-        assertThat(registry("1.0.0", "t", "DESTRUCTIVE", null).resolve("jira__t").orElseThrow().tool().action()).isEqualTo("delete");
-        assertThat(registry("1.0.0", "t", "READ_ONLY", "admin").resolve("jira__t").orElseThrow().tool().action()).isEqualTo("admin");
+    void theActionComesFromTheApprovedEntry() {
+        assertThat(registry(true, Manifests.Tool.update("t")).resolve("jira__t").orElseThrow().tool().action()).isEqualTo("update");
+        assertThat(registry(true, Manifests.Tool.destructive("t")).resolve("jira__t").orElseThrow().tool().action()).isEqualTo("delete");
     }
 
     @Test
-    void invalidConfigurationStopsStart() {
-        assertThatThrownBy(() -> registry("1.0", "t", "READ_ONLY", null)).hasMessageContaining("SemVer");
-        assertThatThrownBy(() -> registry("1.0.0", "t", "READ_ONLY", "own")).hasMessageContaining("action");
-        assertThatThrownBy(() -> registry("1.0.0", "T", "READ_ONLY", null)).hasMessageContaining("invalid tool name");
-        assertThatThrownBy(() -> registry("1.0.0", "t", "SAFE", null)).hasMessageContaining("risk");
+    void whilePoliciesWaitForApprovalEveryToolIsKnownAsDisabledAndListedNowhere() {
+        ServerRegistry registry = registry(false, Manifests.Tool.readOnly("get_issue"));
+        assertThat(registry.find("mcp-jira").orElseThrow().tools()).isEmpty();
+        assertThat(registry.resolve("jira__get_issue")).isEmpty();
+        assertThat(registry.resolveForCall("jira__get_issue")).hasValueSatisfying(found -> assertThat(found.tool().disabled()).isTrue());
     }
 
     @Test
-    void theCredentialTypeOfTheContextIsOneTypeAndAmbiguityStopsTheStart() {
-        assertThat(withCredential(new GatewayProperties.Credential(true, List.of("user-secret"), List.of(), false, null)))
-                .isEqualTo("user-secret");
-        assertThat(withCredential(new GatewayProperties.Credential(true, List.of("token-exchange"), List.of(), true, null)))
-                .isEqualTo("token-exchange");
-        assertThat(withCredential(new GatewayProperties.Credential(true, List.of("user-oauth", "user-secret"), List.of(), false,
-                "user-oauth"))).isEqualTo("user-oauth");
-        assertThat(withCredential(new GatewayProperties.Credential(false, List.of(), List.of(), false, null))).isNull();
-        assertThatThrownBy(() -> withCredential(new GatewayProperties.Credential(true, List.of("user-oauth", "user-secret"), List.of(),
-                false, null))).hasMessageContaining("credential.type is required");
-        assertThatThrownBy(() -> withCredential(new GatewayProperties.Credential(true, List.of("user-secret"), List.of(), false,
-                "service-account"))).hasMessageContaining("one of accepted-types");
-        assertThatThrownBy(() -> withCredential(new GatewayProperties.Credential(true, List.of("service-account", "user-secret"), List.of(),
-                false, "service-account"))).hasMessageContaining("mixes service-account");
-        assertThatThrownBy(() -> withCredential(new GatewayProperties.Credential(true, List.of("user-secret"), List.of(), true, null)))
-                .hasMessageContaining("token-exchange");
-    }
-
-    private static String withCredential(GatewayProperties.Credential credential) {
-        return new ServerRegistry(Map.of("mcp-jira", new GatewayProperties.Server("jira",
-                URI.create("https://mcp-jira.internal:8443/mcp"), "1.0.0", true, "static", credential,
-                Map.of("t", new GatewayProperties.Tool("READ_ONLY", "Description.", null, null, false, List.of())), false)), "static")
-                .find("mcp-jira").orElseThrow().credential().type();
-    }
-
-    private static ServerRegistry registry(String version, String tool, String risk, String action) {
-        return new ServerRegistry(Map.of("mcp-jira", new GatewayProperties.Server("jira",
-                URI.create("https://mcp-jira.internal:8443/mcp"), version, true, "static",
-                new GatewayProperties.Credential(true, List.of("user-secret"), List.of(), false, null),
-                Map.of(tool, new GatewayProperties.Tool(risk, "Description.", null, action, false, List.of())), false)), "static");
+    void aToolBelowAnEarlierApprovalIsNotServed() {
+        ServerRegistry registry = new ServerRegistry();
+        registry.replaceConfigs(List.of(JIRA));
+        registry.apply("mcp-jira", new ServerRegistry.Applied("1.2.3", approved(Manifests.Tool.readOnly("t")), Map.of("t", 1), true, true));
+        assertThat(registry.resolveForCall("jira__t")).isEmpty();
     }
 
     @Test
-    void theRisksOfTheConfigurationOfAnAdapterServerAreNotMinimums() {
-        ServerRegistry registry = new ServerRegistry(Map.of("mcp-jira", new GatewayProperties.Server("jira",
-                URI.create("https://mcp-jira.internal:8443/mcp"), "1.0.0", true, "required",
-                new GatewayProperties.Credential(true, List.of("user-secret"), List.of(), false, null),
-                Map.of("update_issue", new GatewayProperties.Tool("UPDATE", "Description.", null, null, false, List.of())), true)), "required");
+    void theCredentialTypeOfTheContextIsTheTypeOfTheServer() {
+        assertThat(credentialType(new ServerConfig.Credential(true, List.of("user-secret"), "user-secret"))).isEqualTo("user-secret");
+        assertThat(credentialType(new ServerConfig.Credential(true, List.of("user-oauth", "user-secret"), "user-oauth"))).isEqualTo("user-oauth");
+        assertThat(credentialType(new ServerConfig.Credential(false, List.of("user-secret"), "user-secret"))).as("no credential, no type").isNull();
+        ServerRegistry registry = new ServerRegistry();
+        registry.replaceConfigs(List.of(new ServerConfig("mcp-opensearch", "opensearch", URI.create("https://mcp-opensearch.internal:8443/mcp"),
+                "mcp-opensearch.internal", new ServerConfig.Credential(true, List.of("token-exchange"), "token-exchange"), true, false)));
+        assertThat(registry.find("mcp-opensearch").orElseThrow().credential().tokenExchange()).isTrue();
+    }
 
-        assertThat(registry.configuredMinimumRisks("mcp-jira")).as("an adapter is read only: nothing there can be approved above that").isEmpty();
+    private static String credentialType(ServerConfig.Credential credential) {
+        ServerRegistry registry = new ServerRegistry();
+        registry.replaceConfigs(List.of(new ServerConfig("mcp-jira", "jira", URI.create("https://mcp-jira.internal:8443/mcp"),
+                "mcp-jira.internal", credential, true, false)));
+        return registry.find("mcp-jira").orElseThrow().credential().type();
+    }
+
+    @Test
+    void aServerThatLeavesTheListLeavesWithItsTools() {
+        ServerRegistry registry = registry(true, Manifests.Tool.readOnly("get_issue"));
+        registry.replaceConfigs(List.of());
+        assertThat(registry.find("mcp-jira")).isEmpty();
+        assertThat(registry.resolveForCall("jira__get_issue")).isEmpty();
+        registry.replaceConfigs(List.of(JIRA));
+        assertThat(registry.find("mcp-jira").orElseThrow().tools()).as("a server added again starts without what the old one had").isEmpty();
+    }
+
+    @Test
+    void aChangeOfSettingsKeepsTheApprovedTools() {
+        ServerRegistry registry = registry(true, Manifests.Tool.readOnly("get_issue"));
+        registry.replaceConfigs(List.of(config("mcp-jira", "jira", "user-secret", false, false)));
+        McpServer server = registry.find("mcp-jira").orElseThrow();
+        assertThat(server.enabled()).isFalse();
+        assertThat(server.tools()).containsKey("get_issue");
+    }
+
+    @Test
+    void aManifestThatFailsTheChecksDisablesTheServer() {
+        ServerRegistry registry = new ServerRegistry();
+        registry.replaceConfigs(List.of(JIRA));
+        registry.apply("mcp-jira", new ServerRegistry.Applied("1.2.3", approved(Manifests.Tool.readOnly("t")), Map.of(), false, true));
+        assertThat(registry.find("mcp-jira").orElseThrow().enabled()).isFalse();
+    }
+
+    @Test
+    void aToolOfAnAdapterIsReadOnly() {
+        ServerRegistry registry = new ServerRegistry();
+        registry.replaceConfigs(List.of(config("mcp-jira", "jira", "user-secret", true, true)));
+        registry.apply("mcp-jira", new ServerRegistry.Applied("1.2.3", approved(Manifests.Tool.update("t")), Map.of(), true, true));
+        assertThat(registry.resolve("jira__t")).as("approved as UPDATE behind an adapter: not served").isEmpty();
     }
 }

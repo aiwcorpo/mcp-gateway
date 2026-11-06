@@ -8,12 +8,20 @@ import java.util.List;
 import java.util.Map;
 
 import org.springframework.boot.SpringApplication;
+import org.springframework.context.ConfigurableApplicationContext;
 
+import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
+import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
+import pl.aiwcorpo.mcp.gateway.registry.Outcome;
+import pl.aiwcorpo.mcp.gateway.registry.ServerAdmin;
 import pl.aiwcorpo.mcp.gateway.support.GatewayTestEnvironment;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * The gateway on a developer's machine with everything around it from the integration tests: Redis and PostgreSQL in containers,
- * the internal CA, the IdP stand-in, the broker stub, the policy server and the test MCP servers (mcp-jira, mcp-gitlab, ...). Needs
+ * the internal CA, the IdP stand-in, the broker stub and the test MCP servers (mcp-jira, mcp-gitlab). The registry starts empty and the
+ * test servers are added to it through the admin service, as an administrator would add them; the dev bootstrap then takes their manifests
+ * and policies. Needs
  * Docker and nothing else; run it from the IDE (.run/LocalGateway.run.xml) or with
  * {@code MCP_DEVSTACK_ACKNOWLEDGED=true ./mvnw spring-boot:test-run -Dspring-boot.run.mainClass=pl.aiwcorpo.mcp.gateway.LocalGatewayApplication}.
  *
@@ -26,6 +34,24 @@ public final class LocalGatewayApplication {
     static final List<String> GROUPS = List.of("mcp-jira-read", "mcp-jira-write", "mcp-jira-destructive", "mcp-gitlab-read");
 
     private LocalGatewayApplication() {
+    }
+
+    /** The servers that can be reached; the one with the certificate of the wrong name and the disabled one serve no purpose here. */
+    private static void addTestServers(ServerAdmin admin, GatewayTestEnvironment env) {
+        JsonMapper json = JsonMapper.builder().build();
+        GatewayUser administrator = new GatewayUser("local-gateway-admin", "local-gateway-admin", "mcp-portal-bff",
+                List.of("mcp-platform-admin"), "unused");
+        for (GatewayTestEnvironment.ServerRow row : env.servers()) {
+            if (!row.credentialRequired() || row.adapter() || !row.enabled()) {
+                continue;
+            }
+            var body = json.createObjectNode().put("serverId", row.serverId()).put("system", row.system()).put("internalUrl", row.url());
+            body.putObject("credential").put("required", true).put("type", row.credentialType()).putArray("acceptedTypes").add(row.credentialType());
+            Outcome<ServerAdmin.Item> outcome = admin.create(UuidV7.next(), body, administrator);
+            if (!outcome.succeeded()) {
+                System.err.println("could not add " + row.serverId() + ": " + outcome.reason() + " " + outcome.message());
+            }
+        }
     }
 
     public static void main(String[] args) throws Exception {
@@ -42,17 +68,18 @@ public final class LocalGatewayApplication {
         properties.put("gateway.oidc.max-token-lifetime", "12h");
         properties.put("server.port", String.valueOf(PUBLIC_PORT));
         properties.put("spring.profiles.active", "devstack");
+        properties.put("spring.datasource.url", env.emptyDatabase("local"));
         // application.yml names these variables; the properties above replace what they feed, but the placeholders must resolve.
-        for (String name : new String[] {"MCP_BROKER_TLS_NAME", "MCP_DB_PASSWORD", "MCP_OIDC_ISSUER", "MCP_POLICY_MAIN_KEY_ID",
-                "MCP_REDIS_HOST", "MCP_TLS_KEYSTORE", "MCP_TLS_STORE_PASSWORD", "MCP_TLS_TRUSTSTORE", "MCP_POLICY_MAIN_KEY_FILE",
-                "MCP_BROKER_URL", "MCP_DB_URL", "MCP_OIDC_JWKS_URI", "MCP_POLICY_MAIN_URL", "MCP_PUBLIC_URL", "MCP_SERVER_JIRA_URL"}) {
+        for (String name : new String[] {"MCP_BROKER_TLS_NAME", "MCP_DB_PASSWORD", "MCP_OIDC_ISSUER", "MCP_REDIS_HOST", "MCP_TLS_KEYSTORE",
+                "MCP_TLS_STORE_PASSWORD", "MCP_TLS_TRUSTSTORE", "MCP_BROKER_URL", "MCP_DB_URL", "MCP_OIDC_JWKS_URI", "MCP_PUBLIC_URL"}) {
             if (System.getenv(name) == null) {
                 System.setProperty(name, "https://placeholder.invalid");
             }
         }
         List<String> arguments = new ArrayList<>(List.of(args));
         properties.forEach((name, value) -> arguments.add("--" + name + "=" + value));
-        SpringApplication.run(GatewayApplication.class, arguments.toArray(String[]::new));
+        ConfigurableApplicationContext context = SpringApplication.run(GatewayApplication.class, arguments.toArray(String[]::new));
+        addTestServers(context.getBean(ServerAdmin.class), env);
 
         String token = env.idp.token("local-user", "local-user", GROUPS, "mcp-gateway", "claude-code", 12 * 3600);
         Path tokenFile = Path.of("target", "local-gateway.token");

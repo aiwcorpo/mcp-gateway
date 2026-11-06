@@ -32,6 +32,9 @@ import tools.jackson.databind.JsonNode;
  */
 class StreamEndpointTest extends GatewayTestBase {
 
+    @org.springframework.beans.factory.annotation.Autowired
+    pl.aiwcorpo.mcp.gateway.registry.DefinitionGuard definitions;
+
     private static final Duration FIVE_SECONDS = Duration.ofSeconds(5);
     private static final String JIRA = "/admin/v1/registry/servers/mcp-jira";
 
@@ -256,18 +259,27 @@ class StreamEndpointTest extends GatewayTestBase {
 
     @Test
     void aTokenWithOtherGroupsOnTheSessionChangesTheListOfItsStream() throws Exception {
-        String sub = UUID.randomUUID().toString();
-        String wide = env.idp.token(sub, "streamer", List.of("mcp-jira-read", "mcp-jira-write"));
-        String narrow = env.idp.token(sub, "streamer", List.of("mcp-jira-read"));
-        String session = sessionOn(wide, "/mcp");
-        SseClient stream = stream(wide, "/mcp", session);
-        assertThat(stream.nextLine(Duration.ofSeconds(2))).isEqualTo(": open");
+        // The write tool of the server is in its manifest; the server serves it only now, and the list of the stream follows what it served last.
+        env.jira.updateTool(true);
+        try {
+            String sub = UUID.randomUUID().toString();
+            String wide = env.idp.token(sub, "streamer", List.of("mcp-jira-read", "mcp-jira-write"));
+            String narrow = env.idp.token(sub, "streamer", List.of("mcp-jira-read"));
+            definitions.forget("mcp-jira");
+            assertThat(sendModern(wide, "/mcp", "tools/list", null, "{}").body()).contains("jira__add_comment");
+            String session = sessionOn(wide, "/mcp");
+            SseClient stream = stream(wide, "/mcp", session);
+            assertThat(stream.nextLine(Duration.ofSeconds(2))).isEqualTo(": open");
 
-        HttpResponse<String> ping = send(narrow, "/mcp", "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"ping\"}",
-                Map.of("Mcp-Session-Id", session, "MCP-Protocol-Version", "2025-11-25"));
-        assertThat(ping.statusCode()).isEqualTo(200);
+            HttpResponse<String> ping = send(narrow, "/mcp", "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"ping\"}",
+                    Map.of("Mcp-Session-Id", session, "MCP-Protocol-Version", "2025-11-25"));
+            assertThat(ping.statusCode()).isEqualTo(200);
 
-        assertThat(stream.nextMessage(FIVE_SECONDS)).as("the user lost the write tools").isNotNull();
+            assertThat(stream.nextMessage(FIVE_SECONDS)).as("the user lost the write tools").isNotNull();
+        } finally {
+            env.jira.updateTool(false);
+            definitions.forget("mcp-jira");
+        }
     }
 
     @Test

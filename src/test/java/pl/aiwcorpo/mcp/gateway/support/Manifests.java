@@ -55,7 +55,7 @@ public final class Manifests {
         credential.put("required", true);
         ArrayNode types = credential.putArray("acceptedTypes");
         credentialTypes.forEach(types::add);
-        manifest.putArray("resourceTypes");
+        Fragments.apply(manifest, system);
         ArrayNode list = manifest.putArray("tools");
         for (Tool tool : tools) {
             ObjectNode entry = list.addObject();

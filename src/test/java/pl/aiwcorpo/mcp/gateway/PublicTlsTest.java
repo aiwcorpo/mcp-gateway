@@ -63,7 +63,6 @@ class PublicTlsTest {
         if (password != null) {
             properties.put("gateway.public-tls.private-key-password", password);
         }
-        properties.put("gateway.policy.state-dir", Files.createDirectories(dir.resolve("state-" + name)).toString());
         return GatewayProcess.startWithPublicTls(name, dir, properties, GatewayProcess.freePort(), GatewayProcess.freePort(), trusting);
     }
 

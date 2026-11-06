@@ -39,7 +39,6 @@ class StreamLimitTest {
         Map<String, String> properties = new LinkedHashMap<>(env.properties());
         properties.remove("gateway.internal-endpoint.port");
         properties.put("gateway.mcp.max-open-streams", "2");
-        properties.put("gateway.policy.state-dir", Files.createDirectories(dir.resolve("state")).toString());
         gateway = GatewayProcess.start("streams-limit", dir, properties, GatewayProcess.freePort(), GatewayProcess.freePort());
     }
 

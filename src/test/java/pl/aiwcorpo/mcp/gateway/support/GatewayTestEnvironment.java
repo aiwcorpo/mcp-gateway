@@ -23,7 +23,7 @@ import pl.aiwcorpo.mcp.testserver.Tls;
  * Everything around the gateway under test, started once per JVM: internal CA and certificates (gateway, BFF, a
  * component of another name, a certificate of a foreign CA), IdP stand-in, broker stub, the test MCP server as
  * mcp-jira and as mcp-gitlab, a server with a certificate for the wrong name (as mcp-confluence), Redis with the
- * ACL of the dev stack and PostgreSQL for the links.
+ * ACL of the dev stack and PostgreSQL, whose registry of servers is seeded with them.
  */
 public final class GatewayTestEnvironment {
 
@@ -50,11 +50,10 @@ public final class GatewayTestEnvironment {
     public final TestMcpServer jira;
     public final TestMcpServer gitlab;
     public final TestMcpServer wrongName;
+    /** Where the gateway's internal JWT keys are fetched from: what the test servers started here verify tokens with. */
+    public final JwksKeySource gatewayKeys;
     /** The foreign server behind an adapter: mcp-opensearch in adapter mode (the test server stands in for the foreign one). */
     public final TestMcpServer opensearch;
-    public final PolicyServer policies;
-    public final Path policyKeys;
-    public final Path policyState;
     public final GenericContainer<?> redis;
     public final GenericContainer<?> postgres;
     public final SSLContext gatewayClientTls;
@@ -78,6 +77,12 @@ public final class GatewayTestEnvironment {
     public final SSLContext adapterJiraTls;
     public final SSLContext adapterGitlabTls;
     public final SSLContext ciOpensearchTls;
+    /** Identities that ask for policy data (C5 getPolicyData): a server of the registry, one that is not in it, a server certificate without clientAuth. */
+    public final SSLContext policyClientJiraTls;
+    public final SSLContext policyClientGitlabTls;
+    public final SSLContext policyClientUnknownTls;
+    public final SSLContext policyClientServerOnlyTls;
+    /** The test servers' addresses, as registry rows: serverId to the port its test server listens on. */
 
     public static synchronized GatewayTestEnvironment get() {
         if (instance == null) {
@@ -109,6 +114,9 @@ public final class GatewayTestEnvironment {
         Path adapterGitlabKeystore = pki.issue("adapter-gitlab.p12", "mcp-adapter-mcp-gitlab", List.of(), false, true);
         Path ciOpensearchKeystore = pki.issue("ci-opensearch.p12", "mcp-registry-ci-mcp-opensearch", List.of(), false, true);
         Path offboardingKeystore = pki.issue("offboarding.p12", "mcp-offboarding", List.of(), false, true);
+        Path policyJiraKeystore = pki.issue("policy-jira.p12", "mcp-jira", List.of("mcp-jira.internal"), true, true);
+        Path policyGitlabKeystore = pki.issue("policy-gitlab.p12", "mcp-gitlab", List.of("mcp-gitlab.internal"), true, true);
+        Path policyUnknownKeystore = pki.issue("policy-unknown.p12", "mcp-nowhere", List.of("mcp-nowhere.internal"), true, true);
         TestPki foreign = new TestPki(Files.createDirectory(dir.resolve("foreign")));
         Path foreignKeystore = foreign.issue("bff.p12", "mcp-portal-bff", List.of(), false, true);
         Path brokerKeystore = pki.issue("broker.p12", "mcp-credential-broker", List.of("mcp-credential-broker.internal"),
@@ -118,21 +126,17 @@ public final class GatewayTestEnvironment {
         }
         gatewayClientTls = Tls.fromPkcs12(gatewayKeystore, pki.truststore(), TestPki.PASSWORD);
         SSLContext trustOnly = Tls.fromKeyStores(null, TestPki.PASSWORD, load(pki.truststore()));
-        JwksKeySource gatewayKeys = new JwksKeySource(
+        gatewayKeys = new JwksKeySource(
                 URI.create("https://localhost:" + internalPort + "/.well-known/jwks.json"), trustOnly, Duration.ZERO);
-
-        policies = new PolicyServer();
-        policies.publishMain(TestBundles.main(TestBundles.revision(1), java.util.Map.of()));
-        policyKeys = Files.createDirectory(dir.resolve("policy-keys"));
-        Files.writeString(policyKeys.resolve("main.pem"), TestBundles.publicKeyPem("test-policy-bundle"));
-        Files.writeString(policyKeys.resolve("overrides.pem"), TestBundles.publicKeyPem("test-policy-overrides"));
-        policyState = Files.createDirectory(dir.resolve("policy-state"));
 
         idp = new TestIdp();
         broker = new BrokerStub(Tls.fromPkcs12(brokerKeystore, pki.truststore(), TestPki.PASSWORD), gatewayKeys);
         jira = new TestMcpServer(new TestMcpServer.Config("mcp-jira", "/mcp", "https://mcp-gateway.internal", false, null,
                 gatewayKeys), Tls.fromPkcs12(jiraKeystore, pki.truststore(), TestPki.PASSWORD),
                 new InetSocketAddress("127.0.0.1", 0)).start();
+        // The update tool is part of the manifest every gateway of the tests takes from this server (the shared context turns it off again
+        // once it has the manifest, TestServers), as the static tools of 1.x were.
+        jira.updateTool(true);
         gitlab = new TestMcpServer(new TestMcpServer.Config("mcp-gitlab", "/mcp", "https://mcp-gateway.internal", false, null,
                 gatewayKeys), Tls.fromPkcs12(gitlabKeystore, pki.truststore(), TestPki.PASSWORD),
                 new InetSocketAddress("127.0.0.1", 0)).start();
@@ -172,6 +176,111 @@ public final class GatewayTestEnvironment {
         adapterJiraTls = Tls.fromPkcs12(adapterJiraKeystore, pki.truststore(), TestPki.PASSWORD);
         adapterGitlabTls = Tls.fromPkcs12(adapterGitlabKeystore, pki.truststore(), TestPki.PASSWORD);
         ciOpensearchTls = Tls.fromPkcs12(ciOpensearchKeystore, pki.truststore(), TestPki.PASSWORD);
+        policyClientJiraTls = Tls.fromPkcs12(policyJiraKeystore, pki.truststore(), TestPki.PASSWORD);
+        policyClientGitlabTls = Tls.fromPkcs12(policyGitlabKeystore, pki.truststore(), TestPki.PASSWORD);
+        policyClientUnknownTls = Tls.fromPkcs12(policyUnknownKeystore, pki.truststore(), TestPki.PASSWORD);
+        policyClientServerOnlyTls = serverIdentityTls;
+        seedServers();
+    }
+
+    /**
+     * A test MCP server that a test adds to the registry at runtime: its certificate names {@code serverId}, it verifies the gateway's tokens
+     * and serves the manifest of its system (Project and Issue types, policies of its own namespace).
+     */
+    public TestMcpServer startServer(String serverId) throws Exception {
+        Path keystore = pki.issue(serverId + "-runtime.p12", serverId, List.of(serverId + ".internal", "localhost"), true, false);
+        return new TestMcpServer(new TestMcpServer.Config(serverId, "/mcp", "https://mcp-gateway.internal", false, null, gatewayKeys),
+                Tls.fromPkcs12(keystore, pki.truststore(), TestPki.PASSWORD), new InetSocketAddress("127.0.0.1", 0)).start();
+    }
+
+    /** The pipeline of one server (CC-161): a certificate with the CN {@code mcp-registry-ci-<serverId>}. */
+    public SSLContext pipelineTls(String serverId) throws Exception {
+        return Tls.fromPkcs12(pki.issue("ci-" + serverId + "-runtime.p12", "mcp-registry-ci-" + serverId, List.of(), false, true),
+                pki.truststore(), TestPki.PASSWORD);
+    }
+
+    /** One row of {@code servers}: what an administrator would have posted to {@code /admin/v1/servers}. */
+    public record ServerRow(String serverId, String system, String url, String credentialType, boolean credentialRequired, boolean enabled,
+                            boolean adapter) {
+    }
+
+    /** The servers every gateway of the tests starts with: the test servers behind them (mcp-jira, mcp-gitlab, mcp-confluence behind a certificate of the wrong name, a disabled mcp-servicedesk, mcp-opensearch behind an adapter). */
+    public List<ServerRow> servers() {
+        return List.of(
+                new ServerRow("mcp-jira", "jira", "https://127.0.0.1:" + jira.port() + "/mcp", "user-secret", true, true, false),
+                new ServerRow("mcp-gitlab", "gitlab", "https://127.0.0.1:" + gitlab.port() + "/mcp", "user-secret", true, true, false),
+                new ServerRow("mcp-confluence", "confluence", "https://127.0.0.1:" + wrongName.port() + "/mcp", "user-secret", false, true, false),
+                new ServerRow("mcp-servicedesk", "servicedesk", "https://127.0.0.1:9/mcp", "user-secret", false, false, false),
+                new ServerRow("mcp-opensearch", "opensearch", "https://127.0.0.1:" + opensearch.port() + "/mcp", "user-secret", true, true, true));
+    }
+
+    /**
+     * Migrates the database and writes the rows of {@link #servers()}, so that a gateway of any test (a context, or a process of its own)
+     * finds them at start. The gateway migrates the same database with the same history table; Flyway's lock makes the two agree.
+     */
+    private void seedServers() throws Exception {
+        seed("gateway", java.util.Map.of());
+    }
+
+    /**
+     * A database of its own on the test PostgreSQL, migrated and seeded like the shared one, for a gateway that runs against test servers
+     * of its own: its registry then cannot change what the shared context serves. {@code urls}: serverId to the address the test server
+     * of that test listens on.
+     *
+     * @return the JDBC URL to give the gateway as {@code spring.datasource.url}
+     */
+    public String isolatedDatabase(String name, java.util.Map<String, String> urls) throws Exception {
+        String url = emptyDatabase(name);
+        seed(name, urls);
+        return url;
+    }
+
+    /** A migrated database with no server in its registry: whoever uses it adds them through the admin API (or the admin service). */
+    public String emptyDatabase(String name) throws Exception {
+        try (java.sql.Connection connection = connection("gateway"); java.sql.Statement create = connection.createStatement()) {
+            create.executeUpdate("DROP DATABASE IF EXISTS " + name);
+            create.executeUpdate("CREATE DATABASE " + name);
+        }
+        org.flywaydb.core.Flyway.configure().dataSource(jdbcUrl(name), "gateway", POSTGRES_PASSWORD).locations("classpath:db/migration")
+                .load().migrate();
+        return jdbcUrl(name);
+    }
+
+    private String jdbcUrl(String database) {
+        return "jdbc:postgresql://" + postgres.getHost() + ":" + postgres.getMappedPort(5432) + "/" + database;
+    }
+
+    private void seed(String database, java.util.Map<String, String> urls) throws Exception {
+        org.flywaydb.core.Flyway.configure().dataSource(jdbcUrl(database), "gateway", POSTGRES_PASSWORD).locations("classpath:db/migration")
+                .load().migrate();
+        try (java.sql.Connection connection = connection(database);
+             java.sql.PreparedStatement upsert = connection.prepareStatement("INSERT INTO servers (server_id, system, internal_url, tls_name, "
+                     + "credential, enabled, adapter) VALUES (?, ?, ?, ?, ?::jsonb, ?, ?) ON CONFLICT (server_id) DO UPDATE SET "
+                     + "internal_url = EXCLUDED.internal_url, tls_name = EXCLUDED.tls_name, credential = EXCLUDED.credential, "
+                     + "enabled = EXCLUDED.enabled, adapter = EXCLUDED.adapter")) {
+            for (ServerRow row : servers()) {
+                upsert.setString(1, row.serverId());
+                upsert.setString(2, row.system());
+                upsert.setString(3, urls.getOrDefault(row.serverId(), row.url()));
+                upsert.setString(4, row.serverId() + ".internal");
+                upsert.setString(5, "{\"required\":" + row.credentialRequired() + ",\"acceptedTypes\":[\"" + row.credentialType()
+                        + "\"],\"type\":\"" + row.credentialType() + "\"}");
+                upsert.setBoolean(6, row.enabled());
+                upsert.setBoolean(7, row.adapter());
+                upsert.executeUpdate();
+            }
+            try (java.sql.Statement bump = connection.createStatement()) {
+                bump.executeUpdate("UPDATE registry_changes SET version = version + 1 WHERE id = 1");
+            }
+        }
+    }
+
+    private java.sql.Connection connection() throws java.sql.SQLException {
+        return connection("gateway");
+    }
+
+    private java.sql.Connection connection(String database) throws java.sql.SQLException {
+        return java.sql.DriverManager.getConnection(jdbcUrl(database), "gateway", POSTGRES_PASSWORD);
     }
 
     /**
@@ -179,14 +288,13 @@ public final class GatewayTestEnvironment {
      * server behind {@code serverId} (the bootstrap approves a manifest once and never replaces it) starts and ends with it.
      */
     public void forgetRegistryOf(String serverId) throws Exception {
-        try (java.sql.Connection connection = java.sql.DriverManager.getConnection("jdbc:postgresql://" + postgres.getHost() + ":"
-                + postgres.getMappedPort(5432) + "/gateway", "gateway", POSTGRES_PASSWORD);
-             java.sql.PreparedStatement tools = connection.prepareStatement("DELETE FROM registry_tools WHERE server_id = ?");
-             java.sql.PreparedStatement servers = connection.prepareStatement("DELETE FROM registry_servers WHERE server_id = ?")) {
-            tools.setString(1, serverId);
-            tools.executeUpdate();
-            servers.setString(1, serverId);
-            servers.executeUpdate();
+        try (java.sql.Connection connection = connection()) {
+            for (String table : List.of("registry_tools", "registry_servers", "registry_policies", "registry_namespaces", "registry_risk_floor")) {
+                try (java.sql.PreparedStatement delete = connection.prepareStatement("DELETE FROM " + table + " WHERE server_id = ?")) {
+                    delete.setString(1, serverId);
+                    delete.executeUpdate();
+                }
+            }
         } catch (java.sql.SQLException e) {
             // 42P01: no gateway has migrated this database yet (a test that runs alone), so there is nothing to forget.
             if (!"42P01".equals(e.getSQLState())) {
@@ -209,6 +317,7 @@ public final class GatewayTestEnvironment {
     public java.util.Map<String, String> properties() {
         java.util.Map<String, String> all = new java.util.LinkedHashMap<>();
         register((name, supplier) -> all.put(name, String.valueOf(supplier.get())));
+        all.put("gateway.registry.bootstrap-from-server", "true");
         return all;
     }
 
@@ -216,20 +325,9 @@ public final class GatewayTestEnvironment {
         registry.add("gateway.oidc.issuer", () -> TestIdp.ISSUER);
         registry.add("gateway.oidc.jwks-uri", idp::jwksUri);
         registry.add("gateway.oidc.token-uri", idp::tokenUri);
-        // The tests relax production rules (test keys, http, static servers): the devstack profile with its two acknowledgements.
+        // The tests relax production rules (test keys, http, a manifest taken from the server): the devstack profile with its two acknowledgements.
         // The variable MCP_DEVSTACK_ACKNOWLEDGED is a real environment variable of the test JVM (surefire, gateway/pom.xml).
         registry.add("aiwcorpo.mcp.platform.devstack.acknowledged", () -> "true");
-        registry.add("gateway.policy.main-url", policies::mainUrl);
-        registry.add("gateway.policy.overrides-url", policies::overridesUrl);
-        registry.add("gateway.policy.main-key-id", () -> "test-policy-bundle");
-        registry.add("gateway.policy.main-key-file", () -> policyKeys.resolve("main.pem").toString());
-        registry.add("gateway.policy.overrides-key-id", () -> "test-policy-overrides");
-        registry.add("gateway.policy.overrides-key-file", () -> policyKeys.resolve("overrides.pem").toString());
-        registry.add("gateway.policy.allow-test-keys", () -> "true");
-        registry.add("gateway.policy.state-dir", policyState::toString);
-        registry.add("gateway.policy.main-interval", () -> "300ms");
-        registry.add("gateway.policy.overrides-interval", () -> "200ms");
-        registry.add("gateway.policy.startup-timeout", () -> "10s");
         registry.add("gateway.oidc.jwks-retry-interval", () -> "1s");
         registry.add("gateway.audit.certificate-rejection-interval", () -> "1s");
         registry.add("gateway.oidc.client-id", () -> "mcp-gateway");
@@ -253,48 +351,17 @@ public final class GatewayTestEnvironment {
         registry.add("spring.datasource.username", () -> "gateway");
         registry.add("spring.datasource.password", () -> POSTGRES_PASSWORD);
         registry.add("gateway.public-url", () -> PUBLIC_URL);
-        registry.add("gateway.servers.mcp-jira.internal-url", () -> "https://127.0.0.1:" + jira.port() + "/mcp");
-        registry.add("gateway.servers.mcp-jira.tools.delete_issue.risk", () -> "DESTRUCTIVE");
-        registry.add("gateway.servers.mcp-jira.tools.delete_issue.description", () -> "Deletes one Jira issue.");
-        registry.add("gateway.servers.mcp-jira.tools.delete_issue.resource-refs[0].argument", () -> "issueKey");
-        registry.add("gateway.servers.mcp-jira.tools.delete_issue.resource-refs[0].type", () -> "Jira::Issue");
-        registry.add("gateway.servers.mcp-jira.tools.delete_issue.title", () -> "Delete issue");
-        registry.add("gateway.registry.mode", () -> "static");
-        registry.add("gateway.registry.bootstrap-from-server", () -> "true");
+        // The shared context takes the manifests of the servers once, at start (TestServers); a server added later by a test waits for its own
+        // registration and approval, as in production. A process of its own bootstraps (properties()).
+        registry.add("gateway.registry.bootstrap-from-server", () -> "false");
         registry.add("gateway.registry.bootstrap-retry", () -> "500ms");
         registry.add("gateway.registry.definition-check-ttl", () -> "1s");
         registry.add("gateway.mcp.tools-list-timeout", () -> "700");
         registry.add("gateway.mcp.sse-heartbeat-interval", () -> "1s");
         registry.add("gateway.mcp.change-poll-interval", () -> "300ms");
-        registry.add("gateway.servers.mcp-gitlab.manifest", () -> "required");
-        registry.add("gateway.servers.mcp-gitlab.system", () -> "gitlab");
-        registry.add("gateway.servers.mcp-gitlab.internal-url", () -> "https://127.0.0.1:" + gitlab.port() + "/mcp");
-        registry.add("gateway.servers.mcp-gitlab.credential.accepted-types", () -> "user-secret");
-        registry.add("gateway.servers.mcp-gitlab.credential.type", () -> "user-secret");
-        registry.add("gateway.servers.mcp-gitlab.tools.get_issue.risk", () -> "READ_ONLY");
-        registry.add("gateway.servers.mcp-gitlab.tools.get_issue.description", () -> "Returns one GitLab issue.");
         registry.add("gateway.metrics.allowed-client-cns", () -> "mcp-prometheus");
         registry.add("gateway.allowed-origins", () -> "https://allowed.test");
         registry.add("gateway.redis.health-interval", () -> "1s");
-        registry.add("gateway.servers.mcp-servicedesk.system", () -> "servicedesk");
-        registry.add("gateway.servers.mcp-servicedesk.enabled", () -> "false");
-        registry.add("gateway.servers.mcp-servicedesk.version", () -> "2.1.0");
-        registry.add("gateway.servers.mcp-servicedesk.credential.required", () -> "false");
-        registry.add("gateway.servers.mcp-servicedesk.internal-url", () -> "https://127.0.0.1:9/mcp");
-        registry.add("gateway.servers.mcp-servicedesk.tools.get_ticket.risk", () -> "READ_ONLY");
-        registry.add("gateway.servers.mcp-servicedesk.tools.get_ticket.description", () -> "Returns one ticket.");
-        registry.add("gateway.servers.mcp-opensearch.system", () -> "opensearch");
-        registry.add("gateway.servers.mcp-opensearch.adapter", () -> "true");
-        registry.add("gateway.servers.mcp-opensearch.manifest", () -> "required");
-        registry.add("gateway.servers.mcp-opensearch.internal-url", () -> "https://127.0.0.1:" + opensearch.port() + "/mcp");
-        registry.add("gateway.servers.mcp-opensearch.credential.accepted-types", () -> "user-secret");
-        registry.add("gateway.servers.mcp-opensearch.credential.type", () -> "user-secret");
-        registry.add("gateway.servers.mcp-opensearch.credential.token-exchange", () -> "false");
-        registry.add("gateway.servers.mcp-confluence.system", () -> "confluence");
-        registry.add("gateway.servers.mcp-confluence.internal-url", () -> "https://127.0.0.1:" + wrongName.port() + "/mcp");
-        registry.add("gateway.servers.mcp-confluence.credential.required", () -> "false");
-        registry.add("gateway.servers.mcp-confluence.tools.search_issues.risk", () -> "READ_ONLY");
-        registry.add("gateway.servers.mcp-confluence.tools.search_issues.description", () -> "Searches pages.");
     }
 
     private static java.security.KeyStore load(Path path) throws Exception {

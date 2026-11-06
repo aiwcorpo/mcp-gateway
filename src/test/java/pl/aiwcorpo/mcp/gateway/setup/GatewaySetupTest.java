@@ -90,24 +90,47 @@ class GatewaySetupTest {
     }
 
     @Test
-    void reportsMissingCertificateFilesAndPolicyKey() {
+    void reportsMissingCertificateFilesAndTheIdentityProvider() {
         Map<String, String> env = new HashMap<>();
         GatewaySetup.REQUIRED.forEach(name -> env.put(name, "https://unused.invalid"));
         env.put("MCP_REDIS_WAIT_REPLICAS", "1");
         env.put("MCP_TLS_KEYSTORE", dir.resolve("missing.p12").toString());
-        env.put("MCP_POLICY_MAIN_KEY_FILE", dir.resolve("missing.pem").toString());
         env.put("MCP_OIDC_JWKS_URI", "https://127.0.0.1:1/certs");
-        env.put("MCP_POLICY_MAIN_URL", "https://127.0.0.1:1/policies/main");
 
         int exit = setup(env).run();
 
         assertThat(exit).isEqualTo(1);
         assertThat(output.toString(StandardCharsets.UTF_8))
                 .contains("FAIL  certificate file " + dir.resolve("missing.p12") + " does not exist")
-                .contains("FAIL  policy signing key " + dir.resolve("missing.pem") + " does not exist")
                 .contains("FAIL  identity provider keys https://127.0.0.1:1/certs: connection refused")
-                .contains("FAIL  policy server https://127.0.0.1:1/policies/main/latest.json: connection refused")
                 .doesNotContain("MCP_REDIS_WAIT_REPLICAS");
+    }
+
+    @Test
+    void doesNotAskForTheServersOrThePolicyKeysThatAreNoLongerSettings() {
+        Map<String, String> env = new HashMap<>();
+        GatewaySetup.REQUIRED.forEach(name -> env.put(name, "https://unused.invalid"));
+        env.put("MCP_REDIS_WAIT_REPLICAS", "1");
+        env.put("MCP_TLS_KEYSTORE", dir.resolve("missing.p12").toString());
+        env.put("MCP_SERVER_JIRA_MCP_URL", "https://127.0.0.1:1/mcp");
+        env.put("MCP_POLICY_MAIN_URL", "https://127.0.0.1:1/policies/main");
+
+        setup(env).run();
+
+        assertThat(GatewaySetup.REQUIRED).noneMatch(name -> name.startsWith("MCP_POLICY_"));
+        assertThat(output.toString(StandardCharsets.UTF_8)).doesNotContain("mcp-jira").doesNotContain("policy");
+    }
+
+    @Test
+    void anAllowedClientThatIsNoClientIdFailsTheCheck() {
+        Map<String, String> env = new HashMap<>();
+        GatewaySetup.REQUIRED.forEach(name -> env.put(name, "https://127.0.0.1:1/unused"));
+        env.put("MCP_TLS_KEYSTORE", dir.resolve("missing.p12").toString());
+        env.put("MCP_ALLOWED_CLIENTS", "claude-code, bad client");
+
+        setup(env).run();
+
+        assertThat(output.toString(StandardCharsets.UTF_8)).contains("FAIL  MCP_ALLOWED_CLIENTS claude-code, bad client must be client ids");
     }
 
     @Test

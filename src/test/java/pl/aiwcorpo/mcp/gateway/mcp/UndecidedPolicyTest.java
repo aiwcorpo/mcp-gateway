@@ -65,7 +65,7 @@ class UndecidedPolicyTest {
                 mock(UpstreamSessions.class), mock(CredentialService.class), authorizer, audit, new ToolErrors(JSON), JSON, meters,
                 "mcp-gateway", mock(ConfirmationService.class), mock(RegistryService.class), mock(DefinitionGuard.class), limiter,
                 new RateLimitAuditThrottle(Duration.ofSeconds(10), System::nanoTime, meters),
-                new EndpointAuditThrottle(Duration.ofSeconds(10), 50, System::currentTimeMillis, meters, audit, "mcp-gateway", () -> null),
+                new EndpointAuditThrottle(Duration.ofSeconds(10), 50, System::currentTimeMillis, meters, audit, "mcp-gateway", () -> 0L),
                 new ToolsListCursor("0123456789abcdef".getBytes(), JSON), mock(pl.aiwcorpo.mcp.gateway.killswitch.KillSwitches.class), new pl.aiwcorpo.mcp.gateway.authz.ToolAccess(authorizer),
                 Duration.ofSeconds(3), Clock.systemUTC());
         GatewayUser user = new GatewayUser("sub-1", "alice", "claude-code", List.of("mcp-jira-read"), "token");

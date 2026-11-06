@@ -27,7 +27,7 @@ class InternalTokenIssuerTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private final SigningKeys keys = SigningKeys.load(null, null, false, false);
     private final InternalTokenIssuer issuer = new InternalTokenIssuer(keys, "https://mcp-gateway.internal",
-            Duration.ofSeconds(30), () -> "00000000000000-0000000", Clock.systemUTC());
+            Duration.ofSeconds(30), () -> 42L, Clock.systemUTC());
     private final GatewayUser alice = new GatewayUser("6f1c2a9e-4d4b-4c51-9a53-1e0f0c7d2b11", "alice", "claude-code",
             List.of("mcp-jira-read", "/mcp-jira-write", "admins", "mcp-jira-read"), "raw");
 
@@ -144,7 +144,7 @@ class InternalTokenIssuerTest {
     @Test
     void lifetimeAboveSixtySecondsIsRefused() {
         assertThatThrownBy(() -> new InternalTokenIssuer(keys, "https://mcp-gateway.internal", Duration.ofSeconds(61),
-                () -> "00000000000000-0000000", Clock.systemUTC())).isInstanceOf(IllegalStateException.class);
+                () -> 42L, Clock.systemUTC())).isInstanceOf(IllegalStateException.class);
     }
 
     @Test

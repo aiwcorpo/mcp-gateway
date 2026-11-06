@@ -2,68 +2,35 @@ package pl.aiwcorpo.mcp.gateway.authz;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.net.URI;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.time.Duration;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
 
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import pl.aiwcorpo.mcp.cedar.entities.Caller;
 import pl.aiwcorpo.mcp.cedar.entities.ResourceRef;
+import pl.aiwcorpo.mcp.cedar.entities.ResourceTypes;
+import pl.aiwcorpo.mcp.cedar.entities.ScopeMapping;
 import pl.aiwcorpo.mcp.cedar.entities.ToolDescriptor;
-import pl.aiwcorpo.mcp.gateway.config.GatewayProperties;
-import pl.aiwcorpo.mcp.gateway.policy.BundleFetcher;
-import pl.aiwcorpo.mcp.gateway.policy.PolicyService;
-import pl.aiwcorpo.mcp.gateway.support.PolicyServer;
-import pl.aiwcorpo.mcp.gateway.support.TestBundles;
+import pl.aiwcorpo.mcp.gateway.support.Snapshots;
 import pl.aiwcorpo.mcp.gateway.support.Vectors;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * The gateway-level vectors of policy-decisions/ (mcp-contracts 4.0.0) through the gateway's own loader and evaluator: the
- * bundle is pulled, verified and loaded like in production, and the decision is the one the vector expects. The step-up rule is
- * not in a production bundle, so the vectors that only it decides are not applicable.
+ * The gateway-level vectors of policy-decisions/ (mcp-contracts 7.0.0) through the gateway's own authorizer: the platform policies of the
+ * contracts jar, the resource types and the scope mapping the vector names, and the decision the vector expects. The step-up rule is an
+ * example of an override, not a platform policy, so the vectors that only it decides are not applicable.
  */
 class CedarDecisionVectorsTest {
 
     private static final JsonMapper JSON = JsonMapper.builder().build();
-    private static final Map<String, String> CONFIGURED_TYPES = Map.of("jira", "user-secret", "confluence", "user-secret",
-            "gitlab", "user-oauth", "servicedesk", "service-account", "opensearch", "token-exchange");
-    private static PolicyServer server;
-    private static PolicyService policies;
-    private static CedarToolAuthorizer authorizer;
-
-    @BeforeAll
-    static void load() throws Exception {
-        server = new PolicyServer();
-        server.publishMain(TestBundles.main(TestBundles.revision(1), Map.of()));
-        Path keys = Files.createTempDirectory("policy-keys");
-        Files.writeString(keys.resolve("main.pem"), TestBundles.publicKeyPem("test-policy-bundle"));
-        policies = new PolicyService(new GatewayProperties.Policy(URI.create(server.mainUrl()), null, "test-policy-bundle",
-                keys.resolve("main.pem").toString(), null, null, true, null, null, null, Duration.ofMinutes(1),
-                Duration.ofMinutes(1), Duration.ofSeconds(10), Duration.ofSeconds(1)), new BundleFetcher(), new SimpleMeterRegistry(), true)
-                .start();
-        authorizer = new CedarToolAuthorizer(policies, JSON);
-    }
-
-    @AfterAll
-    static void stop() {
-        policies.destroy();
-        server.close();
-    }
+    private static final List<String> CLIENTS = List.of("claude-code", "claude-ai");
 
     @TestFactory
     List<DynamicTest> gatewayVectors() {
@@ -78,13 +45,25 @@ class CedarDecisionVectorsTest {
             if (expectedPolicies.contains("destructive-requires-fresh-mfa")) {
                 continue;
             }
-            if (vector.name().equals("gw-unknown-tool.json")) {
+            if (document.path("builder").has("adjustment")) {
+                // The vector takes the refs out of the request after the builder made it, which the gateway never does: its builder always
+                // gives them, and a request without them is the contract's own fail-closed case (the entity builder vectors).
+                continue;
+            }
+            if (vector.name().equals("gw-unknown-tool-denied.json")) {
                 // The vector evaluates a request whose Tool entity is missing. The gateway builds the entity from the registry
                 // and never evaluates a tool that the registry does not have (not_found_or_denied, GatewayIntegrationTest).
                 continue;
             }
             tests.add(DynamicTest.dynamicTest(vector.name(), () -> {
-                JsonNode input = document.path("builder").path("input");
+                JsonNode builder = document.path("builder");
+                List<ResourceTypes> declared = new ArrayList<>();
+                builder.path("resourceTypes").forEach(file -> declared.add(ResourceTypes.fromJson(Vectors.contractFile(file.asString()))));
+                ResourceTypes types = ResourceTypes.union(declared);
+                ScopeMapping mapping = ScopeMapping.fromJson(types, Vectors.contractFile(builder.path("scopeMapping").asString()), true);
+                CedarToolAuthorizer authorizer = new CedarToolAuthorizer(
+                        Snapshots.source(Snapshots.of(1, types, mapping, Map.of(), CLIENTS)), JSON);
+                JsonNode input = builder.path("input");
                 JsonNode tool = input.path("tool");
                 List<ResourceRef> refs = new ArrayList<>();
                 tool.path("resourceRefs").forEach(r -> refs.add(new ResourceRef(r.path("argument").asString(), r.path("type").asString())));
@@ -94,10 +73,8 @@ class CedarDecisionVectorsTest {
                 List<String> groups = new ArrayList<>();
                 c.path("grp").forEach(g -> groups.add(g.asString()));
                 Caller caller = Caller.of(c.path("sub").asString(), c.path("usr").asString(), groups, c.path("azp").asString());
-                // The gateway puts the type of the system from its configuration into every decision (CC-136).
-                String credentialType = input.path("credentialType").asString(CONFIGURED_TYPES.get(tool.path("system").asString()));
                 CedarToolAuthorizer.Evaluation result = authorizer.evaluate(caller, descriptor,
-                        JSON.convertValue(input.path("arguments"), Map.class), List.of(), credentialType);
+                        JSON.convertValue(input.path("arguments"), Map.class), List.of(), input.path("credentialType").asString(null));
                 assertThat(result.decision().allowed()).as(document.path("description").asString())
                         .isEqualTo("allow".equals(document.path("expected").path("decision").asString()));
                 SortedSet<String> actual = new TreeSet<>(result.determiningPolicies());

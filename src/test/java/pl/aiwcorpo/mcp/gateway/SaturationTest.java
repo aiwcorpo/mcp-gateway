@@ -81,7 +81,6 @@ class SaturationTest {
     static void start() throws Exception {
         env = GatewayTestEnvironment.get();
         dir = Files.createTempDirectory("mcp-gateway-saturation");
-        env.forgetRegistryOf("mcp-jira");
         redis = new GenericContainer<>("redis:8.8.4-alpine")
                 .withCopyToContainer(Transferable.of(GatewayTestEnvironment.redisAcl()), "/etc/redis-users.acl")
                 .withCommand("redis-server", "--aclfile", "/etc/redis-users.acl", "--appendonly", "no").withExposedPorts(6379);
@@ -100,6 +99,7 @@ class SaturationTest {
                         pki.truststore(), TestPki.PASSWORD), new java.net.InetSocketAddress("127.0.0.1", 0));
         jira.updateTool(true);
         jira.start();
+        String database = env.isolatedDatabase("saturation", Map.of("mcp-jira", "https://127.0.0.1:" + jira.port() + "/mcp"));
         Path jwks = dir.resolve("internal-jwt.jwks");
         Files.writeString(jwks, new JWKSet(List.of(
                 new ECKeyGenerator(Curve.P_256).keyID("sat-key-a").algorithm(JWSAlgorithm.ES256).keyUse(KeyUse.SIGNATURE).generate(),
@@ -112,11 +112,9 @@ class SaturationTest {
         p.put("spring.data.redis.host", redis.getHost());
         p.put("spring.data.redis.port", Integer.toString(redis.getMappedPort(6379)));
         p.put("gateway.broker.url", "https://127.0.0.1:" + broker.port());
-        p.put("gateway.servers.mcp-jira.internal-url", "https://127.0.0.1:" + jira.port() + "/mcp");
-        p.put("gateway.servers.mcp-jira.manifest", "required");
+        p.put("spring.datasource.url", database);
         p.put("gateway.internal-jwt.keys-file", jwks.toString());
         p.put("gateway.internal-jwt.active-kid", "sat-key-a");
-        p.put("gateway.policy.state-dir", Files.createDirectories(dir.resolve("state")).toString());
         p.put("gateway.mcp.tools-list-timeout", "5000");
         // The limits of requests are not what is measured here.
         p.put("gateway.rate-limit.per-user", "1000000");
@@ -142,7 +140,6 @@ class SaturationTest {
         if (redis != null) {
             redis.stop();
         }
-        env.forgetRegistryOf("mcp-jira");
     }
 
     private static String jcmd(String... args) throws Exception {

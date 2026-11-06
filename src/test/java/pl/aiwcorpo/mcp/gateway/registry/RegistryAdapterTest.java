@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
@@ -21,7 +22,6 @@ import org.springframework.boot.test.system.CapturedOutput;
 import pl.aiwcorpo.mcp.gateway.GatewayTestBase;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
 import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
-import pl.aiwcorpo.mcp.gateway.config.GatewayProperties;
 import pl.aiwcorpo.mcp.gateway.registry.RegistryService.Approval;
 import pl.aiwcorpo.mcp.gateway.registry.RegistryService.Classification;
 import pl.aiwcorpo.mcp.gateway.registry.RegistryService.Result;
@@ -35,13 +35,14 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * Servers behind an adapter in the registry (CC-193, CC-206, CC-207), on a real PostgreSQL with registries of their own for mcp-jira, once
+ * Servers behind an adapter in the registry (CC-193, CC-206, CC-207), on a real PostgreSQL with registries of their own for mcp-regad (a server that no other test uses), once
  * in adapter mode and once as a server on the starter: what a submission stores, how an administrator classifies and approves, what a
  * removal and a changed definition do to the classification. The vectors {@code adapter-registry/} and {@code registry-approval/} run here.
  */
 class RegistryAdapterTest extends GatewayTestBase {
 
-    private static final String SERVER = "mcp-jira";
+    private static final String SERVER = "mcp-regad";
+    private static final String SYSTEM = "regad";
     private static final String ADMIN_SUB = "3b0d6f2e-91c4-4d7a-8a52-6c1e4f7a9d10";
 
     @Autowired
@@ -49,6 +50,9 @@ class RegistryAdapterTest extends GatewayTestBase {
 
     @Autowired
     AuditLog audit;
+
+    @Autowired
+    pl.aiwcorpo.mcp.gateway.policy.PolicyService policies;
 
     private final ManifestFetcher fetcher = mock(ManifestFetcher.class);
     private ServerRegistry adapterServers;
@@ -60,25 +64,53 @@ class RegistryAdapterTest extends GatewayTestBase {
     @BeforeEach
     void clean() {
         requestId = pl.aiwcorpo.mcp.gateway.jwt.UuidV7.next();
-        jdbc.sql("DELETE FROM registry_tools WHERE server_id = ?").param(SERVER).update();
-        jdbc.sql("DELETE FROM registry_servers WHERE server_id = ?").param(SERVER).update();
-        jdbc.sql("DELETE FROM registry_risk_floor WHERE server_id = ?").param(SERVER).update();
+        wipe();
+        store.locked(SERVER, tx -> {
+            tx.saveConfig(adapterConfig(true), true);
+            return null;
+        });
         adapterServers = registry(true);
         starterServers = registry(false);
         adapterService = service(adapterServers);
         starterService = service(starterServers);
     }
 
+    @AfterEach
+    void wipe() {
+        for (String table : List.of("registry_tools", "registry_servers", "registry_risk_floor", "registry_policies", "registry_namespaces",
+                "kill_switches", "servers")) {
+            jdbc.sql("DELETE FROM " + table + " WHERE server_id = ?").param(SERVER).update();
+        }
+    }
+
+    /** The same server as seen by two gateways: one that serves it through an adapter and one that does not. */
     private static ServerRegistry registry(boolean adapter) {
-        return new ServerRegistry(Map.of(SERVER, new GatewayProperties.Server("jira", URI.create("https://mcp-jira.internal:8443/mcp"), "1.0.0", true,
-                "required", new GatewayProperties.Credential(true, List.of("user-secret"), List.of(), false, null),
-                adapter ? Map.of() : Map.of("get_issue", new GatewayProperties.Tool("READ_ONLY", "Gets.", null, null, false, List.of())), adapter)),
-                "static");
+        ServerRegistry registry = new ServerRegistry();
+        registry.replaceConfigs(List.of(adapterConfig(adapter)));
+        return registry;
+    }
+
+    private static ServerConfig adapterConfig(boolean adapter) {
+        return new ServerConfig(SERVER, SYSTEM, URI.create("https://mcp-regad.internal:8443/mcp"), "mcp-regad.internal",
+                new ServerConfig.Credential(true, List.of("user-secret"), "user-secret"), true, adapter);
     }
 
     private RegistryService service(ServerRegistry on) {
         return new RegistryService(on, store, new ManifestValidator(JSON, false), fetcher,
-                new DefinitionGuard(Clock.systemUTC(), Duration.ofSeconds(30)), new DefinitionCheck(JSON), audit, "mcp-gateway", JSON);
+                new DefinitionGuard(Clock.systemUTC(), Duration.ofSeconds(30)), new DefinitionCheck(JSON), audit, "mcp-gateway", JSON, policies);
+    }
+
+    /** A manifest of a server that is no adapter, registered as the pipeline does; its policies are approved the way an administrator does. */
+    private Result registerNative(ObjectNode manifest) {
+        Result result = starterService.register(requestId, SERVER, manifest, "ci");
+        if (result instanceof Result.Accepted && starterService.policiesOf(SERVER).filter(p -> p.pending()).isPresent()) {
+            starterService.approvePolicies(requestId, SERVER, manifest.path("policiesHash").asString(), admin());
+        }
+        return result;
+    }
+
+    private static ObjectNode nativeManifest(String version, Tool... tools) {
+        return Manifests.manifest(SERVER, SYSTEM, version, List.of(Manifests.USER_SECRET), tools);
     }
 
     private static GatewayUser admin() {
@@ -100,7 +132,7 @@ class RegistryAdapterTest extends GatewayTestBase {
     }
 
     private ObjectNode adapterManifest(String version, Tool... tools) {
-        return Manifests.adapter(SERVER, "jira", version, tools);
+        return Manifests.adapter(SERVER, SYSTEM, version, tools);
     }
 
     @Test
@@ -119,9 +151,9 @@ class RegistryAdapterTest extends GatewayTestBase {
         }
         assertThat(Contracts.gatewayAdminErrors("RegistryServer", pl.aiwcorpo.mcp.gateway.admin.RegistryViews.server(JSON, accepted.server(), false, java.util.Map.of()))).isEmpty();
         assertThat(auditReasons(output, requestId)).containsExactlyInAnyOrder("definition_submitted", "definition_submitted");
-        assertThat(adapterServers.resolveForCall("jira__get_issue")).as("known, disabled, judged as the most dangerous kind").isPresent();
-        assertThat(adapterServers.resolveForCall("jira__get_issue").orElseThrow().tool().disabled()).isTrue();
-        assertThat(adapterServers.resolveForCall("jira__get_issue").orElseThrow().tool().risk().name()).isEqualTo("DESTRUCTIVE");
+        assertThat(adapterServers.resolveForCall("regad__get_issue")).as("known, disabled, judged as the most dangerous kind").isPresent();
+        assertThat(adapterServers.resolveForCall("regad__get_issue").orElseThrow().tool().disabled()).isTrue();
+        assertThat(adapterServers.resolveForCall("regad__get_issue").orElseThrow().tool().risk().name()).isEqualTo("DESTRUCTIVE");
     }
 
     @Test
@@ -283,7 +315,7 @@ class RegistryAdapterTest extends GatewayTestBase {
         adapterService.reloadChanged();
 
         assertThat(adapterServers.find(SERVER).orElseThrow().tools()).as("fail-closed: not served whatever the registry holds").isEmpty();
-        assertThat(adapterServers.resolveForCall("jira__update_issue").orElseThrow().tool().disabled()).isTrue();
+        assertThat(adapterServers.resolveForCall("regad__update_issue").orElseThrow().tool().disabled()).isTrue();
         assertThat(meters.get("mcp_gateway_registry_entries_refused_total").counter().count()).isEqualTo(1.0);
     }
 
@@ -325,8 +357,8 @@ class RegistryAdapterTest extends GatewayTestBase {
 
     @Test
     void aServerThatIsNotAnAdapterTakesNoClassification() {
-        ObjectNode manifest = Manifests.jira("1.4.0", Tool.update("update_issue"));
-        assertThat(starterService.register(requestId, SERVER, manifest, "ci")).isInstanceOf(Result.Accepted.class);
+        ObjectNode manifest = nativeManifest("1.4.0", Tool.update("update_issue"));
+        assertThat(registerNative(manifest)).isInstanceOf(Result.Accepted.class);
 
         Approval refused = starterService.approve(requestId, SERVER, "update_issue", hash(manifest, "update_issue"), false,
                 new Classification("UPDATE", "update"), admin());
@@ -405,7 +437,7 @@ class RegistryAdapterTest extends GatewayTestBase {
         }
         if (!before.isEmpty()) {
             if (adapterMode) {
-                ObjectNode baseline = Manifests.adapter(SERVER, "jira", "0.1.0", before.toArray(new Tool[0]));
+                ObjectNode baseline = Manifests.adapter(SERVER, SYSTEM, "0.1.0", before.toArray(new Tool[0]));
                 assertThat(adapterService.submitAdapter(requestId, SERVER, baseline)).isInstanceOf(Result.Accepted.class);
                 for (Tool tool : before) {
                     if (!"READ_ONLY".equals(tool.risk())) {
@@ -415,8 +447,8 @@ class RegistryAdapterTest extends GatewayTestBase {
                             new Classification("READ_ONLY", "read"), admin())).isInstanceOf(Approval.Approved.class);
                 }
             } else {
-                ObjectNode baseline = Manifests.jira("0.1.0", before.toArray(new Tool[0]));
-                assertThat(starterService.register(requestId, SERVER, baseline, "ci")).isInstanceOf(Result.Accepted.class);
+                ObjectNode baseline = nativeManifest("0.1.0", before.toArray(new Tool[0]));
+                assertThat(registerNative(baseline)).isInstanceOf(Result.Accepted.class);
                 for (Tool tool : before) {
                     if (!"READ_ONLY".equals(tool.risk())) {
                         starterService.approve(requestId, SERVER, tool.name(), hash(baseline, tool.name()), false, admin());
@@ -427,7 +459,7 @@ class RegistryAdapterTest extends GatewayTestBase {
         ObjectNode manifest;
         boolean manifestFromAdapter = "adapter".equals(input.path("manifestSource").asString(null));
         Tool[] tools = after.toArray(new Tool[0]);
-        manifest = manifestFromAdapter ? Manifests.adapter(SERVER, "jira", "0.2.0", tools) : Manifests.jira("0.2.0", tools);
+        manifest = manifestFromAdapter ? Manifests.adapter(SERVER, SYSTEM, "0.2.0", tools) : nativeManifest("0.2.0", tools);
         boolean adapterChannel = "adapter".equals(input.path("channel").asString());
         Result result = adapterChannel ? service.submitAdapter(requestId, SERVER, manifest) : service.register(requestId, SERVER, manifest, "ci");
         if (expected.path("status").asInt() == 422) {
@@ -466,12 +498,12 @@ class RegistryAdapterTest extends GatewayTestBase {
         Tool tool = approvedBefore.getFirst();
         Tool changed = tool.described("Drifted.");
         if (adapterMode) {
-            ObjectNode baseline = Manifests.adapter(SERVER, "jira", "0.1.0", tool);
+            ObjectNode baseline = Manifests.adapter(SERVER, SYSTEM, "0.1.0", tool);
             adapterService.submitAdapter(requestId, SERVER, baseline);
             adapterService.approve(requestId, SERVER, tool.name(), hash(baseline, tool.name()), false, new Classification("READ_ONLY", "read"), admin());
         } else {
-            ObjectNode baseline = Manifests.jira("0.1.0", tool);
-            starterService.register(requestId, SERVER, baseline, "ci");
+            ObjectNode baseline = nativeManifest("0.1.0", tool);
+            registerNative(baseline);
             starterService.approve(requestId, SERVER, tool.name(), hash(baseline, tool.name()), false, admin());
         }
         McpServer server = (adapterMode ? adapterServers : starterServers).find(SERVER).orElseThrow();
@@ -533,14 +565,14 @@ class RegistryAdapterTest extends GatewayTestBase {
             hash = hash(manifest, "update_issue");
             answer = adapterService.approve(requestId, SERVER, "update_issue", hash, accept, classification, admin());
         } else {
-            ObjectNode manifest = Manifests.jira("0.1.0", Tool.update("update_issue"));
+            ObjectNode manifest = nativeManifest("0.1.0", Tool.update("update_issue"));
             if (input.path("entry").path("riskLowered").asBoolean(false)) {
-                ObjectNode destructive = Manifests.jira("0.1.0", Tool.destructive("update_issue"));
-                starterService.register(requestId, SERVER, destructive, "ci");
+                ObjectNode destructive = nativeManifest("0.1.0", Tool.destructive("update_issue"));
+                registerNative(destructive);
                 starterService.approve(requestId, SERVER, "update_issue", hash(destructive, "update_issue"), false, admin());
-                manifest = Manifests.jira("0.2.0", Tool.update("update_issue"));
+                manifest = nativeManifest("0.2.0", Tool.update("update_issue"));
             }
-            starterService.register(requestId, SERVER, manifest, "ci");
+            registerNative(manifest);
             hash = hash(manifest, "update_issue");
             answer = starterService.approve(requestId, SERVER, "update_issue", hash, accept, classification, admin());
         }

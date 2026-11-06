@@ -133,7 +133,7 @@ class AdminApiTest extends GatewayTestBase {
         assertThat(jira.path("version").asString()).isEqualTo("1.0.0");
         JsonNode getIssue = tool(jira, "jira__get_issue");
         assertThat(getIssue.path("title").asString()).isEqualTo("Get issue");
-        assertThat(getIssue.path("description").asString()).isEqualTo("Returns one Jira issue by key.");
+        assertThat(getIssue.path("description").asString()).isEqualTo("Returns the key and summary of one Jira issue.");
         assertThat(getIssue.path("risk").asString()).isEqualTo("READ_ONLY");
         assertThat(getIssue.path("action").asString()).isEqualTo("read");
         assertThat(getIssue.path("access").asString()).isEqualTo("granted");
@@ -156,7 +156,7 @@ class AdminApiTest extends GatewayTestBase {
                 .as("denied for lack of a group is not disabled: the portal offers to ask for access").isFalse();
         assertThat(tool(server(catalog, "mcp-confluence"), "confluence__search_issues").path("access").asString())
                 .isEqualTo("granted");
-        assertThat(tool(server(catalog, "mcp-confluence"), "confluence__search_issues").has("title")).isFalse();
+        assertThat(tool(server(catalog, "mcp-confluence"), "confluence__search_issues").path("title").asString()).isEqualTo("search_issues");
     }
 
     @Test

@@ -21,7 +21,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 /** Every relaxation of the production rules needs the devstack profile, acknowledged twice; without it the start is refused. */
 class DevstackGuardTest {
 
-    /** A production-shaped configuration: https everywhere, state directory, no test keys, manifests required. */
+    /** A production-shaped configuration: https everywhere, shared keys, no test keys, no bootstrap from the server. */
     static Map<String, String> production() {
         Map<String, String> m = new HashMap<>();
         m.put("gateway.public-url", "https://mcp.aiwcorpo.pl");
@@ -34,12 +34,6 @@ class DevstackGuardTest {
         m.put("gateway.broker.url", "https://broker.internal:8443");
         m.put("gateway.broker.tls-name", "broker.internal");
         m.put("gateway.redis.host", "redis");
-        m.put("gateway.policy.main-url", "https://policies.aiwcorpo.pl/policies/main/");
-        m.put("gateway.policy.overrides-url", "https://policies.aiwcorpo.pl/policies/overrides/");
-        m.put("gateway.policy.main-key-id", "policies-main-2026");
-        m.put("gateway.policy.main-key-file", "/main.pem");
-        m.put("gateway.policy.state-dir", "/app/state");
-        m.put("gateway.registry.mode", "required");
         m.put("gateway.internal-jwt.allow-test-keys", "false");
         m.put("gateway.internal-jwt.keys-file", "/keys/internal-jwt.jwks");
         m.put("gateway.activity.cursor-key", "a-key-shared-by-every-instance");
@@ -50,12 +44,6 @@ class DevstackGuardTest {
         m.put("gateway.sessions.client-idle-timeout", "1h");
         m.put("gateway.upstream.timeout", "30s");
         m.put("gateway.metrics.allowed-client-cns[0]", "mcp-prometheus");
-        m.put("gateway.servers.mcp-jira.system", "jira");
-        m.put("gateway.servers.mcp-jira.internal-url", "https://mcp-jira.internal:8443/mcp");
-        m.put("gateway.servers.mcp-jira.credential.required", "true");
-        m.put("gateway.servers.mcp-jira.credential.accepted-types[0]", "user-secret");
-        m.put("gateway.servers.mcp-jira.tools.get_issue.risk", "READ_ONLY");
-        m.put("gateway.servers.mcp-jira.tools.get_issue.description", "Gets.");
         return m;
     }
 
@@ -66,16 +54,11 @@ class DevstackGuardTest {
     /** One relaxation each: the setting and the text that names it in the refusal. */
     private static final Map<String, Map<String, String>> RELAXATIONS = Map.of(
             "gateway.internal-jwt.allow-test-keys", Map.of("gateway.internal-jwt.allow-test-keys", "true"),
-            "gateway.policy.allow-test-keys", Map.of("gateway.policy.allow-test-keys", "true"),
             "gateway.registry.bootstrap-from-server", Map.of("gateway.registry.bootstrap-from-server", "true"),
-            "static", Map.of("gateway.registry.mode", "static"),
             "gateway.allow-plain-http", Map.of("gateway.allow-plain-http", "true"),
             "gateway.public-url is not https", Map.of("gateway.public-url", "http://localhost:18700"),
             "gateway.oidc.jwks-uri is not https", Map.of("gateway.oidc.jwks-uri", "http://keycloak:8080/certs"),
-            "gateway.oidc.token-uri is not https", Map.of("gateway.oidc.token-uri", "http://keycloak:8080/token"),
-            "gateway.policy.main-url is not https", Map.of("gateway.policy.main-url", "http://policies.internal:8080/policies/main/"),
-            "gateway.policy.overrides-url is not https",
-            Map.of("gateway.policy.overrides-url", "http://policies.internal:8080/policies/overrides/"));
+            "gateway.oidc.token-uri is not https", Map.of("gateway.oidc.token-uri", "http://keycloak:8080/token"));
 
     private static MockEnvironment environment(boolean profile, boolean property) {
         MockEnvironment env = new MockEnvironment();
@@ -169,24 +152,6 @@ class DevstackGuardTest {
             assertThatThrownBy(() -> check(values, false, false, false)).as(key).hasMessageContaining("devstack");
             check(values, true, true, true);
         }
-    }
-
-    @Test
-    void aMissingStateDirectoryIsARelaxation() {
-        Map<String, String> values = production();
-        values.remove("gateway.policy.state-dir");
-        assertThat(DevstackGuard.relaxations(bind(values))).containsExactly("gateway.policy.state-dir is empty");
-        assertThatThrownBy(() -> check(values, false, false, false)).hasMessageContaining("state-dir");
-        check(values, true, true, true);
-    }
-
-    @Test
-    void aServerInStaticModeIsARelaxationToo() {
-        Map<String, String> values = production();
-        values.put("gateway.servers.mcp-jira.manifest", "static");
-        assertThat(DevstackGuard.relaxations(bind(values))).hasSize(1);
-        assertThatThrownBy(() -> check(values, false, true, true)).hasMessageContaining("static");
-        check(values, true, true, true);
     }
 
     @Test

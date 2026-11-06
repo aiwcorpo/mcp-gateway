@@ -37,7 +37,7 @@ public final class GroupRulesAuthorizer implements ToolAuthorizer {
     }
 
     @Override
-    public String policyRevision() {
-        return null;
+    public long policyRevision() {
+        return 1;
     }
 }

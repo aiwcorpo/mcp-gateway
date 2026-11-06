@@ -95,6 +95,7 @@ public final class TestMcpServer implements AutoCloseable {
     private final HttpClient jira;
     private final Map<String, Session> sessions = new ConcurrentHashMap<>();
     private final List<RecordedRequest> recorded = new CopyOnWriteArrayList<>();
+    private final List<RecordedRequest> manifestReads = new CopyOnWriteArrayList<>();
 
     public TestMcpServer(Config config, SSLContext sslContext, InetSocketAddress address) throws IOException {
         this.config = Objects.requireNonNull(config);
@@ -128,8 +129,14 @@ public final class TestMcpServer implements AutoCloseable {
         return List.copyOf(recorded);
     }
 
+    /** The reads of {@code GET /mcp-manifest}: the gateway makes one at every check of the definitions of a running server (its policies). */
+    public List<RecordedRequest> manifestReads() {
+        return List.copyOf(manifestReads);
+    }
+
     public void clearRequests() {
         recorded.clear();
+        manifestReads.clear();
     }
 
     /** Forgets every session, as after a restart; clients must initialize again (404 on the old id). */
@@ -194,6 +201,7 @@ public final class TestMcpServer implements AutoCloseable {
     private final java.util.concurrent.atomic.AtomicInteger callsInFlight = new java.util.concurrent.atomic.AtomicInteger();
     private final java.util.concurrent.atomic.AtomicInteger mostCallsInFlight = new java.util.concurrent.atomic.AtomicInteger();
     private volatile int extraTools;
+    private volatile boolean driftedPolicies;
     private volatile boolean updateTool;
     private volatile String reportedVersion = "0.1.0";
 
@@ -234,6 +242,11 @@ public final class TestMcpServer implements AutoCloseable {
         extraTools = count;
     }
 
+    /** From now on the manifest this server serves has one more policy file: a server whose policies changed after they were approved. */
+    public void driftPolicies(boolean drifted) {
+        driftedPolicies = drifted;
+    }
+
     /** The {@code serverInfo.version} of the next {@code initialize} (a value the server controls). */
     public void reportVersion(String version) {
         reportedVersion = version;
@@ -244,11 +257,11 @@ public final class TestMcpServer implements AutoCloseable {
         InternalJwtVerifier.Result auth = verifier.verify(first(headers, "authorization"), first(headers, "x-request-id"),
                 InternalJwtVerifier.RequestRule.forHttp("GET", "/mcp-manifest"));
         if (!auth.valid()) {
-            record(exchange, headers, body, null, null, 401, auth.reason(), null, null);
+            manifestReads.add(new RecordedRequest("GET", headers, body, null, null, 401, auth.reason(), null, null));
             send(exchange, 401, null, null);
             return;
         }
-        record(exchange, headers, body, null, null, 200, null, (String) auth.claims().get("sub"), null);
+        manifestReads.add(new RecordedRequest("GET", headers, body, null, null, 200, null, (String) auth.claims().get("sub"), null));
         send(exchange, 200, "application/json", JSON.writeValueAsString(manifest()));
     }
 
@@ -264,12 +277,14 @@ public final class TestMcpServer implements AutoCloseable {
         manifest.put("system", system);
         manifest.put("internalUrl", "https://" + config.serverId() + ".internal:" + port() + config.path());
         manifest.set("credential", credential);
-        ArrayNode types = manifest.putArray("resourceTypes");
-        types.addObject().put("type", "Jira::Project").putArray("attributes").add("key");
-        ObjectNode issue = types.addObject();
-        issue.put("type", "Jira::Issue");
-        issue.putArray("attributes").add("key");
-        issue.put("parent", "Jira::Project");
+        pl.aiwcorpo.mcp.gateway.support.Fragments.apply(manifest, system);
+        String namespace = pl.aiwcorpo.mcp.gateway.support.Fragments.namespace(system);
+        if (driftedPolicies) {
+            ObjectNode policies = (ObjectNode) manifest.get("policies");
+            policies.withArray("files").addObject().put("name", "zz-drift.cedar").put("text", "@id(\"" + system + "-drift\") forbid (principal, "
+                    + "action == " + namespace + "::Action::\"read\", resource) when { context.client == \"nobody\" };");
+            manifest.put("policiesHash", pl.aiwcorpo.mcp.gateway.support.Fragments.hash(policies, (ArrayNode) manifest.get("resourceTypes")));
+        }
         ArrayNode tools = manifest.putArray("tools");
         for (JsonNode definition : toolDefinitions(Map.of())) {
             String name = definition.path("name").asString();
@@ -280,7 +295,7 @@ public final class TestMcpServer implements AutoCloseable {
             entry.put("risk", destructive ? "DESTRUCTIVE" : update ? "UPDATE" : "READ_ONLY");
             entry.put("action", destructive ? "delete" : update ? "update" : "read");
             entry.putArray("resourceRefs").addObject().put("argument", "search_issues".equals(name) ? "project" : "issueKey")
-                    .put("type", "search_issues".equals(name) ? "Jira::Project" : "Jira::Issue");
+                    .put("type", namespace + ("search_issues".equals(name) ? "::Project" : "::Issue"));
             entry.set("definition", definition);
             entry.put("definitionHash", pl.aiwcorpo.mcp.manifest.DefinitionHash.compute(JSON.writeValueAsString(definition),
                     JSON.writeValueAsString(entry), system, JSON.writeValueAsString(credential)));
@@ -297,6 +312,8 @@ public final class TestMcpServer implements AutoCloseable {
         manifest.put("source", "adapter");
         String system = config.serverId().replaceFirst("^mcp-", "");
         manifest.putArray("resourceTypes");
+        manifest.remove("policies");
+        manifest.remove("policiesHash");
         for (JsonNode tool : manifest.path("tools")) {
             ObjectNode entry = (ObjectNode) tool;
             entry.remove("risk");

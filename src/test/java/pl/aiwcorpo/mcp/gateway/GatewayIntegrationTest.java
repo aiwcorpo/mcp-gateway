@@ -48,6 +48,9 @@ import tools.jackson.databind.json.JsonMapper;
  */
 class GatewayIntegrationTest extends GatewayTestBase {
 
+    @org.springframework.beans.factory.annotation.Autowired
+    pl.aiwcorpo.mcp.gateway.registry.DefinitionGuard definitions;
+
     // --- C1: OAuth resource server, RFC 9728 -------------------------------------------------------------
 
     @Test
@@ -253,6 +256,8 @@ class GatewayIntegrationTest extends GatewayTestBase {
 
         String bobSession = initialize(bobToken, "2025-11-25");
         rpc(aliceToken, aliceSession, "2025-11-25", "tools/list", null);
+        // The definitions of a server are read once for everyone within the check interval, so Bob's list reads them again only after it.
+        definitions.forget("mcp-jira");
         rpc(bobToken, bobSession, "2025-11-25", "tools/list", null);
         Map<String, String> upstreamSessionOwner = new LinkedHashMap<>();
         for (TestMcpServer.RecordedRequest request : env.jira.requests()) {

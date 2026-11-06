@@ -52,7 +52,7 @@ import tools.jackson.databind.json.JsonMapper;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @org.springframework.test.context.ActiveProfiles("devstack")
-@org.springframework.context.annotation.Import(pl.aiwcorpo.mcp.gateway.support.RateLimitTestConfiguration.class)
+@org.springframework.context.annotation.Import({pl.aiwcorpo.mcp.gateway.support.RateLimitTestConfiguration.class, pl.aiwcorpo.mcp.gateway.support.TestServers.class})
 @ExtendWith(OutputCaptureExtension.class)
 public abstract class GatewayTestBase {
 
@@ -248,5 +248,35 @@ public abstract class GatewayTestBase {
     protected HttpResponse<String> admin(String method, String path, String sub, String username, List<String> groups,
                                          String body) throws Exception {
         return admin(env.bffTls, method, path, env.idp.token(sub, username, groups, "mcp-gateway-admin", "mcp-portal-bff"), body);
+    }
+
+    protected static final String ADMIN_SUB = "3b0d6f2e-91c4-4d7a-8a52-6c1e4f7a9d10";
+
+    /** As {@link #admin(SSLContext, String, String, String, String)} with headers of the request (If-Match, If-None-Match, X-Request-Id). */
+    protected HttpResponse<String> admin(SSLContext tls, String method, String path, String token, String body, Map<String, String> headers)
+            throws Exception {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create("https://localhost:" + env.internalPort + path))
+                .header("Content-Type", "application/json");
+        if (token != null) {
+            builder.header("Authorization", "Bearer " + token);
+        }
+        headers.forEach(builder::header);
+        builder.method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body));
+        return HttpClient.newBuilder().sslContext(tls).build().send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    /** The BFF's call as an administrator (group mcp-platform-admin), with headers. */
+    protected HttpResponse<String> adminCall(String method, String path, String body, Map<String, String> headers) throws Exception {
+        return admin(env.bffTls, method, path, env.idp.token(ADMIN_SUB, "a.admin", List.of("mcp-platform-admin"), "mcp-gateway-admin",
+                "mcp-portal-bff"), body, headers);
+    }
+
+    protected HttpResponse<String> adminCall(String method, String path, String body) throws Exception {
+        return adminCall(method, path, body, Map.of());
+    }
+
+    /** The ETag header of a response, quoted as sent. */
+    protected static String etag(HttpResponse<String> response) {
+        return response.headers().firstValue("ETag").orElseThrow(() -> new AssertionError("no ETag in " + response.body()));
     }
 }

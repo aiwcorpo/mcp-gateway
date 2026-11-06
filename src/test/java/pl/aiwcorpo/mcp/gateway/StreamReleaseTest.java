@@ -44,7 +44,6 @@ class StreamReleaseTest {
         properties.remove("gateway.internal-endpoint.port");
         properties.put("gateway.mcp.max-open-streams", "1");
         properties.put("gateway.mcp.sse-heartbeat-interval", HEARTBEAT_SECONDS + "s");
-        properties.put("gateway.policy.state-dir", Files.createDirectories(dir.resolve("state")).toString());
         gateway = GatewayProcess.start("streams-release", dir, properties, GatewayProcess.freePort(), GatewayProcess.freePort());
     }
 
