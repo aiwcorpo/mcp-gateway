@@ -166,4 +166,53 @@ class AdditionalGroupTest extends GatewayTestBase {
         assertThat(listed(token("mcp-ops-read"))).doesNotContain("ops__search_issues");
         assertThat(listed(token("mcp-ops-read", "mcp-ops-ops"))).contains("ops__search_issues");
     }
+
+    private ObjectNode without(ObjectNode manifest, String tool) {
+        tools.jackson.databind.node.ArrayNode tools = (tools.jackson.databind.node.ArrayNode) manifest.get("tools");
+        for (int i = tools.size() - 1; i >= 0; i--) {
+            if (tool.equals(tools.get(i).path("name").asString())) {
+                tools.remove(i);
+            }
+        }
+        return manifest;
+    }
+
+    private String status(String tool) throws Exception {
+        return tool(JSON.readTree(adminCall("GET", "/admin/v1/registry/servers", null).body()), tool).path("status").asString();
+    }
+
+    @Test
+    void aToolRemovedAndRegisteredAgainWithoutItsGroupWaitsAndWithTheSameGroupFollowsTheNormalRule() throws Exception {
+        assertThat(register(without(ops.manifest(), "get_issue")).statusCode()).isEqualTo(200);
+        ops.additionalGroup("get_issue", null);
+        assertThat(register(ops.manifest()).statusCode()).isEqualTo(200);
+        assertThat(status("get_issue")).as("a new READ_ONLY tool, but the group it had is a floor that outlives the tool").isEqualTo("pending_approval");
+        assertThat(listed(token("mcp-ops-read"))).as("never served without the group").doesNotContain("ops__get_issue");
+
+        assertThat(register(without(ops.manifest(), "get_issue")).statusCode()).isEqualTo(200);
+        ops.additionalGroup("get_issue", "ops");
+        assertThat(register(ops.manifest()).statusCode()).isEqualTo(200);
+        assertThat(status("get_issue")).as("with the same group it is the normal rule: approved").isEqualTo("approved");
+        assertThat(listed(token("mcp-ops-read"))).doesNotContain("ops__get_issue");
+        assertThat(listed(token("mcp-ops-read", "mcp-ops-ops"))).contains("ops__get_issue");
+    }
+
+    @Test
+    void theGroupFloorSurvivesTheDeletionOfTheServer() throws Exception {
+        String body = "{\"serverId\":\"mcp-ops\",\"system\":\"ops\",\"internalUrl\":\"https://127.0.0.1:" + ops.port() + "/mcp\","
+                + "\"credential\":{\"required\":true,\"acceptedTypes\":[\"user-secret\"],\"type\":\"user-secret\"}}";
+        assertThat(adminCall("DELETE", "/admin/v1/servers/mcp-ops", null).statusCode()).isEqualTo(204);
+        assertThat(jdbc.sql("SELECT additional_group FROM registry_group_floor WHERE server_id = 'mcp-ops' AND tool = 'get_issue'")
+                .query(String.class).single()).isEqualTo("mcp-ops-ops");
+        assertThat(adminCall("POST", "/admin/v1/servers", body).statusCode()).isEqualTo(201);
+
+        ops.additionalGroup("get_issue", null);
+        assertThat(register(ops.manifest()).statusCode()).isEqualTo(200);
+
+        assertThat(status("get_issue")).isEqualTo("pending_approval");
+        String hash = tool(JSON.readTree(adminCall("GET", "/admin/v1/registry/servers", null).body()), "get_issue").path("definitionHash").asString();
+        assertThat(adminCall("POST", REGISTRY + "/tools/get_issue/approve", "{\"definitionHash\":\"" + hash + "\"}").statusCode()).isEqualTo(204);
+        assertThat(jdbc.sql("SELECT count(*) FROM registry_group_floor WHERE server_id = 'mcp-ops' AND tool = 'get_issue'").query(Long.class).single())
+                .as("an approval by an administrator updates the floor: here there is none now").isZero();
+    }
 }

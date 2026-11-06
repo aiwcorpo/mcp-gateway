@@ -266,7 +266,7 @@ public final class RegistryService {
             }
             Map<String, RegisteredTool> existing = tx.tools();
             RegistryPlanner.Plan plan = adapterChannel ? RegistryPlanner.planAdapter(manifest, credentialJson, existing)
-                    : RegistryPlanner.plan(manifest, credentialJson, existing, tx.floors(), Map.of(), bootstrap);
+                    : RegistryPlanner.plan(manifest, credentialJson, existing, tx.floors(), Map.of(), tx.groupFloors(), bootstrap);
             if (!plan.lowered().isEmpty()) {
                 return new Written.Lowered(plan.lowered());
             }
@@ -296,11 +296,13 @@ public final class RegistryService {
                 }
             });
             tx.raiseFloors(plan.risks());
+            tx.setGroupFloors(plan.groups());
             return new Written.Done(plan);
         });
         return switch (written) {
             case Written.Done done -> {
-                take(serverId);
+                // The state taken here, not held.get: a reload of another thread that read the server list before this write may have dropped it from held.
+                RegisteredServer taken = take(serverId);
                 done.plan().changes().forEach(change -> changed(requestId, serverId, change));
                 PolicyPlan policyPlan = policyEvent[0];
                 if (policyPlan != null && policyPlan.next() != null) {
@@ -311,7 +313,8 @@ public final class RegistryService {
                 if (policyPlan != null && policyPlan.approves()) {
                     policies.reload();
                 }
-                yield new Result.Accepted(held.get(serverId));
+                RegisteredServer answer = taken != null ? taken : held.get(serverId);
+                yield answer == null ? new Result.UnknownServer() : new Result.Accepted(answer);
             }
             case Written.NamespaceConflict conflict -> {
                 denied(requestId, serverId, ManifestValidator.NAMESPACE_CONFLICT);
@@ -391,6 +394,8 @@ public final class RegistryService {
             }
             tx.saveTool(new RegisteredTool(tool, new RegisteredTool.Approved(entry, pending.hash(), pending.version(),
                     pending.credentialJson(), fromAdapter ? administrator.sub() : null, fromAdapter ? now : null), null));
+            // What an administrator approves is the group the tool keeps from now on, also when it is none.
+            tx.setGroupFloors(Map.of(tool, entry.path("additionalGroup").asString("")));
             if (lowers) {
                 tx.setFloor(tool, risk);
                 return new Approval.Approved(risk);
@@ -847,11 +852,11 @@ public final class RegistryService {
     }
 
     /** Reads the stored state of a server into memory and hands the approved tools to the server registry. */
-    private void take(String serverId) {
+    private RegisteredServer take(String serverId) {
         Optional<RegistryStore.StoredServer> stored = store.findServer(serverId);
         Optional<McpServer> server = servers.find(serverId);
         if (stored.isEmpty() || server.isEmpty()) {
-            return;
+            return null;
         }
         RegisteredServer state = read(stored.get());
         List<Rejection> rejections = new java.util.ArrayList<>(validator.check(state.manifest(), server.get()));
@@ -871,6 +876,7 @@ public final class RegistryService {
             guard.forget(serverId);
             onChange.run();
         }
+        return state;
     }
 
     private void changed(String requestId, String serverId, RegistryPlanner.Change change) {

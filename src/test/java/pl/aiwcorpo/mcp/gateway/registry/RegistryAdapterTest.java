@@ -523,7 +523,7 @@ class RegistryAdapterTest extends GatewayTestBase {
     @TestFactory
     List<DynamicTest> theApprovalsOfTheVectors() {
         List<Vectors.Vector> vectors = Vectors.of("registry-approval");
-        assertThat(vectors).hasSize(28);
+        assertThat(vectors).hasSize(32);
         List<DynamicTest> tests = new ArrayList<>();
         for (Vectors.Vector vector : vectors) {
             if (vector.document().path("input").has("entry")) {

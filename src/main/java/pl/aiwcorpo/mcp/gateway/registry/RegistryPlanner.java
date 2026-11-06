@@ -27,7 +27,12 @@ public final class RegistryPlanner {
      * @param lowered tools whose risk is below the minimum of the gateway configuration; when not empty nothing may be written
      * @param risks risk ordinal of every tool this registration approved or submitted, for the floors: the highest risk ever reported for a tool
      */
-    public record Plan(Map<String, RegisteredTool> tools, List<Change> changes, List<String> lowered, Map<String, Integer> risks) {
+    public record Plan(Map<String, RegisteredTool> tools, List<Change> changes, List<String> lowered, Map<String, Integer> risks,
+                       Map<String, String> groups) {
+
+        public Plan(Map<String, RegisteredTool> tools, List<Change> changes, List<String> lowered, Map<String, Integer> risks) {
+            this(tools, changes, lowered, risks, Map.of());
+        }
     }
 
     private RegistryPlanner() {
@@ -74,26 +79,41 @@ public final class RegistryPlanner {
      * not approve (CC-245): the entry waits for an administrator, whatever its risk, and the approved one stays in force. Adding a group only
      * narrows access and follows the normal rule.
      */
-    private static boolean dropsAdditionalGroup(RegisteredTool.Approved approved, JsonNode entry) {
-        if (approved == null || !approved.entry().has("additionalGroup")) {
-            return false;
+    private static boolean dropsAdditionalGroup(String floorGroup, JsonNode entry) {
+        return floorGroup != null && !floorGroup.equals(entry.path("additionalGroup").asString(null));
+    }
+
+    /** The group a registration of the tool must keep: the floor, which outlives the tool; for rows from before the floor, the approved entry. */
+    private static String groupFloor(Map<String, String> groupFloors, String name, RegisteredTool.Approved approved) {
+        String floor = groupFloors.get(name);
+        if (floor == null && approved != null) {
+            floor = approved.entry().path("additionalGroup").asString(null);
         }
-        return !approved.entry().get("additionalGroup").asString().equals(entry.path("additionalGroup").asString(null));
+        return floor;
     }
 
     /**
      * @param floors the highest risk ever reported per tool (ordinal), pending entries included (CC-167): a tool below it does not
      *        reject the manifest, it waits for an administrator who accepts the lowering
      * @param configuredMinimum risk ordinal per tool below which a manifest may never go: the operator's configuration
+     * @param groupFloors the additionalGroup an approval last gave each tool, which no registration may remove or change by itself (CC-246),
+     *        also for a tool that was removed and comes back
      * @param approveAll the dev bootstrap: the manifest the server serves is taken whole, there is no reviewed commit behind it
      */
     public static Plan plan(JsonNode manifest, String credentialJson, Map<String, RegisteredTool> existing,
                             Map<String, Integer> floors, Map<String, Integer> configuredMinimum, boolean approveAll) {
+        return plan(manifest, credentialJson, existing, floors, configuredMinimum, Map.of(), approveAll);
+    }
+
+    public static Plan plan(JsonNode manifest, String credentialJson, Map<String, RegisteredTool> existing,
+                            Map<String, Integer> floors, Map<String, Integer> configuredMinimum, Map<String, String> groupFloors,
+                            boolean approveAll) {
         String version = manifest.path("version").asString();
         Map<String, RegisteredTool> next = new LinkedHashMap<>();
         List<Change> changes = new ArrayList<>();
         List<String> lowered = new ArrayList<>();
         Map<String, Integer> risks = new HashMap<>();
+        Map<String, String> groups = new HashMap<>();
         for (JsonNode entry : manifest.path("tools")) {
             String name = entry.path("name").asString();
             String hash = entry.path("definitionHash").asString();
@@ -121,8 +141,9 @@ public final class RegistryPlanner {
                 next.put(name, new RegisteredTool(name, approved, null));
                 continue;
             }
-            if ((risk == Risk.READ_ONLY.ordinal() && !dropsAdditionalGroup(approved, entry)) || approveAll) {
+            if ((risk == Risk.READ_ONLY.ordinal() && !dropsAdditionalGroup(groupFloor(groupFloors, name, approved), entry)) || approveAll) {
                 next.put(name, new RegisteredTool(name, new RegisteredTool.Approved(entry, hash, version, credentialJson), null));
+                groups.put(name, entry.path("additionalGroup").asString(""));
                 changes.add(new Change("definition_registered", name, hash));
                 risks.put(name, risk);
                 continue;
@@ -143,6 +164,6 @@ public final class RegistryPlanner {
                 changes.add(new Change("tool_removed", name, current.approved() != null ? current.approved().hash() : current.pending().hash()));
             }
         });
-        return new Plan(next, List.copyOf(changes), List.copyOf(lowered), risks);
+        return new Plan(next, List.copyOf(changes), List.copyOf(lowered), risks, groups);
     }
 }

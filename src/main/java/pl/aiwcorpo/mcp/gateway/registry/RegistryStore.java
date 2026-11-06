@@ -189,6 +189,24 @@ public class RegistryStore {
             return RegistryStore.this.tools(serverId);
         }
 
+        public Map<String, String> groupFloors() {
+            return RegistryStore.this.groupFloors(serverId);
+        }
+
+        /** Sets the group floor of tools: a name with an empty group has none any more. */
+        public void setGroupFloors(Map<String, String> groups) {
+            wrote = true;
+            groups.forEach((tool, group) -> {
+                if (group.isEmpty()) {
+                    jdbc.sql("DELETE FROM registry_group_floor WHERE server_id = ? AND tool = ?").params(serverId, tool).update();
+                } else {
+                    jdbc.sql("INSERT INTO registry_group_floor (server_id, tool, additional_group) VALUES (?, ?, ?) "
+                            + "ON CONFLICT (server_id, tool) DO UPDATE SET additional_group = EXCLUDED.additional_group")
+                            .params(serverId, tool, group).update();
+                }
+            });
+        }
+
         public Map<String, Integer> floors() {
             return RegistryStore.this.floors(serverId);
         }
@@ -435,6 +453,14 @@ public class RegistryStore {
         risks.forEach((tool, risk) -> jdbc.sql("INSERT INTO registry_risk_floor (server_id, tool, risk) VALUES (?, ?, ?) "
                 + "ON CONFLICT (server_id, tool) DO UPDATE SET risk = GREATEST(registry_risk_floor.risk, EXCLUDED.risk)")
                 .params(serverId, tool, risk).update());
+    }
+
+    /** The additionalGroup each tool of the server last had approved; it outlives the tool and the server, like the risk floors. */
+    public Map<String, String> groupFloors(String serverId) {
+        Map<String, String> floors = new HashMap<>();
+        jdbc.sql("SELECT tool, additional_group FROM registry_group_floor WHERE server_id = ?").param(serverId)
+                .query((rs, row) -> floors.put(rs.getString("tool"), rs.getString("additional_group"))).list();
+        return floors;
     }
 
     public Map<String, Integer> floors(String serverId) {

@@ -250,7 +250,9 @@ class RegistryPlannerTest {
                 manifest.put("version", "1.1.0");
                 manifest.putArray("tools").add(entryOf(input.path("submitted")));
 
-                RegisteredTool next = plan(manifest, existing).tools().get("get_thing");
+                Map<String, String> groupFloors = input.hasNonNull("groupFloor") ? Map.of("get_thing", input.path("groupFloor").asString()) : Map.of();
+                RegisteredTool next = RegistryPlanner.plan(manifest, CREDENTIAL, existing, floorsOf(existing), Map.of(), groupFloors, false)
+                        .tools().get("get_thing");
 
                 boolean approved = next.pending() == null;
                 assertThat(approved ? "approved" : "pending_approval").as(vector.document().path("description").asString())
@@ -266,7 +268,7 @@ class RegistryPlannerTest {
                 }
             }));
         }
-        assertThat(tests).hasSize(8);
+        assertThat(tests).hasSize(12);
         return tests;
     }
 }

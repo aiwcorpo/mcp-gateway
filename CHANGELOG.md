@@ -53,7 +53,7 @@ platform, and removed again, without restarting anything and without a policy re
   `400 invalid_request`, never `404`; replacing an override needs a fresh MFA (creating one does not); `GET
   /admin/v1/registry/servers/{serverId}/policies` returns the approved policies and declarations (null when nothing is approved); an override
   cannot target a reserved id such as `mcp-gateway`. A tool may name an `additionalGroup` in its manifest entry (CC-242): callers need it next
-  to the group of the risk, and a change of it waits for approval with the definition. A registration that removes or changes the `additionalGroup` of a registered tool holds the entry for an administrator whatever its risk (it would widen access); adding one follows the normal rule (CC-245).
+  to the group of the risk, and a change of it waits for approval with the definition. A registration that removes or changes the `additionalGroup` of a registered tool holds the entry for an administrator whatever its risk (it would widen access); adding one follows the normal rule (CC-245). The group is a floor (`registry_group_floor`, `V13`) like the risk floor: it outlives the tool and the server, so removing the tool and registering it again without the group, or deleting and adding the server, waits as well; an approval by an administrator updates it (CC-246).
 - `deploy/`: no `gateway-state` volume or `/app/state` mount (nothing uses it); the systemd `StateDirectory` stays, it holds the generated secrets.
 - `InvalidationListener` and the other places that listed systems use the generic pattern of a system id.
 - **Removed:** the policy bundles (`mcp-policy-bundle`, `BundleFetcher`, the state directory, `MCP_POLICY_*`), the five static servers and their
