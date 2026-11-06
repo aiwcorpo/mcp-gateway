@@ -39,6 +39,7 @@ public final class AdminOperations {
                 Rule.of("GET", "/admin/v1/policy/overrides/{id}", portalBff),
                 Rule.of("PUT", "/admin/v1/policy/overrides/{id}", portalBff),
                 Rule.of("DELETE", "/admin/v1/policy/overrides/{id}", portalBff),
+                Rule.of("GET", "/admin/v1/registry/servers/{serverId}/policies", portalBff),
                 Rule.of("GET", "/admin/v1/registry/servers/{serverId}/policies/pending", portalBff),
                 Rule.of("POST", "/admin/v1/registry/servers/{serverId}/policies/approve", portalBff),
                 Rule.of("GET", "/admin/v1/kill-switches", portalBff),

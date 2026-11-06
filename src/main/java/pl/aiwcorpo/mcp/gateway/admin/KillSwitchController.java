@@ -43,6 +43,7 @@ import tools.jackson.databind.node.ObjectNode;
 public class KillSwitchController {
 
     private static final Logger log = LoggerFactory.getLogger(KillSwitchController.class);
+    private static final Pattern SERVER_ID = Pattern.compile("^mcp-[a-z][a-z0-9]{1,30}$");
     private static final Pattern TOOL_NAME = Pattern.compile("^[a-z][a-z0-9]*(_[a-z0-9]+)*$");
     private static final int RETRY_AFTER_SECONDS = 10;
 
@@ -122,6 +123,9 @@ public class KillSwitchController {
         if (!administrator(token)) {
             return answers.error(HttpStatus.FORBIDDEN, requestId, "access_denied", null, null);
         }
+        if (!SERVER_ID.matcher(serverId).matches() || (tool != null && !TOOL_NAME.matcher(tool).matches())) {
+            return answers.error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
+        }
         Optional<McpServer> server = servers.find(serverId);
         if (server.isEmpty() || (tool != null && !knows(server.get(), tool))) {
             return answers.error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
@@ -150,7 +154,10 @@ public class KillSwitchController {
             return answers.error(HttpStatus.FORBIDDEN, requestId, "access_denied", null, null);
         }
         // The switch of a tool that left the manifest can still be lifted: the address is checked, the tool is not.
-        if (servers.find(serverId).isEmpty() || (tool != null && !TOOL_NAME.matcher(tool).matches())) {
+        if (!SERVER_ID.matcher(serverId).matches() || (tool != null && !TOOL_NAME.matcher(tool).matches())) {
+            return answers.error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
+        }
+        if (servers.find(serverId).isEmpty()) {
             return answers.error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
         }
         GatewayUser administrator = GatewayUser.from(token);

@@ -402,7 +402,7 @@ public final class PolicyService implements PolicySource {
                                                GatewayUser administrator) {
         if (!OVERRIDE_ID.matcher(id).matches() || body == null || !body.isObject() || body.size() != 2
                 || !body.path("target").isString() || !body.path("text").isString()
-                || !OVERRIDE_TARGET.matcher(body.get("target").asString()).matches()
+                || !OVERRIDE_TARGET.matcher(body.get("target").asString()).matches() || reservedTarget(body.get("target").asString())
                 || body.get("text").asString().isEmpty() || body.get("text").asString().length() > MAX_OVERRIDE_TEXT) {
             return Outcome.rejected("invalid_request", null);
         }
@@ -436,6 +436,11 @@ public final class PolicyService implements PolicySource {
                     .override(id, target, text, null).outcome("denied"));
         }
         return result;
+    }
+
+    /** {@code mcp-<system>} of a reserved system is the name of a platform component, never of a server (the pattern of OverrideTarget, CC-244). */
+    private static boolean reservedTarget(String target) {
+        return target.startsWith("mcp-") && pl.aiwcorpo.mcp.manifest.ReservedSystemIds.isReserved(target.substring("mcp-".length()));
     }
 
     private Outcome<PolicyOverride> validate(String id, String text, String target, Map<String, StoredPolicies> policies,

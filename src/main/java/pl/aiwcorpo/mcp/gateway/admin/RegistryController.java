@@ -117,6 +117,32 @@ public class RegistryController {
         return ok(requestId, body);
     }
 
+    @GetMapping("/{serverId}/policies")
+    public ResponseEntity<String> approvedPolicies(@PathVariable String serverId, @AuthenticationPrincipal Jwt token, HttpServletRequest request) {
+        String requestId = requestId(request);
+        if (!administrator(token)) {
+            return error(HttpStatus.FORBIDDEN, requestId, "access_denied", null, null);
+        }
+        if (!SERVER_ID.matcher(serverId).matches()) {
+            return error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
+        }
+        if (servers.find(serverId).isEmpty()) {
+            return error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
+        }
+        RegistryStore.StoredPolicies stored = registry.policiesOf(serverId).orElse(RegistryStore.StoredPolicies.none());
+        ObjectNode body = json.createObjectNode();
+        if (stored.approved()) {
+            body.put("approvedHash", stored.approvedHash());
+            body.set("approvedPolicies", stored.approvedPolicies());
+            body.set("approvedResourceTypes", stored.approvedResourceTypes());
+        } else {
+            body.putNull("approvedHash");
+            body.putNull("approvedPolicies");
+            body.putNull("approvedResourceTypes");
+        }
+        return ok(requestId, body);
+    }
+
     @GetMapping("/{serverId}/policies/pending")
     public ResponseEntity<String> pendingPolicies(@PathVariable String serverId, @AuthenticationPrincipal Jwt token,
                                                   HttpServletRequest request) {
@@ -124,7 +150,10 @@ public class RegistryController {
         if (!administrator(token)) {
             return error(HttpStatus.FORBIDDEN, requestId, "access_denied", null, null);
         }
-        Optional<RegistryStore.StoredPolicies> found = SERVER_ID.matcher(serverId).matches() ? registry.policiesOf(serverId) : Optional.empty();
+        if (!SERVER_ID.matcher(serverId).matches()) {
+            return error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
+        }
+        Optional<RegistryStore.StoredPolicies> found = registry.policiesOf(serverId);
         if (found.isEmpty() || !found.get().pending()) {
             return error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
         }
@@ -172,7 +201,7 @@ public class RegistryController {
             return error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
         }
         if (!SERVER_ID.matcher(serverId).matches()) {
-            return error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
+            return error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
         }
         return switch (registry.approvePolicies(requestId, serverId, hash, GatewayUser.from(token))) {
             case RegistryService.PoliciesApproval.Approved approved -> {
@@ -196,7 +225,10 @@ public class RegistryController {
         if (!administrator(token)) {
             return error(HttpStatus.FORBIDDEN, requestId, "access_denied", null, null);
         }
-        Optional<RegistryService.PendingView> pending = TOOL_NAME.matcher(tool).matches() ? registry.pending(serverId, tool) : Optional.empty();
+        if (!SERVER_ID.matcher(serverId).matches() || !TOOL_NAME.matcher(tool).matches()) {
+            return error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
+        }
+        Optional<RegistryService.PendingView> pending = registry.pending(serverId, tool);
         if (pending.isEmpty()) {
             return error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
         }
@@ -251,8 +283,8 @@ public class RegistryController {
         if (hash == null || !DEFINITION_HASH.matcher(hash).matches()) {
             return error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
         }
-        if (!TOOL_NAME.matcher(tool).matches()) {
-            return error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
+        if (!SERVER_ID.matcher(serverId).matches() || !TOOL_NAME.matcher(tool).matches()) {
+            return error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
         }
         return switch (registry.approve(requestId, serverId, tool, hash, acceptRiskLowering, classification, GatewayUser.from(token))) {
             case RegistryService.Approval.Approved approved -> ResponseEntity.noContent().header("X-Request-Id", requestId)

@@ -53,7 +53,7 @@ public class ConfirmationAdminController {
                                        HttpServletRequest request) {
         String requestId = requestId(request);
         if (!ID.matcher(confirmationId).matches()) {
-            return error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied");
+            return error(HttpStatus.BAD_REQUEST, requestId, "invalid_request");
         }
         try {
             Optional<PendingCall> call = confirmations.view(GatewayUser.from(token).sub(), confirmationId);
@@ -73,7 +73,7 @@ public class ConfirmationAdminController {
                                          HttpServletRequest request) {
         String requestId = requestId(request);
         if (!ID.matcher(confirmationId).matches()) {
-            return error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied");
+            return error(HttpStatus.BAD_REQUEST, requestId, "invalid_request");
         }
         try {
             return confirmations.markViewed(GatewayUser.from(token).sub(), confirmationId) ? noContent(requestId)
@@ -88,7 +88,7 @@ public class ConfirmationAdminController {
                                          HttpServletRequest request) {
         String requestId = requestId(request);
         if (!ID.matcher(confirmationId).matches()) {
-            return error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied");
+            return error(HttpStatus.BAD_REQUEST, requestId, "invalid_request");
         }
         return switch (confirmations.cancel(GatewayUser.from(token), requestId, confirmationId)) {
             case ConfirmationService.CancelResult.Cancelled c -> noContent(requestId);

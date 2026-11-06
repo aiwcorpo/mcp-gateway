@@ -89,7 +89,10 @@ public class ServerController {
         if (!RegistryController.administrator(token)) {
             return responses.error(HttpStatus.FORBIDDEN, requestId, "access_denied", null, null);
         }
-        return (SERVER_ID.matcher(serverId).matches() ? servers.get(serverId) : java.util.Optional.<ServerAdmin.Item>empty())
+        if (!SERVER_ID.matcher(serverId).matches()) {
+            return responses.error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
+        }
+        return servers.get(serverId)
                 .map(item -> withEtag(HttpStatus.OK, requestId, item).contentType(org.springframework.http.MediaType.APPLICATION_JSON)
                         .body(json.writeValueAsString(servers.view(item.config()))))
                 .orElseGet(() -> responses.error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null));
@@ -107,7 +110,7 @@ public class ServerController {
             return responses.error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
         }
         if (!SERVER_ID.matcher(serverId).matches()) {
-            return responses.error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
+            return responses.error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
         }
         JsonNode body = body(request);
         if (!FreshMfa.onlyDisables(body) && !mfa.fresh(token)) {
@@ -129,7 +132,7 @@ public class ServerController {
             return responses.error(HttpStatus.FORBIDDEN, requestId, "access_denied", null, null);
         }
         if (!SERVER_ID.matcher(serverId).matches()) {
-            return responses.error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
+            return responses.error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
         }
         if (!mfa.fresh(token)) {
             mfa.refused(token, requestId, "deleteServer");

@@ -107,8 +107,10 @@ public class PolicyController {
         if (!RegistryController.administrator(token)) {
             return responses.error(HttpStatus.FORBIDDEN, requestId, "access_denied", null, null);
         }
-        Optional<PolicyOverride> found = OVERRIDE_ID.matcher(id).matches() ? policies.override(id) : Optional.empty();
-        return found.map(override -> withEtag(HttpStatus.OK, requestId, override)).orElseGet(
+        if (!OVERRIDE_ID.matcher(id).matches()) {
+            return responses.error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
+        }
+        return policies.override(id).map(override -> withEtag(HttpStatus.OK, requestId, override)).orElseGet(
                 () -> responses.error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null));
     }
 
@@ -124,6 +126,11 @@ public class PolicyController {
         if ((ifMatch != null && !PolicyService.wellFormedEtag(ifMatch)) || (ifNoneMatch != null && !"*".equals(ifNoneMatch))
                 || !OVERRIDE_ID.matcher(id).matches()) {
             return responses.error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
+        }
+        // Replacing an override with a weaker text widens access like removing it does; creating one only narrows it.
+        if (ifNoneMatch == null && ifMatch != null && !mfa.fresh(token)) {
+            mfa.refused(token, requestId, "putOverride");
+            return responses.error(HttpStatus.UNAUTHORIZED, requestId, "step_up_required", null, null);
         }
         Outcome<PolicyOverride> outcome = policies.putOverride(requestId, id, ifMatch, ifNoneMatch != null, body(request),
                 GatewayUser.from(token));

@@ -49,6 +49,11 @@ platform, and removed again, without restarting anything and without a policy re
 - Audit: override events carry `overrideId`, `overrideTarget` and `textSha256` (`textSha256Before`), `server_updated` the `changedFields`, the
   removal of a server one event for each tool, switch, policy, namespace, override and mapping entry (with its `group`); `policies_approved`
   is written before the data is read back. Overrides that an approval makes invalid are in the audit only (the answer has no place for them).
+- Admin API input rules (CC-243, CC-244): a malformed `If-Match` or `If-None-Match` and a path identifier that does not fit its pattern are
+  `400 invalid_request`, never `404`; replacing an override needs a fresh MFA (creating one does not); `GET
+  /admin/v1/registry/servers/{serverId}/policies` returns the approved policies and declarations (null when nothing is approved); an override
+  cannot target a reserved id such as `mcp-gateway`. A tool may name an `additionalGroup` in its manifest entry (CC-242): callers need it next
+  to the group of the risk, and a change of it waits for approval with the definition.
 - `deploy/`: no `gateway-state` volume or `/app/state` mount (nothing uses it); the systemd `StateDirectory` stays, it holds the generated secrets.
 - `InvalidationListener` and the other places that listed systems use the generic pattern of a system id.
 - **Removed:** the policy bundles (`mcp-policy-bundle`, `BundleFetcher`, the state directory, `MCP_POLICY_*`), the five static servers and their
