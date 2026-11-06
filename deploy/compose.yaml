@@ -5,7 +5,7 @@
 # Closed network: MCP_REGISTRY and MCP_THIRD_PARTY_REGISTRY in a .env file next to this one point the images to your registry.
 
 x-gateway: &gateway
-  image: ${MCP_REGISTRY:-ghcr.io/aiwcorpo}/mcp-gateway:${MCP_GATEWAY_VERSION:-1.1.0}
+  image: ${MCP_REGISTRY:-ghcr.io/aiwcorpo}/mcp-gateway:${MCP_GATEWAY_VERSION:-2.0.0}
   pull_policy: ${PULL_POLICY:-missing}
   read_only: true
   cap_drop: [ALL]
@@ -18,8 +18,6 @@ x-gateway: &gateway
     MCP_REDIS_WAIT_REPLICAS: "1"
     MCP_TLS_KEYSTORE: /certs/keystore.p12
     MCP_TLS_TRUSTSTORE: /certs/truststore.p12
-    MCP_POLICY_MAIN_KEY_FILE: /certs/policies-main.public.pem
-    MCP_POLICY_STATE_DIR: /app/state
   networks: [default, stores]
 
 x-store: &store

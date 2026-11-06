@@ -21,7 +21,6 @@ import java.time.Duration;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
@@ -31,7 +30,6 @@ import com.nimbusds.jose.jwk.JWKSet;
 
 import pl.aiwcorpo.mcp.gateway.jwt.SigningKeys;
 import pl.aiwcorpo.mcp.gateway.tls.InternalTls;
-import pl.aiwcorpo.mcp.policy.bundle.BundleVerifier;
 
 /**
  * First-start setup of one gateway installation, run as {@code java -jar mcp-gateway.jar init [dir]} before the gateway starts
@@ -41,16 +39,15 @@ import pl.aiwcorpo.mcp.policy.bundle.BundleVerifier;
  * once into {@code dir} and kept: the internal JWT keys, the two cursor keys and, when the installation runs its own PostgreSQL and
  * Redis, their passwords. A second run changes nothing. The gateway reads {@code dir/gateway/env} as a Spring config tree.
  *
- * <p>Then it checks what it cannot generate (addresses, certificates, the policy key) and stops with exit code 1 and the likely
- * cause when the gateway could not work. The broker and the MCP servers only warn, because they may be installed after the gateway.
+ * <p>Then it checks what it cannot generate (addresses, certificates) and stops with exit code 1 and the likely cause when the gateway
+ * could not work. The broker only warns, because it may be installed after the gateway. The MCP servers are not checked: they are data
+ * of the registry (admin API), not of this environment.
  */
 public final class GatewaySetup {
 
     static final List<String> REQUIRED = List.of("MCP_PUBLIC_URL", "MCP_OIDC_ISSUER", "MCP_OIDC_JWKS_URI", "MCP_DB_URL",
             "MCP_REDIS_HOST", "MCP_TLS_KEYSTORE", "MCP_TLS_TRUSTSTORE", "MCP_TLS_STORE_PASSWORD", "MCP_BROKER_URL",
-            "MCP_BROKER_TLS_NAME", "MCP_POLICY_MAIN_URL", "MCP_POLICY_MAIN_KEY_ID", "MCP_POLICY_MAIN_KEY_FILE", "MCP_DB_PASSWORD",
-            "MCP_REDIS_PASSWORD");
-    static final List<String> SYSTEMS = List.of("jira", "confluence", "gitlab", "servicedesk", "opensearch");
+            "MCP_BROKER_TLS_NAME", "MCP_DB_PASSWORD", "MCP_REDIS_PASSWORD");
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
 
     private final Map<String, String> env;
@@ -164,7 +161,7 @@ public final class GatewaySetup {
             fail("not set: " + String.join(", ", missing));
             return;
         }
-        for (String name : List.of("MCP_PUBLIC_URL", "MCP_OIDC_JWKS_URI", "MCP_POLICY_MAIN_URL")) {
+        for (String name : List.of("MCP_PUBLIC_URL", "MCP_OIDC_JWKS_URI")) {
             if (!env.get(name).startsWith("https://")) {
                 fail(name + " " + env.get(name) + " must start with https://");
             }
@@ -173,24 +170,14 @@ public final class GatewaySetup {
             fail("MCP_REDIS_WAIT_REPLICAS must be 1 or more, with a Redis replica: the gateway does not start without one");
         }
         InternalTls tls = tls();
-        checkPolicyKey();
+        checkAllowedClients();
         HttpClient jvmTrust = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).followRedirects(HttpClient.Redirect.NEVER).build();
         checkJwks(jvmTrust);
-        checkPolicyServer(jvmTrust);
         if (tls == null) {
             return;
         }
         reach("broker", env.get("MCP_BROKER_URL"), tls.clientFor(env.get("MCP_BROKER_TLS_NAME"), CONNECT_TIMEOUT), false,
                 env.get("MCP_BROKER_TLS_NAME"));
-        for (String system : SYSTEMS) {
-            String upper = system.toUpperCase(Locale.ROOT);
-            String url = env.get("MCP_SERVER_" + upper + "_MCP_URL");
-            if ("false".equals(env.get("MCP_SERVER_" + upper + "_ENABLED")) || blank(url)) {
-                continue;
-            }
-            String tlsName = "mcp-" + system + ".internal";
-            reach("mcp-" + system, url, tls.clientFor(tlsName, CONNECT_TIMEOUT), false, tlsName);
-        }
     }
 
     private InternalTls tls() {
@@ -216,16 +203,19 @@ public final class GatewaySetup {
         }
     }
 
-    private void checkPolicyKey() {
-        Path file = Path.of(env.get("MCP_POLICY_MAIN_KEY_FILE"));
-        try {
-            BundleVerifier.ed25519PublicKeyFromPem(Files.readString(file));
-            ok("policy signing key " + file);
-        } catch (IOException e) {
-            fail("policy signing key " + file + " does not exist or cannot be read");
-        } catch (Exception e) {
-            fail("policy signing key " + file + " is not an Ed25519 public key in PEM: " + rootMessage(e));
+    /** The AI clients that may call tools; the default is claude-code and claude-ai, so only a value that was set can be wrong. */
+    private void checkAllowedClients() {
+        String configured = env.get("MCP_ALLOWED_CLIENTS");
+        if (blank(configured)) {
+            ok("allowed AI clients: claude-code, claude-ai (MCP_ALLOWED_CLIENTS not set)");
+            return;
         }
+        List<String> clients = List.of(configured.split(",")).stream().map(String::strip).toList();
+        if (clients.stream().anyMatch(client -> !client.matches("[A-Za-z0-9._-]{1,128}"))) {
+            fail("MCP_ALLOWED_CLIENTS " + configured + " must be client ids (the azp of the IdP token) separated by commas");
+            return;
+        }
+        ok("allowed AI clients: " + String.join(", ", clients));
     }
 
     private void checkJwks(HttpClient http) {
@@ -243,21 +233,6 @@ public final class GatewaySetup {
         } catch (java.text.ParseException e) {
             fail("identity provider keys " + url + ": not a JWKS document; check MCP_OIDC_JWKS_URI");
         }
-    }
-
-    private void checkPolicyServer(HttpClient http) {
-        String base = env.get("MCP_POLICY_MAIN_URL");
-        String url = (base.endsWith("/") ? base : base + "/") + "latest.json";
-        HttpResponse<String> response = get("policy server", url, http, true, null);
-        if (response == null) {
-            return;
-        }
-        if (response.statusCode() != 200) {
-            fail("policy server " + url + ": HTTP " + response.statusCode() + "; no bundle published there yet, or a wrong "
-                    + "MCP_POLICY_MAIN_URL. The gateway does not start without a policy bundle");
-            return;
-        }
-        ok("policy server " + url);
     }
 
     private void reach(String what, String url, HttpClient http, boolean required, String tlsName) {
