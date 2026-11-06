@@ -4,10 +4,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import pl.aiwcorpo.mcp.cedar.entities.ResourceIds;
 import pl.aiwcorpo.mcp.cedar.entities.ResourceRef;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -23,7 +21,12 @@ public final class OperationDescription {
     static final int MAX_VALUE_CHARS = 200;
     static final int MAX_ARGUMENTS = 50;
     static final int MAX_DESCRIPTION = 1000;
-    private static final Pattern JIRA_ISSUE = Pattern.compile("^([A-Z][A-Z0-9_]*)-[0-9]+$");
+    /**
+     * What an audit event may carry as a resource id (C8 {@code resource.id}). The arguments have been checked against the {@code idPattern}
+     * of their type by the decision that precedes the confirmation; this only keeps a character out of the log that the log format cannot take.
+     */
+    private static final Pattern LOG_SAFE_ID = Pattern.compile(
+            "^[^\\p{Cc}\\p{Cf}\\p{Cs}\\u2028\\u2029\\ufdd0-\\ufdef\\ufffe\\uffff\\u034f\\u115f\\u1160\\u3164\\uffa0\\u2800\\ufe00-\\ufe0f]{1,512}$");
 
     private OperationDescription() {
     }
@@ -76,17 +79,10 @@ public final class OperationDescription {
                 continue;
             }
             String id = value.asString();
-            if (id.length() > 512 || !ResourceIds.isValid(ref.type(), ResourceIds.Kind.RESOURCE, id)) {
+            if (!LOG_SAFE_ID.matcher(id).matches()) {
                 continue;
             }
-            String parent = null;
-            if ("Jira::Issue".equals(ref.type())) {
-                Matcher m = JIRA_ISSUE.matcher(id);
-                if (m.matches()) {
-                    parent = "Jira::Project::" + m.group(1);
-                }
-            }
-            return new PendingCall.Resource(ref.type(), id, parent);
+            return new PendingCall.Resource(ref.type(), id, null);
         }
         return null;
     }

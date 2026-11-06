@@ -18,11 +18,15 @@ import tools.jackson.databind.JsonNode;
 public final class DefinitionGuard {
 
     public enum Verdict {
-        INTACT, CHANGED, NOT_SERVED;
+        INTACT, CHANGED, NOT_SERVED, POLICIES_CHANGED;
 
         /** The reason of the audit event of a refused call. */
         public String reason() {
-            return this == CHANGED ? "definition_changed" : "tool_not_served";
+            return switch (this) {
+                case CHANGED -> "definition_changed";
+                case POLICIES_CHANGED -> "policies_changed";
+                default -> "tool_not_served";
+            };
         }
     }
 

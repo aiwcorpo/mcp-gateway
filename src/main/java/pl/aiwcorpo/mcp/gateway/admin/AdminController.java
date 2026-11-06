@@ -73,7 +73,7 @@ public class AdminController {
             entry.put("version", server.version());
             ArrayNode tools = entry.putArray("tools");
             for (ToolDefinition tool : server.tools().values()) {
-                ToolDecision decision = authorizer.decide(user, server, tool);
+                ToolDecision decision = authorizer.forCatalog(user, server, tool);
                 ObjectNode item = tools.addObject();
                 item.put("name", server.qualifiedName(tool));
                 if (tool.title() != null) {
@@ -85,9 +85,9 @@ public class AdminController {
                 item.put("access", decision.allowed() ? "granted" : "denied");
                 item.set("requiredEntitlements", json.valueToTree(authorizer.requiredEntitlements(server, tool)));
                 // The first reason of the list wins when several apply (CC-194): an emergency switch, a definition waiting for approval,
-                // the configuration or an overrides policy.
+                // the settings of the server or an overrides policy.
                 String disabledBy = killSwitches.status(server.serverId(), tool.name()) == KillSwitches.Status.ON ? "kill_switch"
-                        : server.approvalRequired() && !definitionGuard.lastKnownIntact(server.serverId(), tool.name()) ? "approval"
+                        : !definitionGuard.lastKnownIntact(server.serverId(), tool.name()) ? "approval"
                         : !decision.allowed() && "tool_disabled".equals(decision.reason()) ? "configuration" : null;
                 item.put("disabled", disabledBy != null);
                 if (disabledBy != null) {
@@ -99,13 +99,13 @@ public class AdminController {
         return respond(HttpStatus.OK, requestId(request), body);
     }
 
-    /** The revision of the main bundle in force on this instance (C5 getPolicyStatus); other instances report themselves. */
+    /** The revision of the policy data in force on this instance (C5 getPolicyStatus); other instances report themselves. */
     @GetMapping("/policy/status")
     public ResponseEntity<String> policyStatus(HttpServletRequest request) {
         ObjectNode body = json.createObjectNode();
         ObjectNode instance = body.putArray("instances").addObject();
         instance.put("instanceId", componentId + "-" + instanceName());
-        instance.put("revision", authorizer.policyRevision() == null ? "00000000000000-0000000" : authorizer.policyRevision());
+        instance.put("revision", authorizer.policyRevision());
         return respond(HttpStatus.OK, requestId(request), body);
     }
 

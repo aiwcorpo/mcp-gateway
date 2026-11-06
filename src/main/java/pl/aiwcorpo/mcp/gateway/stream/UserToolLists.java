@@ -82,7 +82,7 @@ public final class UserToolLists {
                 List<ToolDefinition> candidates = server.tools().values().stream()
                         .filter(tool -> server.enabled() && !tool.disabled())
                         .filter(tool -> killSwitches.status(server.serverId(), tool.name()) == KillSwitches.Status.OFF)
-                        .filter(tool -> !server.approvalRequired() || guard.lastKnownIntact(server.serverId(), tool.name()))
+                        .filter(tool -> guard.lastKnownIntact(server.serverId(), tool.name()))
                         .sorted(Comparator.comparing(ToolDefinition::name)).toList();
                 List<ToolDefinition> unknown = candidates.stream()
                         .filter(tool -> !decisions.byFingerprint.containsKey(fingerprint(server, tool))).toList();

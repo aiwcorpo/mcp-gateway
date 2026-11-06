@@ -11,10 +11,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 
 import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitches;
+import pl.aiwcorpo.mcp.gateway.policy.PolicyService;
 
 /**
- * Looks at the counter of changes on a timer. When it moved, another instance (or this one) changed the registry or a switch: the
- * registry is read again, the switches are read and the listeners are told, which is how a streaming session learns that its list may
+ * Looks at the counter of changes on a timer. When it moved, another instance (or this one) changed the registry, the policy data or a
+ * switch: the servers and their manifests are read again, the policy data is read again, the switches are read and the listeners are told, which is how a streaming session learns that its list may
  * have changed (CC-192). The switches are read also when their copy is half way to its end, so that the calls rarely read them.
  */
 public final class ChangeWatcher implements DisposableBean {
@@ -24,6 +25,7 @@ public final class ChangeWatcher implements DisposableBean {
     private final ChangeCounter counter;
     private final RegistryService registry;
     private final KillSwitches switches;
+    private final PolicyService policies;
     private final List<Runnable> listeners;
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread thread = new Thread(r, "change-watcher");
@@ -32,10 +34,12 @@ public final class ChangeWatcher implements DisposableBean {
     });
     private long seen = -1;
 
-    public ChangeWatcher(ChangeCounter counter, RegistryService registry, KillSwitches switches, Duration interval, List<Runnable> listeners) {
+    public ChangeWatcher(ChangeCounter counter, RegistryService registry, KillSwitches switches, PolicyService policies, Duration interval,
+                         List<Runnable> listeners) {
         this.counter = counter;
         this.registry = registry;
         this.switches = switches;
+        this.policies = policies;
         this.listeners = List.copyOf(listeners);
         scheduler.scheduleWithFixedDelay(this::tick, interval.toMillis(), interval.toMillis(), TimeUnit.MILLISECONDS);
     }
@@ -50,6 +54,7 @@ public final class ChangeWatcher implements DisposableBean {
             }
             if (moved) {
                 registry.reloadChanged();
+                policies.reload();
                 seen = now;
                 listeners.forEach(Runnable::run);
             }

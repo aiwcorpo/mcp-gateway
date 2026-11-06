@@ -14,9 +14,12 @@ import org.springframework.dao.DataAccessException;
 import pl.aiwcorpo.mcp.gateway.audit.AuditEvent;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
 import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
+import pl.aiwcorpo.mcp.cedar.entities.ScopeMapping;
 import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
+import pl.aiwcorpo.mcp.gateway.policy.PolicyService;
 import pl.aiwcorpo.mcp.gateway.registry.DefinitionGuard.Verdict;
 import pl.aiwcorpo.mcp.gateway.registry.ManifestValidator.Rejection;
+import pl.aiwcorpo.mcp.gateway.registry.RegistryStore.StoredPolicies;
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
 import pl.aiwcorpo.mcp.gateway.server.Risk;
 import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
@@ -26,11 +29,13 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * The definitions of the servers' tools (C5/C6, CC-097, CC-133, CC-161, CC-162). The pipeline of a reviewed commit registers a
- * manifest: its READ_ONLY tools are approved, its UPDATE and DESTRUCTIVE tools wait for an administrator
- * ({@link #approve}), removed tools are removed, a lowered risk is refused. A definition that a running server presents and that
- * is not the approved one is no registration: it blocks the tool and, unless a pending entry of the pipeline is already there,
- * leaves a pending entry with source {@code server} for the administrator to look at ({@link #observe}).
+ * The definitions of the servers' tools and the policies of the servers (C5/C6, CC-097, CC-133, CC-161, CC-162). The pipeline of a
+ * reviewed commit registers a manifest: its READ_ONLY tools are approved, its UPDATE and DESTRUCTIVE tools wait for an administrator
+ * ({@link #approve}), removed tools are removed, a lowered risk is refused. The policy fragment and the resource type declarations of the
+ * manifest (their {@code policiesHash}) are approved at the level of the server ({@link #approvePolicies}); until they are, the tools of the
+ * server are blocked. A definition that a running server presents and that is not the approved one is no registration: it blocks the tool
+ * and, unless a pending entry of the pipeline is already there, leaves a pending entry with source {@code server} for the administrator to
+ * look at ({@link #observe}); the same holds for the policies ({@link #observePolicies}).
  */
 public final class RegistryService {
 
@@ -87,6 +92,26 @@ public final class RegistryService {
         }
     }
 
+    /** What approving the policies of a server did: the entries of the scope mapping that evaluation now ignores because of it. */
+    public sealed interface PoliciesApproval {
+        record Approved(List<ScopeMapping.Ignored> ignoredMappingEntries, List<String> invalidOverrides) implements PoliciesApproval {
+        }
+
+        record NotFound() implements PoliciesApproval {
+        }
+
+        record HashMismatch() implements PoliciesApproval {
+        }
+
+        record Rejected(String reason, String message) implements PoliciesApproval {
+        }
+    }
+
+    /** The policies a running server presents, against the approved ones. {@code UNKNOWN}: no proof either way (not reachable, nothing approved). */
+    public enum PoliciesVerdict {
+        INTACT, CHANGED, UNKNOWN
+    }
+
     /** The approved and the pending entry of a tool for the diff of the portal. */
     public record PendingView(RegisteredTool.Approved approved, RegisteredTool.Pending pending) {
     }
@@ -100,6 +125,9 @@ public final class RegistryService {
 
         record AlreadyThere() implements Written {
         }
+
+        record NamespaceConflict(String namespace) implements Written {
+        }
     }
 
     private final ServerRegistry servers;
@@ -111,12 +139,14 @@ public final class RegistryService {
     private final AuditLog audit;
     private final String componentId;
     private final JsonMapper json;
+    private final PolicyService policies;
     private final Map<String, RegisteredServer> held = new ConcurrentHashMap<>();
+    private volatile List<ServerConfig> lastConfigs = List.of();
     private volatile Runnable onChange = () -> { };
 
     public RegistryService(ServerRegistry servers, RegistryStore store, ManifestValidator validator, ManifestFetcher fetcher,
                            DefinitionGuard guard, DefinitionCheck definitionCheck, AuditLog audit, String componentId,
-                           JsonMapper json) {
+                           JsonMapper json, PolicyService policies) {
         this.servers = servers;
         this.store = store;
         this.validator = validator;
@@ -126,6 +156,7 @@ public final class RegistryService {
         this.audit = audit;
         this.componentId = componentId;
         this.json = json;
+        this.policies = policies;
     }
 
     /** Told whenever the state this instance holds of a server changed: a registration, an approval, a removal, a change made elsewhere. */
@@ -139,13 +170,28 @@ public final class RegistryService {
      * until a manifest that passes is registered (CC-159).
      */
     public void load() {
+        refreshServers();
         for (RegistryStore.StoredServer stored : store.servers()) {
-            Optional<McpServer> server = servers.find(stored.serverId());
-            if (server.isEmpty() || !server.get().approvalRequired()) {
-                continue;
+            if (servers.find(stored.serverId()).isPresent()) {
+                take(stored.serverId());
             }
-            take(stored.serverId());
         }
+    }
+
+    /**
+     * Takes the list of servers from the database. Returns the servers that were added or whose settings changed: their held manifest is
+     * checked again against the new settings (a credential type the manifest does not accept disables the server, CC-159).
+     */
+    private java.util.Set<String> refreshServers() {
+        List<ServerConfig> configs = store.configs();
+        if (configs.equals(lastConfigs)) {
+            return java.util.Set.of();
+        }
+        java.util.Set<String> changed = new java.util.LinkedHashSet<>();
+        configs.stream().filter(config -> !lastConfigs.contains(config)).forEach(config -> changed.add(config.serverId()));
+        servers.replaceConfigs(configs);
+        lastConfigs = configs;
+        return changed;
     }
 
     public Result register(String requestId, String serverId, JsonNode manifest, String source) {
@@ -171,24 +217,37 @@ public final class RegistryService {
                     ? serverId + " is served by an adapter, which submits its manifest on its own channel"
                     : "the manifest of " + serverId + " says source adapter and the server is not served by an adapter")));
         }
-        if (!server.get().approvalRequired()) {
-            return new Result.Rejected(List.of(new Rejection(null, "this server takes its tools from the gateway configuration")));
-        }
         List<Rejection> rejections = validator.check(manifest, server.get());
         if (!rejections.isEmpty()) {
             denied(requestId, serverId, rejections.stream().map(Rejection::reason).filter(java.util.Objects::nonNull).findFirst().orElse(null));
             return new Result.Rejected(rejections);
         }
         String credentialJson = validator.credentialJson(manifest);
+        PolicyPlan[] policyEvent = {null};
         Written written = store.locked(serverId, tx -> {
             if (bootstrap && tx.server().isPresent()) {
                 return new Written.AlreadyThere();
             }
             Map<String, RegisteredTool> existing = tx.tools();
             RegistryPlanner.Plan plan = adapterChannel ? RegistryPlanner.planAdapter(manifest, credentialJson, existing)
-                    : RegistryPlanner.plan(manifest, credentialJson, existing, tx.floors(), servers.configuredMinimumRisks(serverId), bootstrap);
+                    : RegistryPlanner.plan(manifest, credentialJson, existing, tx.floors(), Map.of(), bootstrap);
             if (!plan.lowered().isEmpty()) {
                 return new Written.Lowered(plan.lowered());
+            }
+            if (!adapterChannel) {
+                // The namespace belongs to the first server that declared it (C5): a second one is refused before anything is written.
+                String namespace = manifest.path("policies").path("namespace").asString();
+                if (!tx.claimNamespace(namespace).equals(serverId)) {
+                    return new Written.NamespaceConflict(namespace);
+                }
+                PolicyPlan policyPlan = planPolicies(tx.policies(), manifest, bootstrap);
+                if (policyPlan.next() != null) {
+                    tx.savePolicies(policyPlan.next());
+                    if (policyPlan.approves()) {
+                        tx.raiseRevision();
+                    }
+                }
+                policyEvent[0] = policyPlan;
             }
             tx.saveServer(manifest, source);
             // The floor of the risk stays when a tool leaves (CC-167): a tool of an adapter that comes back is new and unclassified, and an
@@ -206,7 +265,21 @@ public final class RegistryService {
             case Written.Done done -> {
                 take(serverId);
                 done.plan().changes().forEach(change -> changed(requestId, serverId, change));
+                PolicyPlan policyPlan = policyEvent[0];
+                if (policyPlan != null && policyPlan.next() != null) {
+                    audit.emit(AuditEvent.of("admin_change", requestId, componentId).server(serverId)
+                            .reason(policyPlan.approves() ? "policies_approved" : "policies_submitted").definitionHash(policyPlan.hash())
+                            .outcome("ok"));
+                }
+                if (policyPlan != null && policyPlan.approves()) {
+                    policies.reload();
+                }
                 yield new Result.Accepted(held.get(serverId));
+            }
+            case Written.NamespaceConflict conflict -> {
+                denied(requestId, serverId, ManifestValidator.NAMESPACE_CONFLICT);
+                yield new Result.Rejected(List.of(new Rejection(ManifestValidator.NAMESPACE_CONFLICT, "the namespace " + conflict.namespace()
+                        + " belongs to another server")));
             }
             case Written.Lowered lowered -> {
                 denied(requestId, serverId, "risk_lowered");
@@ -235,7 +308,7 @@ public final class RegistryService {
     public Approval approve(String requestId, String serverId, String tool, String hash, boolean acceptRiskLowering,
                             Classification classification, GatewayUser administrator) {
         Optional<McpServer> server = servers.find(serverId);
-        if (server.isEmpty() || !server.get().approvalRequired()) {
+        if (server.isEmpty()) {
             return new Approval.NotFound();
         }
         java.time.Instant now = java.time.Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
@@ -263,11 +336,10 @@ public final class RegistryService {
                 return new Approval.Rejected("classification_not_allowed", "a tool of an adapter is classified READ_ONLY only");
             }
             int risk = Risk.valueOf(fromAdapter ? classification.risk() : pending.entry().path("risk").asString()).ordinal();
-            int configured = servers.configuredMinimumRisks(serverId).getOrDefault(tool, 0);
             int floor = Math.max(tx.floors().getOrDefault(tool, 0), current.approvedRisk());
             boolean lowers = risk < floor;
-            if (risk < configured || (lowers && !acceptRiskLowering)) {
-                return new Approval.RiskLowered(tool + " lowers risk from " + Risk.values()[Math.max(floor, configured)] + " to " + Risk.values()[risk]);
+            if (lowers && !acceptRiskLowering) {
+                return new Approval.RiskLowered(tool + " lowers risk from " + Risk.values()[floor] + " to " + Risk.values()[risk]);
             }
             JsonNode entry = pending.entry();
             if (fromAdapter) {
@@ -309,6 +381,84 @@ public final class RegistryService {
         return result;
     }
 
+    /** What {@code registration} does to the policies row: the row to write (null: nothing changes) and whether it is an approval. */
+    private record PolicyPlan(StoredPolicies next, boolean approves, String hash) {
+    }
+
+    /**
+     * The policies of a registration (C5 registerServer): the ones that are approved already clear what was pending; the ones that are
+     * pending already stay; any others wait for an administrator, as does the first registration. The dev bootstrap approves what the
+     * server serves (trust on first use).
+     */
+    private PolicyPlan planPolicies(StoredPolicies current, JsonNode manifest, boolean approveNow) {
+        String hash = manifest.path("policiesHash").asString();
+        JsonNode policies = manifest.path("policies");
+        JsonNode resourceTypes = manifest.path("resourceTypes");
+        String version = manifest.path("version").asString();
+        if (approveNow) {
+            return new PolicyPlan(new StoredPolicies(hash, policies, resourceTypes, version, null, null, null, null, null), true, hash);
+        }
+        if (hash.equals(current.approvedHash())) {
+            return new PolicyPlan(current.pending() ? new StoredPolicies(current.approvedHash(), current.approvedPolicies(),
+                    current.approvedResourceTypes(), current.approvedVersion(), null, null, null, null, null) : null, false, hash);
+        }
+        if (hash.equals(current.pendingHash()) && "ci".equals(current.pendingSource())) {
+            return new PolicyPlan(null, false, hash);
+        }
+        return new PolicyPlan(new StoredPolicies(current.approvedHash(), current.approvedPolicies(), current.approvedResourceTypes(),
+                current.approvedVersion(), hash, policies, resourceTypes, version, "ci"), false, hash);
+    }
+
+    /** The policies and resource types of a server, approved and pending, for the diff of the portal. */
+    public Optional<StoredPolicies> policiesOf(String serverId) {
+        RegisteredServer server = held.get(serverId);
+        return server == null || "adapter".equals(server.source()) ? Optional.empty() : Optional.of(server.policies());
+    }
+
+    /**
+     * Approves the pending policies whose hash is {@code hash}. The approval sets the hash the server is served as approved, raises the
+     * revision of the policy data and may make entries of the scope mapping invalid (a narrower pattern, a type that is gone); evaluation
+     * skips them, and the answer lists them. The overrides aimed at the server are checked against the new fragment.
+     */
+    public PoliciesApproval approvePolicies(String requestId, String serverId, String hash, GatewayUser administrator) {
+        Optional<McpServer> server = servers.find(serverId);
+        if (server.isEmpty() || server.get().adapter()) {
+            return new PoliciesApproval.NotFound();
+        }
+        String[] namespaces = new String[2];
+        PoliciesApproval stored = store.locked(serverId, tx -> {
+            StoredPolicies current = tx.policies();
+            if (!current.pending() || !current.pendingHash().equals(hash)) {
+                return new PoliciesApproval.HashMismatch();
+            }
+            String namespace = current.pendingPolicies().path("namespace").asString();
+            if (!tx.claimNamespace(namespace).equals(serverId)) {
+                return new PoliciesApproval.Rejected(ManifestValidator.NAMESPACE_CONFLICT, "the namespace " + namespace + " belongs to another server");
+            }
+            tx.releaseNamespacesExcept(namespace);
+            tx.savePolicies(new StoredPolicies(current.pendingHash(), current.pendingPolicies(), current.pendingResourceTypes(),
+                    current.pendingVersion(), null, null, null, null, null));
+            tx.raiseRevision();
+            namespaces[0] = namespace;
+            namespaces[1] = current.approved() ? current.approvedPolicies().path("namespace").asString() : namespace;
+            return new PoliciesApproval.Approved(List.of(), List.of());
+        });
+        if (!(stored instanceof PoliciesApproval.Approved)) {
+            if (stored instanceof PoliciesApproval.Rejected rejected) {
+                denied(requestId, serverId, rejected.reason());
+            }
+            return stored;
+        }
+        take(serverId);
+        policies.reload();
+        List<ScopeMapping.Ignored> ignored = policies.snapshot().mapping().ignored().stream()
+                .filter(entry -> entry.scope().startsWith(namespaces[0] + "::") || entry.scope().startsWith(namespaces[1] + "::")).toList();
+        List<String> invalidOverrides = policies.revalidateOverrides(requestId, serverId);
+        audit.emit(AuditEvent.of("admin_change", requestId, componentId).userWithoutClient(administrator).server(serverId)
+                .reason("policies_approved").definitionHash(hash).outcome("ok").policyRevision(policies.revision()));
+        return new PoliciesApproval.Approved(ignored, invalidOverrides);
+    }
+
     /** The highest risk ever reported or classified per tool of a server (ordinals), as the approval compares with it. */
     public Map<String, Integer> floors(String serverId) {
         return store.floors(serverId);
@@ -348,7 +498,7 @@ public final class RegistryService {
                 definitionCheck.hashOf(server, tool, presented).ifPresent(hash -> changedHashes.put(tool.name(), hash));
             }
         }
-        if (server.approvalRequired() && needsRecording(server, verdicts, changedHashes)) {
+        if (needsRecording(server, verdicts, changedHashes)) {
             try {
                 recordServerEntries(server, live, serverVersion, verdicts, changedHashes);
             } catch (DataAccessException e) {
@@ -356,6 +506,90 @@ public final class RegistryService {
             }
         }
         return verdicts;
+    }
+
+    /**
+     * Compares the policies a running server presents with the approved ones: its {@code GET /mcp-manifest} is read and the hash of its
+     * policies and resource types is recomputed, never taken from what the manifest claims. A different hash is not a registration: the
+     * policies are left as a pending entry with source {@code server} (unless one of the pipeline is already pending) and the tools of the
+     * server are blocked until an administrator approves them. A server that presents the approved policies again loses its own pending
+     * entry. A server that cannot be read is no proof of a change.
+     */
+    public PoliciesVerdict observePolicies(McpServer server) {
+        RegisteredServer state = held.get(server.serverId());
+        if (server.adapter() || state == null || !state.policies().approved()) {
+            return PoliciesVerdict.UNKNOWN;
+        }
+        Optional<JsonNode> live = fetcher.fetch(server);
+        if (live.isEmpty()) {
+            return PoliciesVerdict.UNKNOWN;
+        }
+        JsonNode manifest = live.get();
+        Optional<String> hash = validator.policiesHashOf(manifest);
+        StoredPolicies current = state.policies();
+        if (hash.isPresent() && hash.get().equals(current.approvedHash())) {
+            if (current.pending() && "server".equals(current.pendingSource())) {
+                dropServerPending(server.serverId());
+            }
+            return PoliciesVerdict.INTACT;
+        }
+        // A manifest that does not hold together, or whose fragment does not validate, is not what was approved either; there is nothing
+        // an administrator could approve, so nothing is recorded.
+        if (hash.isEmpty() || !validator.policiesProblems(manifest).isEmpty()) {
+            return PoliciesVerdict.CHANGED;
+        }
+        boolean recorded = current.pending() && (hash.get().equals(current.pendingHash()) || "ci".equals(current.pendingSource()));
+        if (!recorded) {
+            try {
+                recordServerPolicies(server, manifest, hash.get());
+            } catch (DataAccessException e) {
+                log.warn("{}: the policies the server presented could not be recorded: {}", server.serverId(), e.getClass().getName());
+            }
+        }
+        return PoliciesVerdict.CHANGED;
+    }
+
+    private void recordServerPolicies(McpServer server, JsonNode manifest, String hash) {
+        String reported = manifest.path("version").asString(null);
+        boolean valid = reported != null && SEMVER.matcher(reported).matches();
+        boolean[] touched = {false};
+        store.locked(server.serverId(), tx -> {
+            StoredPolicies current = tx.policies();
+            if (!current.approved() || hash.equals(current.approvedHash())
+                    || (current.pending() && (hash.equals(current.pendingHash()) || "ci".equals(current.pendingSource())))) {
+                return null;
+            }
+            String namespace = manifest.path("policies").path("namespace").asString();
+            if (!tx.claimNamespace(namespace).equals(server.serverId())) {
+                return null;
+            }
+            tx.savePolicies(new StoredPolicies(current.approvedHash(), current.approvedPolicies(), current.approvedResourceTypes(),
+                    current.approvedVersion(), hash, manifest.get("policies"), manifest.get("resourceTypes"),
+                    valid ? reported : "0.0.0-invalid", "server"));
+            touched[0] = true;
+            return null;
+        });
+        if (touched[0]) {
+            take(server.serverId());
+            audit.emit(AuditEvent.of("admin_change", UuidV7.next(), componentId).server(server.serverId()).reason("policies_changed")
+                    .definitionHash(hash).outcome("ok"));
+        }
+    }
+
+    private void dropServerPending(String serverId) {
+        boolean[] touched = {false};
+        store.locked(serverId, tx -> {
+            StoredPolicies current = tx.policies();
+            if (current.approved() && current.pending() && "server".equals(current.pendingSource())) {
+                tx.savePolicies(new StoredPolicies(current.approvedHash(), current.approvedPolicies(), current.approvedResourceTypes(),
+                        current.approvedVersion(), null, null, null, null, null));
+                touched[0] = true;
+            }
+            return null;
+        });
+        if (touched[0]) {
+            take(serverId);
+        }
     }
 
     /** What a running server may leave behind: for a server behind an adapter its own definitions come from the adapter (CC-206). */
@@ -435,7 +669,7 @@ public final class RegistryService {
      * meanwhile, is never replaced by what a server says about itself.
      */
     public void bootstrapMissing() {
-        for (McpServer server : servers.requiringApproval()) {
+        for (McpServer server : servers.all()) {
             if (server.adapter() || held.containsKey(server.serverId()) || !server.enabled() || store.findServer(server.serverId()).isPresent()) {
                 continue;
             }
@@ -451,43 +685,61 @@ public final class RegistryService {
     }
 
     /**
+     * A server whose policies are pending because it presented them itself is looked at again without waiting for a user: its tools are
+     * blocked, so no list of a user reads its definitions, and one that went back to the approved policies would stay blocked.
+     */
+    public void recheckServerPolicies() {
+        for (RegisteredServer state : List.copyOf(held.values())) {
+            if (state.policies().pending() && "server".equals(state.policies().pendingSource())) {
+                servers.find(state.serverId()).ifPresent(this::observePolicies);
+            }
+        }
+    }
+
+    /**
      * Takes the stored state that another instance wrote or changed since this one looked (HA: instances share the tables, not
      * memory). A state that is unchanged is left alone.
      */
     public void reloadChanged() {
+        java.util.Set<String> reconfigured = refreshServers();
         List<RegistryStore.StoredServer> all = store.servers();
         for (RegistryStore.StoredServer stored : all) {
             RegisteredServer now = read(stored);
             RegisteredServer before = held.get(stored.serverId());
-            if (now != null && !now.equals(before)) {
+            if (now != null && (!now.equals(before) || reconfigured.contains(stored.serverId()))) {
                 take(stored.serverId());
             }
         }
-        // A state that is gone from the store (an operator emptied the tables) is gone from here too: nothing stays approved on memory alone.
+        // A state that is gone from the store (a server was removed, or an operator emptied the tables) is gone from here too: nothing
+        // stays approved on memory alone.
         for (String serverId : List.copyOf(held.keySet())) {
-            if (all.stream().noneMatch(stored -> stored.serverId().equals(serverId))) {
+            if (all.stream().noneMatch(stored -> stored.serverId().equals(serverId)) || servers.find(serverId).isEmpty()) {
                 RegisteredServer gone = held.remove(serverId);
-                servers.find(serverId).ifPresent(server -> servers.apply(serverId, server.version(), Map.of(), Map.of(), true));
+                servers.forgetState(serverId);
                 guard.forget(serverId);
                 onChange.run();
                 log.warn("{}: the stored state is gone, {} tools are no longer served", serverId, gone == null ? 0 : gone.tools().size());
             }
         }
+        if (!reconfigured.isEmpty()) {
+            onChange.run();
+        }
     }
 
     private RegisteredServer read(RegistryStore.StoredServer stored) {
-        if (servers.find(stored.serverId()).filter(McpServer::approvalRequired).isEmpty()) {
+        if (servers.find(stored.serverId()).isEmpty()) {
             return null;
         }
         return new RegisteredServer(stored.serverId(), stored.manifest().path("system").asString(),
-                stored.manifest().path("version").asString(), stored.manifest(), stored.source(), store.tools(stored.serverId()));
+                stored.manifest().path("version").asString(), stored.manifest(), stored.source(), store.tools(stored.serverId()),
+                store.policiesOf(stored.serverId()));
     }
 
     /** Reads the stored state of a server into memory and hands the approved tools to the server registry. */
     private void take(String serverId) {
         Optional<RegistryStore.StoredServer> stored = store.findServer(serverId);
         Optional<McpServer> server = servers.find(serverId);
-        if (stored.isEmpty() || server.isEmpty() || !server.get().approvalRequired()) {
+        if (stored.isEmpty() || server.isEmpty()) {
             return;
         }
         RegisteredServer state = read(stored.get());
@@ -497,7 +749,9 @@ public final class RegistryService {
                     String.join("; ", rejections.stream().map(r -> r.reason() == null ? r.message() : r.reason()).toList()));
         }
         RegisteredServer before = held.put(serverId, state);
-        servers.apply(serverId, state.version(), state.tools(), store.floors(serverId), rejections.isEmpty());
+        boolean policiesApproved = server.get().adapter() || (state.policies().approved() && !state.policies().pending());
+        servers.apply(serverId, new ServerRegistry.Applied(state.version(), state.tools(), store.floors(serverId), rejections.isEmpty(),
+                policiesApproved));
         if (!state.equals(before)) {
             guard.forget(serverId);
             onChange.run();

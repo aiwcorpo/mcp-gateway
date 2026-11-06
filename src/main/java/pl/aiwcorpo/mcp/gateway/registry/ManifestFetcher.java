@@ -21,7 +21,10 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-/** {@code GET /mcp-manifest} of a server (C6) over mTLS with the service variant of the internal JWT (C2). */
+/**
+ * {@code GET /mcp-manifest} of a server (C6) over mTLS with the service variant of the internal JWT (C2): at the dev bootstrap, and at every
+ * check of the definitions of a running server, which compares the hash of its policies with the approved one.
+ */
 public class ManifestFetcher {
 
     private static final Logger log = LoggerFactory.getLogger(ManifestFetcher.class);
@@ -30,6 +33,8 @@ public class ManifestFetcher {
     private final InternalTls tls;
     private final InternalTokenIssuer tokens;
     private final JsonMapper json;
+    /** One client per TLS name: the running servers are read on every check of their definitions, which would build a TLS context each time. */
+    private final java.util.Map<String, HttpClient> clients = new java.util.concurrent.ConcurrentHashMap<>();
 
     public ManifestFetcher(InternalTls tls, InternalTokenIssuer tokens, JsonMapper json) {
         this.tls = tls;
@@ -40,7 +45,7 @@ public class ManifestFetcher {
     public Optional<JsonNode> fetch(McpServer server) {
         String requestId = UuidV7.next();
         URI url = server.internalUrl().resolve("/mcp-manifest");
-        HttpClient http = tls.clientFor(server.tlsName(), Duration.ofSeconds(5));
+        HttpClient http = clients.computeIfAbsent(server.tlsName(), name -> tls.clientFor(name, Duration.ofSeconds(5)));
         HttpRequest request = HttpRequest.newBuilder(url).timeout(Duration.ofSeconds(10))
                 .header("Authorization", "Bearer " + tokens.forService(server.serverId(), requestId))
                 .header("X-Request-Id", requestId).header("Accept", "application/json").GET().build();

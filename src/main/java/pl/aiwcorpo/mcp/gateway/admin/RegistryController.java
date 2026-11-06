@@ -25,6 +25,7 @@ import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
 import pl.aiwcorpo.mcp.gateway.registry.RegisteredServer;
 import pl.aiwcorpo.mcp.gateway.registry.RegisteredTool;
 import pl.aiwcorpo.mcp.gateway.registry.RegistryService;
+import pl.aiwcorpo.mcp.gateway.registry.RegistryStore;
 import pl.aiwcorpo.mcp.gateway.server.Risk;
 import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
 import tools.jackson.core.JacksonException;
@@ -46,6 +47,7 @@ public class RegistryController {
     private static final int MAX_BODY = 1024 * 1024;
     private static final Pattern REQUEST_ID = Pattern.compile("^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$");
     private static final Pattern DEFINITION_HASH = Pattern.compile("^sha256:[0-9a-f]{64}$");
+    private static final Pattern SERVER_ID = Pattern.compile("^mcp-[a-z][a-z0-9]{1,30}$");
     private static final Pattern TOOL_NAME = Pattern.compile("^[a-z][a-z0-9]*(_[a-z0-9]+)*$");
     private static final java.util.Set<String> APPROVE_FIELDS = java.util.Set.of("definitionHash", "acceptRiskLowering", "risk", "action");
     private static final java.util.Set<String> RISKS = java.util.Set.of("READ_ONLY", "UPDATE", "DESTRUCTIVE");
@@ -111,6 +113,74 @@ public class RegistryController {
             body.add(item);
         });
         return ok(requestId, body);
+    }
+
+    @GetMapping("/{serverId}/policies/pending")
+    public ResponseEntity<String> pendingPolicies(@PathVariable String serverId, @AuthenticationPrincipal Jwt token,
+                                                  HttpServletRequest request) {
+        String requestId = requestId(request);
+        if (!administrator(token)) {
+            return error(HttpStatus.FORBIDDEN, requestId, "access_denied", null, null);
+        }
+        Optional<RegistryStore.StoredPolicies> found = SERVER_ID.matcher(serverId).matches() ? registry.policiesOf(serverId) : Optional.empty();
+        if (found.isEmpty() || !found.get().pending()) {
+            return error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
+        }
+        RegistryStore.StoredPolicies policies = found.get();
+        ObjectNode body = json.createObjectNode();
+        if (policies.approved()) {
+            body.put("approvedHash", policies.approvedHash());
+            body.set("approvedPolicies", policies.approvedPolicies());
+            body.set("approvedResourceTypes", policies.approvedResourceTypes());
+        } else {
+            body.putNull("approvedHash");
+            body.putNull("approvedPolicies");
+            body.putNull("approvedResourceTypes");
+        }
+        body.put("pendingHash", policies.pendingHash());
+        body.set("pendingPolicies", policies.pendingPolicies());
+        body.set("pendingResourceTypes", policies.pendingResourceTypes());
+        body.put("pendingVersion", policies.pendingVersion());
+        body.put("source", policies.pendingSource());
+        return ok(requestId, body);
+    }
+
+    @PostMapping("/{serverId}/policies/approve")
+    public ResponseEntity<String> approvePolicies(@PathVariable String serverId, @AuthenticationPrincipal Jwt token,
+                                                  HttpServletRequest request) throws IOException {
+        String requestId = requestId(request);
+        if (!administrator(token)) {
+            return error(HttpStatus.FORBIDDEN, requestId, "access_denied", null, null);
+        }
+        byte[] raw = request.getInputStream().readNBytes(4097);
+        String hash = null;
+        try {
+            JsonNode body = raw.length > 4096 ? null : json.readTree(raw);
+            if (body != null && body.isObject() && body.size() == 1 && body.path("policiesHash").isString()) {
+                hash = body.get("policiesHash").asString();
+            }
+        } catch (JacksonException e) {
+            hash = null;
+        }
+        if (hash == null || !DEFINITION_HASH.matcher(hash).matches()) {
+            return error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
+        }
+        if (!SERVER_ID.matcher(serverId).matches()) {
+            return error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
+        }
+        return switch (registry.approvePolicies(requestId, serverId, hash, GatewayUser.from(token))) {
+            case RegistryService.PoliciesApproval.Approved approved -> {
+                ObjectNode body = json.createObjectNode();
+                ArrayNode ignored = body.putArray("ignoredMappingEntries");
+                approved.ignoredMappingEntries().forEach(entry -> ignored.addObject().put("group", entry.group()).put("scope", entry.scope())
+                        .put("reason", entry.reason()));
+                yield ok(requestId, body);
+            }
+            case RegistryService.PoliciesApproval.NotFound notFound -> error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
+            case RegistryService.PoliciesApproval.HashMismatch mismatch -> error(HttpStatus.CONFLICT, requestId, "hash_mismatch", null, null);
+            case RegistryService.PoliciesApproval.Rejected rejected -> error(HttpStatus.UNPROCESSABLE_ENTITY, requestId, "manifest_rejected",
+                    rejected.reason(), rejected.message());
+        };
     }
 
     @GetMapping("/{serverId}/tools/{tool}/pending")
@@ -190,7 +260,7 @@ public class RegistryController {
         };
     }
 
-    private static boolean administrator(Jwt token) {
+    static boolean administrator(Jwt token) {
         return token != null && GatewayUser.from(token).hasGroup(ADMIN_GROUP);
     }
 

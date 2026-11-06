@@ -1,66 +1,43 @@
 package pl.aiwcorpo.mcp.gateway.server;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.regex.Pattern;
 
-import pl.aiwcorpo.mcp.gateway.config.GatewayProperties;
 import pl.aiwcorpo.mcp.gateway.registry.RegisteredTool;
+import pl.aiwcorpo.mcp.gateway.registry.ServerConfig;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * The servers behind the gateway. {@code serverId -> system, internalUrl}, the credential policy and the enabled switch come
- * from the configuration only (C5). The tools come from the approved manifest of the server (C6, registry) when the server is
- * in mode {@code required}, which is the default: until a manifest is approved the server has no tools. In mode {@code static}
- * they come from the configuration (development without manifests).
+ * The servers behind the gateway as this instance holds them. The list of servers is data of the database ({@code servers}, changed
+ * through the admin API and read again by every instance when the change counter moves); the tools of a server come from its approved
+ * manifest (C6). Until a manifest is approved, and while the policies of the server wait for approval, a server has no tools: they are
+ * known, answered with tool_disabled, and listed nowhere (CC-178).
  */
 public final class ServerRegistry {
 
-    private static final Set<String> SYSTEMS = Set.of("jira", "confluence", "gitlab", "servicedesk", "opensearch");
-    private static final Set<String> CREDENTIAL_TYPES = Set.of("user-oauth", "user-secret", "token-exchange", "service-account");
-    private static final Pattern TOOL_NAME = Pattern.compile("^[a-z][a-z0-9]*(_[a-z0-9]+)*$");
-    private static final Pattern SEMVER = Pattern.compile(
-            "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$");
-    private static final Set<String> ACTIONS = Set.of("read", "update", "delete", "admin");
-
-    public static final String MODE_REQUIRED = "required";
-    public static final String MODE_STATIC = "static";
-
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(ServerRegistry.class);
 
-    private final Map<String, GatewayProperties.Server> config;
-    private volatile Map<String, McpServer> servers;
+    /**
+     * What the registry holds of one server's manifest: the tools with their approvals, the highest risks ever approved, whether the
+     * held manifest passes the checks of this instance and whether the policies of the server are the approved ones.
+     */
+    public record Applied(String version, Map<String, RegisteredTool> tools, Map<String, Integer> floors, boolean manifestAccepted,
+                          boolean policiesApproved) {
+    }
+
+    private Map<String, ServerConfig> configs = Map.of();
+    private final Map<String, Applied> applied = new LinkedHashMap<>();
+    private volatile Map<String, McpServer> servers = Map.of();
     /** Tools that have only a pending entry (never approved): known to the registry, answered with tool_disabled (CC-178). */
     private volatile Map<String, Map<String, ToolDefinition>> unapproved = Map.of();
     private volatile io.micrometer.core.instrument.MeterRegistry meters;
-
-    public ServerRegistry(Map<String, GatewayProperties.Server> config, String defaultMode) {
-        if (!Set.of(MODE_REQUIRED, MODE_STATIC).contains(defaultMode)) {
-            throw new IllegalStateException("gateway.registry.mode must be required or static");
-        }
-        this.config = Map.copyOf(config);
-        Map<String, McpServer> built = new LinkedHashMap<>();
-        config.forEach((serverId, server) -> {
-            String mode = server.manifest() == null || server.manifest().isBlank() ? defaultMode : server.manifest();
-            if (!Set.of(MODE_REQUIRED, MODE_STATIC).contains(mode)) {
-                throw new IllegalStateException("gateway.servers." + serverId + ".manifest must be required or static");
-            }
-            if (server.adapter() && !MODE_REQUIRED.equals(mode)) {
-                throw new IllegalStateException("gateway.servers." + serverId + ".adapter needs manifest required: an adapter submits a manifest");
-            }
-            McpServer fromConfig = build(serverId, server);
-            built.put(serverId, MODE_REQUIRED.equals(mode)
-                    ? new McpServer(fromConfig.serverId(), fromConfig.system(), fromConfig.internalUrl(), fromConfig.version(),
-                            fromConfig.enabled(), fromConfig.credential(), Map.of(), true, server.adapter())
-                    : fromConfig);
-        });
-        this.servers = Map.copyOf(built);
-    }
 
     /** Entries that are not served for a reason of their own are counted here (fail-closed, with a log line). */
     public void bindTo(io.micrometer.core.instrument.MeterRegistry registry) {
@@ -75,53 +52,71 @@ public final class ServerRegistry {
         return List.copyOf(servers.values());
     }
 
-    /** Risk ordinal per tool that the configuration names: a manifest may not go below it (fail-closed on a lower risk). */
-    public Map<String, Integer> configuredMinimumRisks(String serverId) {
-        GatewayProperties.Server configured = config.get(serverId);
-        Map<String, Integer> minimum = new LinkedHashMap<>();
-        // The tools of an adapter are read only and the foreign server is not the one the configuration describes: nothing there is a minimum.
-        if (configured != null && !configured.adapter()) {
-            configured.tools().forEach((name, tool) -> {
-                try {
-                    minimum.put(name, Risk.valueOf(tool.risk()).ordinal());
-                } catch (IllegalArgumentException e) {
-                    throw new IllegalStateException("gateway.servers." + serverId + ".tools." + name + ".risk: " + tool.risk());
-                }
-            });
-        }
-        return minimum;
-    }
-
-    /** Servers whose tools wait for an approved manifest, or have one. */
-    public List<McpServer> requiringApproval() {
-        return servers.values().stream().filter(McpServer::approvalRequired).toList();
+    /** The server list this instance serves after a change in the database; a server that is not in it is gone, tools and all. */
+    public synchronized void replaceConfigs(Collection<ServerConfig> next) {
+        Map<String, ServerConfig> byId = new LinkedHashMap<>();
+        next.forEach(config -> byId.put(config.serverId(), config));
+        this.configs = Map.copyOf(byId);
+        applied.keySet().removeIf(serverId -> !byId.containsKey(serverId));
+        rebuild(null);
     }
 
     /**
      * Takes the approved definitions of a server as its tools: metadata (risk, action, references, texts), the approved definition
-     * the client is shown and the hash each live definition must keep. A tool whose approved risk is below the configured minimum or
-     * an earlier approval ({@code approvedFloors}) is not served. The switches of the configuration stay: a disabled server or tool
-     * is disabled whatever the manifest says. {@code manifestAccepted} false (the held manifest fails the checks of the start,
-     * CC-159) disables the server without removing anything.
+     * the client is shown and the hash each live definition must keep. A tool whose approved risk is below an earlier approval
+     * ({@code floors}) is not served. {@code manifestAccepted} false (the held manifest fails the checks of the start, CC-159)
+     * disables the server without removing anything; {@code policiesApproved} false (the policies or the resource types of the
+     * server are not the approved ones) leaves all its tools waiting.
      */
-    public synchronized void apply(String serverId, String version, Map<String, RegisteredTool> registered,
-                                   Map<String, Integer> approvedFloors, boolean manifestAccepted) {
-        McpServer current = servers.get(serverId);
-        GatewayProperties.Server configured = config.get(serverId);
-        if (current == null || configured == null || !current.approvalRequired()) {
-            throw new IllegalStateException("server " + serverId + " takes no manifest");
+    public synchronized void apply(String serverId, Applied state) {
+        if (!configs.containsKey(serverId)) {
+            throw new IllegalStateException("server " + serverId + " is not registered");
         }
-        Map<String, Integer> minimum = new LinkedHashMap<>(configuredMinimumRisks(serverId));
-        approvedFloors.forEach((name, risk) -> minimum.merge(name, risk, Math::max));
-        Map<String, ToolDefinition> tools = new LinkedHashMap<>();
-        Map<String, ToolDefinition> waiting = new LinkedHashMap<>();
-        registered.forEach((name, registeredTool) -> {
+        applied.put(serverId, state);
+        rebuild(serverId);
+    }
+
+    /** Forgets the manifest state of a server, as after the removal of its stored rows; its settings stay. */
+    public synchronized void forgetState(String serverId) {
+        if (applied.remove(serverId) != null) {
+            rebuild(null);
+        }
+    }
+
+    /** @param applying the server whose new state is taken now: entries refused in it are counted once, not on every later rebuild */
+    private void rebuild(String applying) {
+        Map<String, McpServer> built = new LinkedHashMap<>();
+        Map<String, Map<String, ToolDefinition>> waitingByServer = new LinkedHashMap<>();
+        configs.values().stream().sorted(java.util.Comparator.comparing(ServerConfig::serverId)).forEach(config -> {
+            Applied state = applied.get(config.serverId());
+            Map<String, ToolDefinition> tools = new LinkedHashMap<>();
+            Map<String, ToolDefinition> waiting = new LinkedHashMap<>();
+            if (state != null) {
+                tools(config, state, tools, waiting, config.serverId().equals(applying));
+            }
+            waitingByServer.put(config.serverId(), Map.copyOf(waiting));
+            built.put(config.serverId(), new McpServer(config.serverId(), config.system(), config.internalUrl(), config.tlsName(),
+                    state == null ? "0.0.0" : state.version(), config.enabled() && (state == null || state.manifestAccepted()),
+                    credential(config), Map.copyOf(tools), config.adapter()));
+        });
+        this.servers = Map.copyOf(built);
+        this.unapproved = Map.copyOf(waitingByServer);
+    }
+
+    private void tools(ServerConfig config, Applied state, Map<String, ToolDefinition> tools, Map<String, ToolDefinition> waiting,
+                       boolean count) {
+        String serverId = config.serverId();
+        state.tools().forEach((name, registeredTool) -> {
             RegisteredTool.Approved approved = registeredTool.approved();
             if (approved == null) {
                 waiting.put(name, waitingTool(name, registeredTool.pending().entry()));
                 return;
             }
             JsonNode entry = approved.entry();
+            if (!state.policiesApproved()) {
+                waiting.put(name, waitingTool(name, entry));
+                return;
+            }
             if (!entry.path("risk").isString()) {
                 // An approved entry of an adapter always carries the classification of the administrator; one that does not is not served.
                 log.error("{}: tool {} is approved without a classification; it is not served", serverId, name);
@@ -129,11 +124,11 @@ public final class ServerRegistry {
                 return;
             }
             Risk risk = Risk.valueOf(entry.path("risk").asString());
-            if (current.adapter() && risk != Risk.READ_ONLY) {
+            if (config.adapter() && risk != Risk.READ_ONLY) {
                 // A tool of an adapter is read only (CC-227). An entry stored with a write classification (by an instance that still takes it)
                 // is not served, whatever the registry holds: it waits as unclassified.
                 log.error("{}: tool {} of an adapter is approved as {}; adapters are read only, it is not served", serverId, name, risk);
-                if (meters != null) {
+                if (meters != null && count) {
                     meters.counter("mcp_gateway_registry_entries_refused_total", "reason", "adapter_not_read_only").increment();
                 }
                 ObjectNode unclassified = ((ObjectNode) entry).deepCopy();
@@ -142,27 +137,23 @@ public final class ServerRegistry {
                 waiting.put(name, waitingTool(name, unclassified));
                 return;
             }
-            if (risk.ordinal() < minimum.getOrDefault(name, 0)) {
-                // The manifest says less than the configuration or an earlier approval: the tool is left out until it says enough.
+            if (risk.ordinal() < state.floors().getOrDefault(name, 0)) {
+                // The manifest says less than an earlier approval: the tool is left out until it says enough.
                 log.error("{}: tool {} is approved with a risk below the minimum; it is not served", serverId, name);
                 return;
             }
-            GatewayProperties.Tool switches = configured.tools().get(name);
-            java.util.List<pl.aiwcorpo.mcp.cedar.entities.ResourceRef> refs = new java.util.ArrayList<>();
-            entry.path("resourceRefs").forEach(ref -> refs.add(
-                    new pl.aiwcorpo.mcp.cedar.entities.ResourceRef(ref.path("argument").asString(), ref.path("type").asString())));
+            List<pl.aiwcorpo.mcp.cedar.entities.ResourceRef> refs = refs(entry);
             JsonNode definition = entry.path("definition");
             tools.put(name, new ToolDefinition(name, risk, entry.path("action").asString(), definition.path("title").asString(null),
-                    definition.path("description").asString(""), switches != null && switches.disabled(), List.copyOf(refs),
-                    approved.hash(), definition, approved.credentialJson()));
+                    definition.path("description").asString(""), false, refs, approved.hash(), definition, approved.credentialJson()));
         });
-        Map<String, Map<String, ToolDefinition>> nextUnapproved = new LinkedHashMap<>(unapproved);
-        nextUnapproved.put(serverId, Map.copyOf(waiting));
-        this.unapproved = Map.copyOf(nextUnapproved);
-        Map<String, McpServer> next = new LinkedHashMap<>(servers);
-        next.put(serverId, new McpServer(current.serverId(), current.system(), current.internalUrl(), version,
-                config.get(serverId).enabled() && manifestAccepted, current.credential(), Map.copyOf(tools), true, current.adapter()));
-        this.servers = Map.copyOf(next);
+    }
+
+    private static List<pl.aiwcorpo.mcp.cedar.entities.ResourceRef> refs(JsonNode entry) {
+        List<pl.aiwcorpo.mcp.cedar.entities.ResourceRef> refs = new ArrayList<>();
+        entry.path("resourceRefs").forEach(ref -> refs.add(
+                new pl.aiwcorpo.mcp.cedar.entities.ResourceRef(ref.path("argument").asString(), ref.path("type").asString())));
+        return List.copyOf(refs);
     }
 
     /**
@@ -171,14 +162,18 @@ public final class ServerRegistry {
      * not_found_or_denied (invariant 8). It is disabled whatever it is judged as.
      */
     private static ToolDefinition waitingTool(String name, JsonNode entry) {
-        java.util.List<pl.aiwcorpo.mcp.cedar.entities.ResourceRef> refs = new java.util.ArrayList<>();
-        entry.path("resourceRefs").forEach(ref -> refs.add(
-                new pl.aiwcorpo.mcp.cedar.entities.ResourceRef(ref.path("argument").asString(), ref.path("type").asString())));
         boolean classified = entry.path("risk").isString();
         return new ToolDefinition(name, classified ? Risk.valueOf(entry.path("risk").asString()) : Risk.DESTRUCTIVE,
                 classified ? entry.path("action").asString() : "admin",
                 entry.path("definition").path("title").asString(null), entry.path("definition").path("description").asString(""), true,
-                List.copyOf(refs));
+                refs(entry));
+    }
+
+    private static CredentialPolicy credential(ServerConfig config) {
+        ServerConfig.Credential credential = config.credential();
+        Set<String> accepted = new LinkedHashSet<>(credential.acceptedTypes());
+        return new CredentialPolicy(credential.required(), Set.copyOf(accepted), List.of(), "token-exchange".equals(credential.type()),
+                credential.required() ? credential.type() : null);
     }
 
     /** A tool as the client names it ({@code <system>__<tool>}) together with its server. */
@@ -199,7 +194,7 @@ public final class ServerRegistry {
                         .map(tool -> new Resolved(server, tool))));
     }
 
-    /** Empty for a name outside the configuration; the approved manifest (or the static configuration) is the only source. */
+    /** Empty for a name outside the registry; the approved manifest is the only source of tools. */
     public Optional<Resolved> resolve(String qualifiedName) {
         return route(qualifiedName).flatMap(route -> find(route.serverId())
                 .flatMap(server -> server.tool(route.tool()).map(tool -> new Resolved(server, tool))));
@@ -207,94 +202,5 @@ public final class ServerRegistry {
 
     private Optional<ToolRoute> route(String qualifiedName) {
         return ToolRoute.of(qualifiedName, servers.values().stream().map(McpServer::system).toList());
-    }
-
-    private static McpServer build(String serverId, GatewayProperties.Server server) {
-        if (!SYSTEMS.contains(server.system())) {
-            throw new IllegalStateException("gateway.servers." + serverId + ".system: unknown system " + server.system());
-        }
-        if (!serverId.equals("mcp-" + server.system())) {
-            throw new IllegalStateException("gateway.servers." + serverId + ": serverId must be mcp-<system> (C5)");
-        }
-        if (!"https".equals(server.internalUrl().getScheme()) || server.internalUrl().getHost() == null) {
-            throw new IllegalStateException("gateway.servers." + serverId + ".internal-url must be an https URL (mTLS)");
-        }
-        GatewayProperties.Credential credential = server.credential();
-        Set<String> accepted = new LinkedHashSet<>(credential.acceptedTypes());
-        if (credential.required() && accepted.isEmpty()) {
-            throw new IllegalStateException("gateway.servers." + serverId + ".credential.accepted-types is empty");
-        }
-        if (!CREDENTIAL_TYPES.containsAll(accepted)) {
-            throw new IllegalStateException("gateway.servers." + serverId + ".credential.accepted-types: unknown type");
-        }
-        if (accepted.contains("service-account") && accepted.size() > 1) {
-            // context.credentialType is one default type: a mixed set would hide a service account from the rules about it (CC-168).
-            throw new IllegalStateException("gateway.servers." + serverId + ".credential.accepted-types mixes service-account with user types (CC-168)");
-        }
-        if (!SEMVER.matcher(server.version()).matches()) {
-            throw new IllegalStateException("gateway.servers." + serverId + ".version must be a SemVer");
-        }
-        if (server.adapter() && server.tools().values().stream().anyMatch(tool -> !"READ_ONLY".equals(tool.risk()))) {
-            log.warn("gateway.servers.{}.tools: the risks above READ_ONLY are ignored, a server behind an adapter is read only (CC-227)", serverId);
-        }
-        if (server.tools().isEmpty() && !server.adapter()) {
-            throw new IllegalStateException("gateway.servers." + serverId + ".tools is empty: list the tools of the server and their risks");
-        }
-        Map<String, ToolDefinition> tools = new LinkedHashMap<>();
-        server.tools().forEach((name, tool) -> {
-            if (!TOOL_NAME.matcher(name).matches() || name.length() > 64) {
-                throw new IllegalStateException("gateway.servers." + serverId + ".tools: invalid tool name " + name);
-            }
-            Risk risk;
-            try {
-                risk = Risk.valueOf(tool.risk());
-            } catch (IllegalArgumentException e) {
-                throw new IllegalStateException("gateway.servers." + serverId + ".tools." + name + ".risk: " + tool.risk());
-            }
-            String action = tool.action() == null || tool.action().isBlank() ? defaultAction(risk) : tool.action();
-            if (!ACTIONS.contains(action)) {
-                throw new IllegalStateException("gateway.servers." + serverId + ".tools." + name + ".action: " + action);
-            }
-            String title = tool.title() == null || tool.title().isBlank() ? null : tool.title();
-            java.util.List<pl.aiwcorpo.mcp.cedar.entities.ResourceRef> refs = tool.resourceRefs().stream()
-                    .map(ref -> new pl.aiwcorpo.mcp.cedar.entities.ResourceRef(ref.argument(), ref.type())).toList();
-            tools.put(name, new ToolDefinition(name, risk, action, title, tool.description(), tool.disabled(), refs));
-        });
-        return new McpServer(serverId, server.system(), server.internalUrl(), server.version(), server.enabled(),
-                new CredentialPolicy(credential.required(), Set.copyOf(accepted), List.copyOf(credential.scopes()),
-                        credential.tokenExchange(), credentialType(serverId, credential, accepted)),
-                Map.copyOf(tools), false, server.adapter());
-    }
-
-    /** The one type of the system for context.credentialType; ambiguous configuration is an error (fail-closed at start). */
-    private static String credentialType(String serverId, GatewayProperties.Credential credential, Set<String> accepted) {
-        if (!credential.required()) {
-            return null;
-        }
-        String explicit = credential.type() == null || credential.type().isBlank() ? null : credential.type();
-        if (explicit != null) {
-            if (!accepted.contains(explicit)) {
-                throw new IllegalStateException("gateway.servers." + serverId + ".credential.type must be one of accepted-types");
-            }
-            return explicit;
-        }
-        if (credential.tokenExchange()) {
-            if (!accepted.contains("token-exchange")) {
-                throw new IllegalStateException("gateway.servers." + serverId + ".credential.token-exchange needs token-exchange in accepted-types");
-            }
-            return "token-exchange";
-        }
-        if (accepted.size() == 1) {
-            return accepted.iterator().next();
-        }
-        throw new IllegalStateException("gateway.servers." + serverId + ".credential.type is required when several types are accepted");
-    }
-
-    private static String defaultAction(Risk risk) {
-        return switch (risk) {
-            case READ_ONLY -> "read";
-            case UPDATE -> "update";
-            case DESTRUCTIVE -> "delete";
-        };
     }
 }

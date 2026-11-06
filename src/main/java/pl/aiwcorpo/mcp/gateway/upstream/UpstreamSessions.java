@@ -32,7 +32,12 @@ public class UpstreamSessions {
     private record Session(String sub, String sessionId, String protocolVersion, Instant lastUsed) {
     }
 
-    private final Map<String, StreamableHttpClient> clients;
+    /** The client of a server and what it was made for: a change of the address or of the TLS name of the server makes another client. */
+    private record Connection(java.net.URI url, String tlsName, StreamableHttpClient client) {
+    }
+
+    private final Map<String, Connection> clients = new ConcurrentHashMap<>();
+    private final java.util.function.Function<McpServer, StreamableHttpClient> clientFactory;
     private final InternalTokenIssuer tokens;
     private final JsonMapper json;
     private final Duration idleTimeout;
@@ -44,9 +49,13 @@ public class UpstreamSessions {
     private final Map<String, String> serverVersions = new ConcurrentHashMap<>();
     private volatile Instant lastSweep = Instant.EPOCH;
 
-    public UpstreamSessions(Map<String, StreamableHttpClient> clients, InternalTokenIssuer tokens, JsonMapper json,
-                            Duration idleTimeout, Clock clock, String clientName, String clientVersion) {
-        this.clients = Map.copyOf(clients);
+    /**
+     * @param clientFactory makes the HTTP client for a server from its address and TLS name; called again when either changes, because the
+     *                      servers are data of the registry and not fixed at start
+     */
+    public UpstreamSessions(java.util.function.Function<McpServer, StreamableHttpClient> clientFactory, InternalTokenIssuer tokens,
+                            JsonMapper json, Duration idleTimeout, Clock clock, String clientName, String clientVersion) {
+        this.clientFactory = clientFactory;
         this.tokens = tokens;
         this.json = json;
         this.idleTimeout = idleTimeout;
@@ -98,6 +107,13 @@ public class UpstreamSessions {
         throw new UpstreamException(UpstreamException.Kind.PROTOCOL, "session lost twice");
     }
 
+    /** Drops the client and the sessions towards a server that was removed (or is added again later under other settings). */
+    public void forgetServer(String serverId) {
+        clients.remove(serverId);
+        sessions.keySet().removeIf(key -> key.startsWith(serverId + "|"));
+        serverVersions.remove(serverId);
+    }
+
     /** Ends the server sessions whose conversation key starts with the prefix (client DELETE of a legacy session). */
     public void close(String conversationPrefix, GatewayUser user, String requestId) {
         sessions.entrySet().removeIf(entry -> {
@@ -105,7 +121,8 @@ public class UpstreamSessions {
                 return false;
             }
             String serverId = entry.getKey().substring(0, entry.getKey().indexOf('|'));
-            StreamableHttpClient client = clients.get(serverId);
+            Connection connection = clients.get(serverId);
+            StreamableHttpClient client = connection == null ? null : connection.client();
             Session session = entry.getValue();
             if (client != null && session.sessionId() != null) {
                 client.delete(new UpstreamRequest(tokens.forUser(serverId, user, null, requestId), requestId,
@@ -206,11 +223,22 @@ public class UpstreamSessions {
     }
 
     private StreamableHttpClient client(McpServer server) {
-        StreamableHttpClient client = clients.get(server.serverId());
-        if (client == null) {
-            throw new IllegalStateException("no client for " + server.serverId());
+        Connection connection = clients.get(server.serverId());
+        if (connection != null && connection.url().equals(server.internalUrl()) && connection.tlsName().equals(server.tlsName())) {
+            return connection.client();
         }
-        return client;
+        synchronized (clients) {
+            connection = clients.get(server.serverId());
+            if (connection == null || !connection.url().equals(server.internalUrl()) || !connection.tlsName().equals(server.tlsName())) {
+                if (connection != null) {
+                    // Sessions of the old address mean nothing to the new one.
+                    sessions.keySet().removeIf(key -> key.startsWith(server.serverId() + "|"));
+                }
+                connection = new Connection(server.internalUrl(), server.tlsName(), clientFactory.apply(server));
+                clients.put(server.serverId(), connection);
+            }
+            return connection.client();
+        }
     }
 
     private static String key(McpServer server, String conversationKey) {

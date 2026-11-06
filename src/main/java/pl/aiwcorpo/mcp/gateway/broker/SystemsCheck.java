@@ -14,7 +14,7 @@ import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
 import tools.jackson.databind.JsonNode;
 
 /**
- * Start-up comparison of the static server configuration with {@code GET /v1/systems} of the broker (service
+ * Start-up comparison of the registry of servers with {@code GET /v1/systems} of the broker (service
  * variant of C2, CC-030). Only warns: the broker may start later, and every call is checked anyway.
  */
 public class SystemsCheck {

@@ -4,6 +4,7 @@ import java.time.temporal.ChronoUnit;
 
 import pl.aiwcorpo.mcp.gateway.registry.RegisteredServer;
 import pl.aiwcorpo.mcp.gateway.registry.RegisteredTool;
+import pl.aiwcorpo.mcp.gateway.registry.RegistryStore;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
@@ -32,6 +33,17 @@ public final class RegistryViews {
         view.put("serverId", server.serverId());
         view.put("system", server.system());
         view.put("version", server.version());
+        if (!forAdapter && !"adapter".equals(server.source())) {
+            RegistryStore.StoredPolicies policies = server.policies();
+            boolean pending = policies.pending() || !policies.approved();
+            view.put("policiesStatus", pending ? "pending_approval" : "approved");
+            if (policies.approved()) {
+                view.put("policiesHash", policies.approvedHash());
+            }
+            if (pending && policies.pending()) {
+                view.put("pendingPoliciesHash", policies.pendingHash());
+            }
+        }
         ArrayNode tools = view.putArray("tools");
         server.tools().values().forEach(tool -> {
             RegisteredTool.Approved approved = tool.approved();

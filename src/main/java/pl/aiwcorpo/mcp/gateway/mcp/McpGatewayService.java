@@ -229,22 +229,6 @@ public class McpGatewayService {
         if (!allowed.containsValue(true)) {
             return out;
         }
-        if (!server.approvalRequired()) {
-            Map<String, JsonNode> served = new LinkedHashMap<>();
-            for (JsonNode tool : readTools(ctx, server)) {
-                String name = tool.path("name").asString(null);
-                if (name != null) {
-                    served.putIfAbsent(name, tool);
-                }
-            }
-            for (ToolDefinition definition : inScope) {
-                if (served.containsKey(definition.name())
-                        && ListedTools.listed(candidate(server, definition, true, true, allowed))) {
-                    out.add(new ToolsPage.Entry<>(server.qualifiedName(definition), listed(server, definition, served.get(definition.name()))));
-                }
-            }
-            return out;
-        }
         // The list the client sees is built from the approved definitions; the server's own list only decides which of them
         // may be shown now (CC-133).
         DefinitionGuard.Reading reading = definitions(ctx, server);
@@ -376,15 +360,26 @@ public class McpGatewayService {
                 }
             }
             McpServer current = registry.find(server.serverId()).orElse(server);
-            Map<String, Verdict> verdicts = registryService.observe(current, live, upstream.serverVersion(server.serverId()));
+            Map<String, Verdict> observed = registryService.observe(current, live, upstream.serverVersion(server.serverId()));
+            // The policies a server evaluates with are part of what was approved: a server that presents others is blocked as a whole.
+            Map<String, Verdict> verdicts = observed;
+            if (registryService.observePolicies(current) == RegistryService.PoliciesVerdict.CHANGED) {
+                verdicts = new LinkedHashMap<>();
+                for (String name : current.tools().keySet()) {
+                    verdicts.put(name, Verdict.POLICIES_CHANGED);
+                }
+            }
+            Map<String, Verdict> judged = verdicts;
             Optional<DefinitionGuard.Reading> kept = definitionGuard.record(server.serverId(), generation, live,
-                    upstream.serverVersion(server.serverId()), verdicts);
+                    upstream.serverVersion(server.serverId()), judged);
             if (kept.isPresent()) {
-                verdicts.forEach((name, verdict) -> {
+                judged.forEach((name, verdict) -> {
                     if (verdict != Verdict.INTACT) {
                         meters.counter("mcp.gateway.definition.mismatch", "server", server.serverId(), "reason", verdict.reason()).increment();
                         log.warn("{}: the tool {} is blocked ({}): {}", server.serverId(), name, verdict.reason(),
-                                verdict == Verdict.CHANGED ? "the definition differs from the approved one" : "the server does not list it");
+                                verdict == Verdict.CHANGED ? "the definition differs from the approved one"
+                                        : verdict == Verdict.POLICIES_CHANGED ? "the policies of the server differ from the approved ones"
+                                        : "the server does not list it");
                     }
                 });
                 return kept.get();
@@ -577,9 +572,6 @@ public class McpGatewayService {
 
     /** Reads the definitions of a server that has an approved manifest; false when they cannot be read (the server is not available). */
     private boolean readDefinitions(CallContext ctx, McpServer server, ToolDefinition tool, CallState state) {
-        if (!server.approvalRequired()) {
-            return true;
-        }
         try {
             state.definition = definitions(ctx, server).verdicts().getOrDefault(tool.name(), Verdict.NOT_SERVED);
             return true;

@@ -13,18 +13,43 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import pl.aiwcorpo.mcp.gateway.policy.PolicyDataStore;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 /**
- * PostgreSQL tables {@code registry_servers} (the last accepted manifest of a server), {@code registry_tools} (the approved and the
- * pending definition of each tool) and {@code registry_risk_floor} (the highest risk ever approved per tool). Every change goes
+ * PostgreSQL tables {@code servers} (the settings of a server), {@code registry_servers} (the last accepted manifest of a server),
+ * {@code registry_tools} (the approved and the pending definition of each tool), {@code registry_risk_floor} (the highest risk ever
+ * approved per tool), {@code registry_policies} (the approved and the pending policies and resource types of a server) and
+ * {@code registry_namespaces} (which server owns a Cedar namespace). Every change goes
  * through {@link #locked}: an advisory lock of the server for the whole transaction, so a registration, an approval and a report
  * of a live definition cannot interleave, on this instance or on another one.
  */
 public class RegistryStore {
 
     public record StoredServer(String serverId, JsonNode manifest, String source) {
+    }
+
+    /**
+     * The policy fragment and the resource type declarations of a server (the object {@code policies} and the array {@code resourceTypes}
+     * of the manifest) as approved, and as they wait for an administrator; {@code policiesHash} covers both.
+     */
+    public record StoredPolicies(String approvedHash, JsonNode approvedPolicies, JsonNode approvedResourceTypes, String approvedVersion,
+                                 String pendingHash, JsonNode pendingPolicies, JsonNode pendingResourceTypes, String pendingVersion,
+                                 String pendingSource) {
+
+        public static StoredPolicies none() {
+            return new StoredPolicies(null, null, null, null, null, null, null, null, null);
+        }
+
+        public boolean approved() {
+            return approvedHash != null;
+        }
+
+        public boolean pending() {
+            return pendingHash != null;
+        }
     }
 
     /** The state of one server inside a locked transaction. */
@@ -38,6 +63,99 @@ public class RegistryStore {
 
         public Optional<StoredServer> server() {
             return findServer(serverId);
+        }
+
+        public Optional<ServerConfig> config() {
+            return RegistryStore.this.config(serverId);
+        }
+
+        public void saveConfig(ServerConfig config, boolean create) {
+            wrote = true;
+            String credential = json.writeValueAsString(credentialJson(config.credential()));
+            if (create) {
+                jdbc.sql("INSERT INTO servers (server_id, system, internal_url, tls_name, credential, enabled, adapter) "
+                                + "VALUES (?, ?, ?, ?, ?::jsonb, ?, ?)")
+                        .params(config.serverId(), config.system(), config.internalUrl().toString(), config.tlsName(), credential,
+                                config.enabled(), config.adapter()).update();
+            } else {
+                jdbc.sql("UPDATE servers SET internal_url = ?, tls_name = ?, credential = ?::jsonb, enabled = ?, adapter = ?, "
+                                + "updated_at = now() WHERE server_id = ?")
+                        .params(config.internalUrl().toString(), config.tlsName(), credential, config.enabled(), config.adapter(),
+                                config.serverId()).update();
+            }
+        }
+
+        public StoredPolicies policies() {
+            return policiesOf(serverId);
+        }
+
+        public void savePolicies(StoredPolicies policies) {
+            wrote = true;
+            jdbc.sql("INSERT INTO registry_policies (server_id, approved_hash, approved_policies, approved_resource_types, approved_version, "
+                            + "pending_hash, pending_policies, pending_resource_types, pending_version, pending_source) "
+                            + "VALUES (?, ?, ?::jsonb, ?::jsonb, ?, ?, ?::jsonb, ?::jsonb, ?, ?) "
+                            + "ON CONFLICT (server_id) DO UPDATE SET approved_hash = EXCLUDED.approved_hash, "
+                            + "approved_policies = EXCLUDED.approved_policies, approved_resource_types = EXCLUDED.approved_resource_types, "
+                            + "approved_version = EXCLUDED.approved_version, pending_hash = EXCLUDED.pending_hash, "
+                            + "pending_policies = EXCLUDED.pending_policies, pending_resource_types = EXCLUDED.pending_resource_types, "
+                            + "pending_version = EXCLUDED.pending_version, pending_source = EXCLUDED.pending_source")
+                    .params(serverId, policies.approvedHash(), text(policies.approvedPolicies()), text(policies.approvedResourceTypes()),
+                            policies.approvedVersion(), policies.pendingHash(), text(policies.pendingPolicies()),
+                            text(policies.pendingResourceTypes()), policies.pendingVersion(), policies.pendingSource()).update();
+        }
+
+        /** The serverId that owns the namespace after this call: this server when it was free or already its own. */
+        public String claimNamespace(String namespace) {
+            wrote = true;
+            jdbc.sql("INSERT INTO registry_namespaces (namespace, server_id) VALUES (?, ?) ON CONFLICT (namespace) DO NOTHING")
+                    .params(namespace, serverId).update();
+            return jdbc.sql("SELECT server_id FROM registry_namespaces WHERE namespace = ?").param(namespace).query(String.class).single();
+        }
+
+        /** Namespaces this server owns. */
+        public List<String> namespaces() {
+            return jdbc.sql("SELECT namespace FROM registry_namespaces WHERE server_id = ? ORDER BY namespace").param(serverId)
+                    .query(String.class).list();
+        }
+
+        /** An approval of policies that name one namespace frees the others the server held (it declared another one before). */
+        public void releaseNamespacesExcept(String keep) {
+            wrote = true;
+            jdbc.sql("DELETE FROM registry_namespaces WHERE server_id = ? AND namespace <> ?").params(serverId, keep).update();
+        }
+
+        public long raiseRevision() {
+            wrote = true;
+            return policyData.raiseRevision();
+        }
+
+        /** The policy row, locked until the end of the transaction. */
+        public PolicyDataStore.State lockPolicyState() {
+            wrote = true;
+            return policyData.lockState();
+        }
+
+        public void saveScopeMapping(JsonNode document) {
+            wrote = true;
+            policyData.saveScopeMapping(document);
+        }
+
+        public List<pl.aiwcorpo.mcp.gateway.policy.PolicyOverride> overridesOf() {
+            return policyData.overrides().stream().filter(o -> o.target().equals(serverId)).toList();
+        }
+
+        public void deleteOverridesOf() {
+            wrote = true;
+            policyData.deleteOverridesOf(serverId);
+        }
+
+        /** Everything the registry holds of the server, its settings last: no tool, approval, switch, policy or namespace stays. */
+        public void deleteAll() {
+            wrote = true;
+            for (String table : List.of("registry_tools", "registry_risk_floor", "kill_switches", "registry_policies", "registry_namespaces",
+                    "registry_servers", "servers")) {
+                jdbc.sql("DELETE FROM " + table + " WHERE server_id = ?").param(serverId).update();
+            }
         }
 
         public Map<String, RegisteredTool> tools() {
@@ -104,12 +222,79 @@ public class RegistryStore {
     private final JsonMapper json;
     private final TransactionTemplate transactions;
     private final ChangeCounter changes;
+    private final PolicyDataStore policyData;
 
-    public RegistryStore(JdbcClient jdbc, JsonMapper json, PlatformTransactionManager transactionManager, ChangeCounter changes) {
+    public RegistryStore(JdbcClient jdbc, JsonMapper json, PlatformTransactionManager transactionManager, ChangeCounter changes,
+                         PolicyDataStore policyData) {
         this.jdbc = jdbc;
         this.json = json;
         this.transactions = new TransactionTemplate(transactionManager);
         this.changes = changes;
+        this.policyData = policyData;
+    }
+
+    /** Policy data inside a transaction that holds the lock of the {@code policy_state} row (see {@link #policyLocked}). */
+    public final class PolicyTx {
+        private boolean wrote;
+
+        public PolicyDataStore.State state() {
+            return policyData.state();
+        }
+
+        public void saveScopeMapping(JsonNode document) {
+            wrote = true;
+            policyData.saveScopeMapping(document);
+        }
+
+        public List<pl.aiwcorpo.mcp.gateway.policy.PolicyOverride> overrides() {
+            return policyData.overrides();
+        }
+
+        public Optional<pl.aiwcorpo.mcp.gateway.policy.PolicyOverride> override(String id) {
+            return policyData.override(id);
+        }
+
+        public void saveOverride(pl.aiwcorpo.mcp.gateway.policy.PolicyOverride override) {
+            wrote = true;
+            policyData.saveOverride(override);
+        }
+
+        public boolean deleteOverride(String id) {
+            boolean removed = policyData.deleteOverride(id);
+            wrote |= removed;
+            return removed;
+        }
+
+        /** Rows of servers: the registry as the data of this change sees it. */
+        public Map<String, StoredPolicies> allPolicies() {
+            return RegistryStore.this.allPolicies();
+        }
+
+        public List<ServerConfig> configs() {
+            return RegistryStore.this.configs();
+        }
+
+        /** The new revision; every change of policy data raises it exactly once. */
+        public long raiseRevision() {
+            wrote = true;
+            return policyData.raiseRevision();
+        }
+    }
+
+    /**
+     * Runs {@code work} with the {@code policy_state} row locked: writers of the scope mapping and of the overrides go one after another,
+     * and when {@code work} wrote anything the change counter is raised in the same transaction.
+     */
+    public <T> T policyLocked(Function<PolicyTx, T> work) {
+        return transactions.execute(status -> {
+            policyData.lockState();
+            PolicyTx tx = new PolicyTx();
+            T result = work.apply(tx);
+            if (tx.wrote) {
+                changes.raise();
+            }
+            return result;
+        });
     }
 
     /** Runs {@code work} under the lock of the server; when it wrote anything the change counter is raised in the same transaction. */
@@ -123,6 +308,66 @@ public class RegistryStore {
             }
             return result;
         });
+    }
+
+    /** Every server of the registry, in serverId order. */
+    public List<ServerConfig> configs() {
+        return jdbc.sql("SELECT server_id, system, internal_url, tls_name, credential::text AS credential, enabled, adapter FROM servers "
+                + "ORDER BY server_id").query(this::mapConfig).list();
+    }
+
+    public Optional<ServerConfig> config(String serverId) {
+        return jdbc.sql("SELECT server_id, system, internal_url, tls_name, credential::text AS credential, enabled, adapter FROM servers "
+                + "WHERE server_id = ?").param(serverId).query(this::mapConfig).optional();
+    }
+
+    public StoredPolicies policiesOf(String serverId) {
+        return jdbc.sql(POLICIES_SELECT + " WHERE server_id = ?").param(serverId).query(this::policies).optional()
+                .orElse(StoredPolicies.none());
+    }
+
+    /** The policies of every server that has a row. */
+    public Map<String, StoredPolicies> allPolicies() {
+        Map<String, StoredPolicies> all = new LinkedHashMap<>();
+        jdbc.sql(POLICIES_SELECT + " ORDER BY server_id").query((rs, row) -> all.put(rs.getString("server_id"), policies(rs, row))).list();
+        return all;
+    }
+
+    private static final String POLICIES_SELECT = "SELECT server_id, approved_hash, approved_policies::text AS approved_policies, "
+            + "approved_resource_types::text AS approved_resource_types, approved_version, pending_hash, "
+            + "pending_policies::text AS pending_policies, pending_resource_types::text AS pending_resource_types, pending_version, "
+            + "pending_source FROM registry_policies";
+
+    private StoredPolicies policies(ResultSet rs, int row) throws SQLException {
+        return new StoredPolicies(rs.getString("approved_hash"), tree(rs.getString("approved_policies")),
+                tree(rs.getString("approved_resource_types")), rs.getString("approved_version"), rs.getString("pending_hash"),
+                tree(rs.getString("pending_policies")), tree(rs.getString("pending_resource_types")), rs.getString("pending_version"),
+                rs.getString("pending_source"));
+    }
+
+    private JsonNode tree(String text) {
+        return text == null ? null : json.readTree(text);
+    }
+
+    private String text(JsonNode node) {
+        return node == null ? null : json.writeValueAsString(node);
+    }
+
+    private ServerConfig mapConfig(ResultSet rs, int row) throws SQLException {
+        JsonNode credential = json.readTree(rs.getString("credential"));
+        List<String> accepted = new java.util.ArrayList<>();
+        credential.path("acceptedTypes").forEach(type -> accepted.add(type.asString()));
+        return new ServerConfig(rs.getString("server_id"), rs.getString("system"), java.net.URI.create(rs.getString("internal_url")),
+                rs.getString("tls_name"), new ServerConfig.Credential(credential.path("required").asBoolean(true), accepted,
+                        credential.path("type").asString(null)), rs.getBoolean("enabled"), rs.getBoolean("adapter"));
+    }
+
+    private ObjectNode credentialJson(ServerConfig.Credential credential) {
+        ObjectNode node = json.createObjectNode();
+        node.put("required", credential.required());
+        credential.acceptedTypes().forEach(node.putArray("acceptedTypes")::add);
+        node.put("type", credential.type());
+        return node;
     }
 
     public Optional<StoredServer> findServer(String serverId) {

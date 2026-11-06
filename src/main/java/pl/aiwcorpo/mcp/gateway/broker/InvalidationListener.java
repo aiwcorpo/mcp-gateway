@@ -17,6 +17,7 @@ import io.lettuce.core.RedisURI;
 import io.lettuce.core.SocketOptions;
 import io.lettuce.core.pubsub.RedisPubSubAdapter;
 import io.lettuce.core.pubsub.StatefulRedisPubSubConnection;
+import pl.aiwcorpo.mcp.manifest.ReservedSystemIds;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -31,7 +32,8 @@ import tools.jackson.databind.json.JsonMapper;
 public final class InvalidationListener implements SmartLifecycle {
 
     private static final Logger log = LoggerFactory.getLogger(InvalidationListener.class);
-    private static final Set<String> SYSTEMS = Set.of("jira", "confluence", "gitlab", "servicedesk", "opensearch");
+    /** A system id as the registry of servers and the broker have it (C1 SystemId); there is no list of systems. */
+    private static final java.util.regex.Pattern SYSTEM_ID = java.util.regex.Pattern.compile("^[a-z][a-z0-9]{1,30}$");
 
     private final RedisURI uri;
     private final String channel;
@@ -149,7 +151,7 @@ public final class InvalidationListener implements SmartLifecycle {
             JsonNode event = json.readTree(message);
             String sub = event.path("sub").asString(null);
             String system = event.path("system").asString(null);
-            if (sub == null || sub.isEmpty() || !SYSTEMS.contains(system)) {
+            if (sub == null || sub.isEmpty() || system == null || !SYSTEM_ID.matcher(system).matches() || ReservedSystemIds.isReserved(system)) {
                 log.warn("Ignoring malformed {} event", channel);
                 return;
             }
