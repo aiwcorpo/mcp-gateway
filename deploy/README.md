@@ -125,7 +125,9 @@ passwords stay. From 1.x: the servers that `gateway.env` listed are not read any
 ## Virtual machine without Docker
 
 `systemd/` has a unit and its environment file for a gateway from the jar, with your own PostgreSQL and Redis (with a replica).
-The unit runs the same `init` before every start, with the state in `/var/lib/mcp-gateway/secrets`.
+The unit runs the same `init` before every start, with the state in `/var/lib/mcp-gateway/secrets`. With your own PostgreSQL and
+Redis `init` writes no file for them (the passwords are in the environment file). If it did, the files would still be unreachable
+for other users: the unit's `UMask=0077` makes `secrets/` mode 0700, whatever the mode of `/var/lib/mcp-gateway` itself.
 
 ```bash
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin gateway

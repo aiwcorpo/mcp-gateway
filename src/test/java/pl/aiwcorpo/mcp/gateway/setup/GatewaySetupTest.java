@@ -47,10 +47,18 @@ class GatewaySetupTest {
         assertThat(Files.readString(dir.resolve("postgres/password"))).isEqualTo(dbPassword);
         assertThat(Files.readString(dir.resolve("redis/users.acl")))
                 .startsWith("user default off")
-                .contains("user gateway on >" + redisPassword + " resetkeys ~gw:*")
-                .contains("user replication on >");
+                .contains("user gateway on #" + GatewaySetup.sha256(redisPassword) + " resetkeys ~gw:*")
+                .doesNotContain(redisPassword)
+                .contains("user replication on #");
         String replication = Files.readString(dir.resolve("redis/replication-password"));
         assertThat(Files.readString(dir.resolve("redis/replica.conf"))).contains("masteruser replication\nmasterauth " + replication);
+        assertThat(Files.readString(dir.resolve("redis/users.acl"))).doesNotContain(replication);
+        assertThat(Files.getPosixFilePermissions(dir.resolve("redis/users.acl"))).isEqualTo(PosixFilePermissions.fromString("rw-r-----"));
+        assertThat(Files.getPosixFilePermissions(dir.resolve("postgres/password"))).isEqualTo(PosixFilePermissions.fromString("rw-r-----"));
+        assertThat(Files.getPosixFilePermissions(dir.resolve("redis"))).isEqualTo(PosixFilePermissions.fromString("rwxr-x---"));
+        try (var left = Files.list(env)) {
+            assertThat(left).noneMatch(f -> f.getFileName().toString().startsWith("."));
+        }
         assertThat(Files.readString(dir.resolve("redis/primary.conf"))).contains("maxmemory-policy noeviction").doesNotContain(replication);
         assertThat(Files.readString(env.resolve("MCP_INTERNAL_JWT_KEYS_FILE"))).isEqualTo(dir.resolve("gateway/internal-jwt.jwks").toString());
         // The file is what the gateway loads at start.
@@ -66,6 +74,11 @@ class GatewaySetupTest {
         assertThat(Files.readString(env.resolve("MCP_REDIS_PASSWORD"))).isEqualTo(redisPassword);
         assertThat(Files.readString(dir.resolve("redis/replication-password"))).isEqualTo(replication);
         assertThat(Files.readString(dir.resolve("gateway/internal-jwt.jwks"))).isEqualTo(jwks);
+    }
+
+    @Test
+    void sha256IsTheHexDigestRedisExpects() {
+        assertThat(GatewaySetup.sha256("abc")).isEqualTo("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     }
 
     @Test

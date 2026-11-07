@@ -14,11 +14,15 @@ import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.security.cert.CertPathValidatorException;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -104,7 +108,7 @@ public final class GatewaySetup {
         String db = generated(gatewayEnv, "MCP_DB_PASSWORD");
         if (db != null) {
             Path postgres = dir.resolve("postgres").resolve("password");
-            Files.createDirectories(postgres.getParent());
+            createSharedDirectory(postgres.getParent());
             writeShared(postgres, db);
         }
         String redis = generated(gatewayEnv, "MCP_REDIS_PASSWORD");
@@ -113,7 +117,7 @@ public final class GatewaySetup {
         }
         // The checks below see what the gateway will see.
         try (var files = Files.list(gatewayEnv)) {
-            for (Path file : files.toList()) {
+            for (Path file : files.filter(f -> !f.getFileName().toString().startsWith(".")).toList()) {
                 env.putIfAbsent(file.getFileName().toString(), Files.readString(file).strip());
             }
         }
@@ -125,15 +129,15 @@ public final class GatewaySetup {
      */
     private void writeRedis(String gatewayPassword) throws IOException {
         Path redisDir = dir.resolve("redis");
-        Files.createDirectories(redisDir);
+        createSharedDirectory(redisDir);
         Path replicationFile = redisDir.resolve("replication-password");
         if (Files.notExists(replicationFile)) {
             writeShared(replicationFile, randomSecret());
         }
         String replication = Files.readString(replicationFile).strip();
         writeShared(redisDir.resolve("users.acl"), "user default off resetkeys resetchannels -@all\n"
-                + "user " + env.getOrDefault("MCP_REDIS_USER", "gateway") + " on >" + gatewayPassword + " " + redisRules() + "\n"
-                + "user replication on >" + replication + " resetkeys resetchannels -@all +psync +replconf +ping\n");
+                + "user " + env.getOrDefault("MCP_REDIS_USER", "gateway") + " on #" + sha256(gatewayPassword) + " " + redisRules() + "\n"
+                + "user replication on #" + sha256(replication) + " resetkeys resetchannels -@all +psync +replconf +ping\n");
         // noeviction: confirmations, counters and locks must never be evicted to make room; appendonly: they survive a restart.
         String common = "aclfile /secrets/redis/users.acl\ndir /data\nappendonly yes\nappendfsync everysec\nmaxmemory-policy noeviction\n";
         writeShared(redisDir.resolve("primary.conf"), common);
@@ -354,14 +358,47 @@ public final class GatewaySetup {
     }
 
     private static void writeSecret(Path file, String value) throws IOException {
-        Files.writeString(file, value);
-        setMode(file, "rw-------");
+        write(file, value, "rw-------");
     }
 
-    /** Read by the PostgreSQL or Redis container, which runs as another user and mounts only its own directory. */
+    /**
+     * Read by the PostgreSQL or Redis container, which mounts only its own volume: owner and group may read, nobody else. The
+     * container joins the group of the gateway image (group_add in deploy/compose.yaml), so neither init nor the consumer needs root.
+     */
     private static void writeShared(Path file, String value) throws IOException {
-        Files.writeString(file, value);
-        setMode(file, "rw-r--r--");
+        write(file, value, "rw-r-----");
+    }
+
+    /** Created with its final mode and moved into place, so the content is never readable under a wider one. */
+    private static void write(Path file, String value, String mode) throws IOException {
+        FileAttribute<?>[] attributes = posix(file)
+                ? new FileAttribute<?>[] {PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString(mode))}
+                : new FileAttribute<?>[0];
+        Path temp = Files.createTempFile(file.getParent(), "..", ".tmp", attributes);
+        try {
+            Files.writeString(temp, value);
+            Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            Files.deleteIfExists(temp);
+        }
+    }
+
+    /** Redis takes {@code #<sha256 hex>} in place of {@code ><password>}, so the ACL file never holds a password. */
+    static String sha256(String password) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(password.getBytes(StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private static boolean posix(Path path) {
+        return path.getFileSystem().supportedFileAttributeViews().contains("posix");
+    }
+
+    private static void createSharedDirectory(Path directory) throws IOException {
+        Files.createDirectories(directory);
+        setMode(directory, "rwxr-x---");
     }
 
     private static void restrict(Path directory) throws IOException {
@@ -369,7 +406,7 @@ public final class GatewaySetup {
     }
 
     private static void setMode(Path path, String mode) throws IOException {
-        if (path.getFileSystem().supportedFileAttributeViews().contains("posix")) {
+        if (posix(path)) {
             Files.setPosixFilePermissions(path, PosixFilePermissions.fromString(mode));
         }
     }

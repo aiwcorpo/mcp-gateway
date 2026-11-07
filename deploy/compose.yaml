@@ -61,6 +61,8 @@ services:
     <<: *store
     image: ${MCP_THIRD_PARTY_REGISTRY:-docker.io/library}/redis:8.8.4-alpine@sha256:be8dfdf58574d626e0abe03073ce9178509e0e9564a316e34e71d2289b8370e1
     user: redis
+    # The group of the gateway image owns the files init wrote for Redis (mode 0640).
+    group_add: ["10001"]
     command: ["redis-server", "/secrets/redis/primary.conf"]
     volumes:
       - redis-data:/data
@@ -78,6 +80,7 @@ services:
     <<: *store
     image: ${MCP_THIRD_PARTY_REGISTRY:-docker.io/library}/redis:8.8.4-alpine@sha256:be8dfdf58574d626e0abe03073ce9178509e0e9564a316e34e71d2289b8370e1
     user: redis
+    group_add: ["10001"]
     command: ["redis-server", "/secrets/redis/replica.conf"]
     volumes:
       - redis-replica-data:/data
