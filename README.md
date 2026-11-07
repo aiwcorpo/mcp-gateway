@@ -8,8 +8,7 @@ internal JWT and forwards the call to the MCP server over mutual TLS. Every tool
 It is a deployable component (container image `mcp-gateway`), not a library. The intended readers are platform operators.
 Installation: [deploy/README.md](deploy/README.md) (Docker Compose, or systemd on a virtual machine).
 
-Contracts: `mcp-contracts` 7.0.0. What works, what is missing and the known deviations: [STATUS.md](STATUS.md) (in Polish).
-License: Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). Changes: [CHANGELOG.md](CHANGELOG.md). Contributing:
+Contracts: `mcp-contracts` 7.0.0. License: Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). Changes: [CHANGELOG.md](CHANGELOG.md). Contributing:
 [CONTRIBUTING.md](CONTRIBUTING.md). Reporting vulnerabilities: [SECURITY.md](SECURITY.md).
 
 ## What it needs

@@ -37,7 +37,7 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * Many streams and one change (CC-192: the notification at the latest 5 s after the event). The streams of this instance are real, the
  * policies are the real Cedar of the shared context, the server has 253 tools. The size is set by the properties
- * {@code streams.load.identities} (default 60) and {@code streams.load.perIdentity} (default 4); the measurement in STATUS.md was made with
+ * {@code streams.load.identities} (default 60) and {@code streams.load.perIdentity} (default 4); the reference measurement was made with
  * 500 and 4 (2000 streams). The numbers go to the output; the assertion is the 5 s and that a client list is not starved meanwhile.
  */
 class StreamLoadTest extends GatewayTestBase {
