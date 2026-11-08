@@ -18,13 +18,19 @@ import com.nimbusds.jwt.SignedJWT;
 import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
 
 /**
- * Issues the internal JWT (C2, mcp-contracts 2.0.0): a new token for every HTTP request to a server or the
- * broker. {@code tool} only for tools/call and the broker resolve (CC-038); the service variant only where C2
- * allows it, which the callers decide.
+ * Issues the internal JWT (C2): a new token for every HTTP request to a server or the broker. {@code tool} only for tools/call and the
+ * broker resolve (CC-038); the service variant only where C2 allows it, which the callers decide. The claim {@code use} says what the
+ * token is for (CC-249): {@code call} for the MCP endpoint of a server and for the broker, {@code manifest} for
+ * {@code GET /.well-known/mcp-manifest}, {@code policy-data} for {@code POST /.well-known/mcp-policy-data}. A receiver refuses a token
+ * of another purpose, so a token minted for one request cannot be replayed for another kind.
  */
 public final class InternalTokenIssuer {
 
     public static final String SERVICE_SUBJECT = "system:mcp-gateway";
+
+    public static final String CALL = "call";
+    public static final String MANIFEST = "manifest";
+    public static final String POLICY_DATA = "policy-data";
 
     private final SigningKeys keys;
     private final String issuer;
@@ -78,18 +84,37 @@ public final class InternalTokenIssuer {
         };
     }
 
-    /** Service variant (no user): C2 allows it for initialize, tools/list, ping, GET /mcp-manifest and GET /v1/systems. */
+    /** Service variant (no user) for a call: C2 allows it for initialize, tools/list, ping and the broker's GET /v1/systems. */
     public String forService(String audience, String requestId) {
-        return sign(common(audience, requestId).subject(SERVICE_SUBJECT).claim("grp", List.of()).build());
+        return service(audience, requestId, CALL, policyRevision.getAsLong());
+    }
+
+    /** The pull of the manifest of a server: {@code GET /.well-known/mcp-manifest}. */
+    public String forManifest(String audience, String requestId) {
+        return service(audience, requestId, MANIFEST, policyRevision.getAsLong());
+    }
+
+    /** The push of policy data: {@code prv} is the revision of the body that goes with the token, not the revision this instance last read. */
+    public String forPolicyData(String audience, String requestId, long revision) {
+        return service(audience, requestId, POLICY_DATA, revision);
+    }
+
+    private String service(String audience, String requestId, String use, long revision) {
+        return sign(common(audience, requestId, use, revision).subject(SERVICE_SUBJECT).claim("grp", List.of()).build());
     }
 
     private JWTClaimsSet.Builder common(String audience, String requestId) {
+        return common(audience, requestId, CALL, policyRevision.getAsLong());
+    }
+
+    private JWTClaimsSet.Builder common(String audience, String requestId, String use, long revision) {
         Instant now = Instant.now(clock);
         return new JWTClaimsSet.Builder()
                 .issuer(issuer)
                 .audience(audience)
+                .claim("use", use)
                 .claim("rid", requestId)
-                .claim("prv", policyRevision.getAsLong())
+                .claim("prv", revision)
                 .issueTime(Date.from(now))
                 .expirationTime(Date.from(now.plus(lifetime)))
                 .jwtID(UuidV7.next());

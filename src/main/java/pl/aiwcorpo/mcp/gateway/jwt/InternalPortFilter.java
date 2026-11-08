@@ -10,9 +10,9 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 /**
- * Separates the two connectors: the internal TLS port serves only the JWKS, the actuator (health, Prometheus)
- * and the C5 admin API, the public port everything else. Servers and the broker fetch keys over the internal CA,
- * and clients never reach internal endpoints.
+ * Separates the two connectors: the internal TLS port serves the JWKS, the actuator (health, Prometheus) and the C5 admin API, the
+ * public port everything else and, since CC-249, the public JWKS ({@code /.well-known/mcp-jwks.json}) that the servers fetch their keys
+ * from. The broker still fetches keys over the internal CA, and clients never reach internal endpoints.
  */
 public final class InternalPortFilter extends OncePerRequestFilter {
 
@@ -32,11 +32,12 @@ public final class InternalPortFilter extends OncePerRequestFilter {
         boolean admin = path.equals("/admin/v1") || path.startsWith("/admin/v1/");
         boolean internalApi = path.equals("/internal/v1") || path.startsWith("/internal/v1/");
         boolean infrastructure = JwksController.PATH.equals(path) || path.equals("/actuator") || path.startsWith("/actuator/") || internalApi;
+        boolean publicKeys = JwksController.PUBLIC_PATH.equals(path);
         // On the public port the method does not matter: a 405 there would confirm that the path exists behind the proxy.
         boolean allowed = internal
                 ? admin || "GET".equals(request.getMethod())
-                        && (JwksController.PATH.equals(path) || "/actuator/health".equals(path) || "/actuator/prometheus".equals(path)
-                                || "/internal/v1/policy-data".equals(path))
+                        && (JwksController.PATH.equals(path) || publicKeys || "/actuator/health".equals(path)
+                                || "/actuator/prometheus".equals(path))
                 : !admin && !infrastructure;
         if (!allowed) {
             response.sendError(HttpServletResponse.SC_NOT_FOUND);
