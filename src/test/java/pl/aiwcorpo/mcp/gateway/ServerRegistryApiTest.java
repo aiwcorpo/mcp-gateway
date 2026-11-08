@@ -332,17 +332,83 @@ class ServerRegistryApiTest extends GatewayTestBase {
         assertThat(entry.path("tools").get(0).path("status").asString()).as("not approved as READ_ONLY without an administrator").isEqualTo("pending_approval");
         assertThat(entry.path("tools").get(0).path("riskLowered").asBoolean()).isTrue();
 
-        // Rows of a build before this one are legacy: they are taken again, once.
+        // Nothing is adopted: the serverId comes from a manifest that anyone at the address can write, so an approval that an old row
+        // carries must not pass to whoever claims the id.
         adminCall("DELETE", "/admin/v1/servers/mcp-floor", null);
         jdbc.sql("DELETE FROM registry_risk_floor WHERE server_id = 'mcp-floor'").update();
-        jdbc.sql("INSERT INTO registry_legacy (server_id) VALUES ('mcp-floor')").update();
-        jdbc.sql("INSERT INTO registry_policies (server_id, pending_hash, pending_policies, pending_resource_types, pending_version, pending_source) "
-                + "VALUES ('mcp-floor', 'sha256:" + "b".repeat(64) + "', '{}'::jsonb, '[]'::jsonb, '1.0.0', 'manifest')").update();
+        jdbc.sql("INSERT INTO registry_policies (server_id, approved_hash, approved_policies, approved_resource_types, approved_version) "
+                + "VALUES ('mcp-floor', 'sha256:" + "b".repeat(64) + "', '{}'::jsonb, '[]'::jsonb, '1.0.0')").update();
         assertThat(adminCall("POST", "/admin/v1/servers", addBody(url(floor))).statusCode()).isEqualTo(201);
-        assertThat(jdbc.sql("SELECT count(*) FROM registry_legacy WHERE server_id = 'mcp-floor'").query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT approved_hash FROM registry_policies WHERE server_id = 'mcp-floor'").query(String.class).optional())
+                .as("the approved policies of a row that was there are gone").isEmpty();
+        assertThat(jdbc.sql("SELECT pending_hash FROM registry_policies WHERE server_id = 'mcp-floor'").query(String.class).single())
+                .isEqualTo(lowered.path("policiesHash").asString());
         adminCall("DELETE", "/admin/v1/servers/mcp-floor", null);
         jdbc.sql("DELETE FROM registry_risk_floor WHERE server_id = 'mcp-floor'").update();
         jdbc.sql("DELETE FROM registry_policies WHERE server_id = 'mcp-floor'").update();
+    }
+
+    @Test
+    void theLegacyTableIsGone() {
+        assertThat(jdbc.sql("SELECT count(*) FROM information_schema.tables WHERE table_name = 'registry_legacy'").query(Long.class).single())
+                .as("migration V15 drops it, nothing is adopted any more").isZero();
+    }
+
+    @Test
+    void aManifestThatClaimsAnotherSystemThanTheAdministratorExpectedIsRefusedAndNothingIsStored(CapturedOutput output) throws Exception {
+        TestMcpServer notes = startNotes();
+        String requestId = UuidV7.next();
+
+        HttpResponse<String> refused = adminCall("POST", "/admin/v1/servers",
+                "{\"internalUrl\":\"" + url(notes) + "\",\"expectedSystem\":\"jira\"}", Map.of("X-Request-Id", requestId));
+
+        assertThat(refused.statusCode()).as(refused.body()).isEqualTo(422);
+        assertThat(json(refused).path("error").asString()).isEqualTo("server_rejected");
+        assertThat(json(refused).path("reason").asString()).isEqualTo("system_mismatch");
+        assertThat(Contracts.gatewayAdminErrors("ServerRejected", json(refused))).isEmpty();
+        assertThat(adminCall("GET", NOTES, null).statusCode()).as("nothing was stored").isEqualTo(404);
+        assertThat(auditEvents(output, requestId)).anySatisfy(event -> {
+            assertThat(event.path("reason").asString()).isEqualTo("system_mismatch");
+            assertThat(event.path("outcome").asString()).isEqualTo("denied");
+        });
+
+        for (String bad : List.of("\"Notes\"", "5", "\"gateway\"", "\"\"", "null")) {
+            assertThat(adminCall("POST", "/admin/v1/servers", "{\"internalUrl\":\"" + url(notes) + "\",\"expectedSystem\":" + bad + "}").statusCode())
+                    .as(bad).isEqualTo(400);
+        }
+        HttpResponse<String> accepted = adminCall("POST", "/admin/v1/servers",
+                "{\"internalUrl\":\"" + url(notes) + "\",\"expectedSystem\":\"notes\"}");
+        assertThat(accepted.statusCode()).as(accepted.body()).isEqualTo(201);
+    }
+
+    @Test
+    void aManifestInvalidRefusalNamesTheServerInTheAuditOnlyWhenTheSystemHasTheShapeOfOne(CapturedOutput output) throws Exception {
+        TestMcpServer notes = startNotes();
+        ObjectNode broken = notes.manifest();
+        pl.aiwcorpo.mcp.gateway.support.Manifests.tool(broken, "get_issue").put("definitionHash", "sha256:" + "0".repeat(64));
+        notes.serveManifest(broken);
+        String shaped = UuidV7.next();
+        assertThat(json(adminCall("POST", "/admin/v1/servers", addBody(url(notes)), Map.of("X-Request-Id", shaped))).path("reason").asString())
+                .isEqualTo("manifest_invalid");
+        assertThat(auditEvents(output, shaped)).anySatisfy(event -> {
+            assertThat(event.path("reason").asString()).isEqualTo("manifest_invalid");
+            assertThat(event.path("server").asString()).isEqualTo("mcp-notes");
+        });
+
+        String hostile = "NOT A SYSTEM " + "x".repeat(5000);
+        ObjectNode other = notes.manifest();
+        other.put("system", hostile);
+        notes.serveManifest(other);
+        String unshaped = UuidV7.next();
+        HttpResponse<String> response = adminCall("POST", "/admin/v1/servers", addBody(url(notes)), Map.of("X-Request-Id", unshaped));
+
+        assertThat(response.statusCode()).isEqualTo(422);
+        List<JsonNode> events = auditEvents(output, unshaped);
+        assertThat(events).anySatisfy(event -> assertThat(event.path("reason").asString()).isEqualTo("manifest_invalid"));
+        assertThat(events).allSatisfy(event -> {
+            assertThat(event.has("server")).as("no unvalidated text in the server field").isFalse();
+            assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", event)).isEmpty();
+        });
     }
 
     // --- helpers -----------------------------------------------------------------------------------------------

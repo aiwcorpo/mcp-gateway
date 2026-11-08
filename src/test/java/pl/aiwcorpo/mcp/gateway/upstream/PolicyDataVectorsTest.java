@@ -99,6 +99,25 @@ class PolicyDataVectorsTest {
         return tests;
     }
 
+    @TestFactory
+    List<DynamicTest> theAnswerToAPush() {
+        List<DynamicTest> tests = new ArrayList<>();
+        for (Vectors.Vector vector : Vectors.of("policy-data-push")) {
+            JsonNode input = vector.document().path("input");
+            if (!input.has("ack")) {
+                continue;
+            }
+            tests.add(DynamicTest.dynamicTest(vector.name(), () -> {
+                boolean failed = pl.aiwcorpo.mcp.gateway.link.ServerLinks.serverHoldsNewer(input.get("ack"), input.path("pushed").asLong());
+
+                assertThat(failed).as(vector.document().path("description").asString())
+                        .isEqualTo("failed".equals(vector.document().path("expected").path("outcome").asString()));
+            }));
+        }
+        assertThat(tests).hasSize(3);
+        return tests;
+    }
+
     /** A server that holds policy data, applies the gate to every tools/call and counts what reaches it. */
     private static final class GatedServer implements AutoCloseable {
         final HttpServer http;

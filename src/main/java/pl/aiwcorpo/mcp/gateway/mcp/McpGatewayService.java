@@ -66,6 +66,7 @@ public class McpGatewayService {
 
     private static final Logger log = LoggerFactory.getLogger(McpGatewayService.class);
     private static final int MAX_LIST_PAGES = 20;
+    private static final Duration DEFAULT_READ_WAIT_LIMIT = Duration.ofSeconds(60);
 
     private final ServerRegistry registry;
     private final PublicUrls urls;
@@ -87,6 +88,7 @@ public class McpGatewayService {
     private final KillSwitches killSwitches;
     private final ToolAccess access;
     private final Duration toolsListTimeout;
+    private final Duration readWaitLimit;
     private final Clock clock;
     private final Map<String, CompletableFuture<DefinitionGuard.Reading>> readsInFlight = new ConcurrentHashMap<>();
     private final ExecutorService listReaders = Executors.newVirtualThreadPerTaskExecutor();
@@ -97,6 +99,19 @@ public class McpGatewayService {
                              RegistryService registryService, DefinitionGuard definitionGuard, RateLimiter rateLimiter,
                              RateLimitAuditThrottle rateLimitAudit, EndpointAuditThrottle endpointAudit, ToolsListCursor listCursor,
                              KillSwitches killSwitches, ToolAccess access, Duration toolsListTimeout, Clock clock) {
+        this(registry, urls, upstream, credentials, authorizer, audit, errors, json, meters, componentId, confirmations, registryService,
+                definitionGuard, rateLimiter, rateLimitAudit, endpointAudit, listCursor, killSwitches, access, toolsListTimeout, clock,
+                DEFAULT_READ_WAIT_LIMIT);
+    }
+
+    /** @param readWaitLimit the longest a call waits for the definitions read that another call has in flight */
+    public McpGatewayService(ServerRegistry registry, PublicUrls urls, UpstreamSessions upstream,
+                             CredentialService credentials, ToolAuthorizer authorizer, AuditLog audit, ToolErrors errors,
+                             JsonMapper json, MeterRegistry meters, String componentId, ConfirmationService confirmations,
+                             RegistryService registryService, DefinitionGuard definitionGuard, RateLimiter rateLimiter,
+                             RateLimitAuditThrottle rateLimitAudit, EndpointAuditThrottle endpointAudit, ToolsListCursor listCursor,
+                             KillSwitches killSwitches, ToolAccess access, Duration toolsListTimeout, Clock clock, Duration readWaitLimit) {
+        this.readWaitLimit = readWaitLimit;
         this.registry = registry;
         this.urls = urls;
         this.upstream = upstream;
@@ -327,13 +342,18 @@ public class McpGatewayService {
     }
 
     /**
-     * Waits for the read in flight. There is no timer of its own: the read ends by itself, every request of it is bound by the timeout of
-     * the upstream client, and it always completes the future (also on an Error), so a waiter fails exactly when the read fails. A shorter
-     * wait would refuse calls the read is about to serve.
+     * Waits for the read in flight. The read ends by itself (every request of it is bound by the timeout of the upstream client, the body
+     * included) and always completes the future, so a waiter normally fails exactly when the read fails and a shorter wait would refuse calls
+     * the read is about to serve. {@code readWaitLimit} is only a backstop for a read that does not end: the waiter is refused, and the
+     * stuck read is dropped so that the next call starts a new one instead of waiting behind it.
      */
     private DefinitionGuard.Reading awaitRead(McpServer server, CompletableFuture<DefinitionGuard.Reading> running) throws RpcFailure {
         try {
-            return running.get();
+            return running.get(readWaitLimit.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            readsInFlight.remove(server.serverId(), running);
+            log.warn("{}: the definitions read in flight did not end in {} ms", server.serverId(), readWaitLimit.toMillis());
+            throw new RpcFailure(-32603, "upstream_unavailable: the MCP server is unavailable.", 502);
         } catch (ExecutionException e) {
             if (e.getCause() instanceof RpcFailure failure) {
                 throw failure;

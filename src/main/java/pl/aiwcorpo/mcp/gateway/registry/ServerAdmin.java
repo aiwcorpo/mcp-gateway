@@ -46,7 +46,8 @@ public final class ServerAdmin {
 
     private static final Logger log = LoggerFactory.getLogger(ServerAdmin.class);
     private static final Set<String> CREDENTIAL_TYPES = Set.of("user-oauth", "user-secret", "token-exchange", "service-account");
-    private static final Set<String> ADD_FIELDS = Set.of("internalUrl", "allowPlainHttp", "credential");
+    private static final Pattern SYSTEM_ID = Pattern.compile("^(?!(?:gateway|offboarding|portal|broker|prometheus|platform|admin|registry|adapter|internal|ci)$)[a-z][a-z0-9]{1,30}$");
+    private static final Set<String> ADD_FIELDS = Set.of("internalUrl", "allowPlainHttp", "credential", "expectedSystem");
     private static final Set<String> PATCH_FIELDS = Set.of("credential", "enabled");
     private static final Set<String> APPROVE_FIELDS = Set.of("tlsMode", "fingerprint");
 
@@ -179,9 +180,12 @@ public final class ServerAdmin {
      */
     public Outcome<Item> create(String requestId, JsonNode body, GatewayUser administrator) {
         if (body == null || !body.isObject() || !allKnown(body, ADD_FIELDS) || !body.path("internalUrl").isString()
-                || (body.has("allowPlainHttp") && !body.get("allowPlainHttp").isBoolean())) {
+                || (body.has("allowPlainHttp") && !body.get("allowPlainHttp").isBoolean())
+                || (body.has("expectedSystem") && !(body.get("expectedSystem").isString()
+                        && SYSTEM_ID.matcher(body.get("expectedSystem").asString()).matches()))) {
             return Outcome.rejected("invalid_request", null);
         }
+        String expectedSystem = body.has("expectedSystem") ? body.get("expectedSystem").asString() : null;
         Optional<ServerUrl> parsed = ServerUrl.parse(body.get("internalUrl").asString());
         Optional<ServerConfig.Credential> given = body.has("credential") ? credential(body.get("credential")) : Optional.empty();
         if (parsed.isEmpty() || (body.has("credential") && given.isEmpty())) {
@@ -205,6 +209,11 @@ public final class ServerAdmin {
         ServerChecks.Contact.Reached reached = (ServerChecks.Contact.Reached) contact;
         JsonNode manifest = reached.manifest();
         String system = manifest.path("system").asString("");
+        if (systemMismatch(expectedSystem, system)) {
+            // The serverId comes from a manifest that anyone at the address can write: when the administrator named the system they
+            // expect, a server that claims another one (perhaps one whose users already hold credentials) is not added.
+            return refused(requestId, administrator, "system_mismatch", "the manifest claims " + shortened(system) + ", not " + expectedSystem);
+        }
         if (ReservedSystemIds.isReserved(system)) {
             // Before the checks of the manifest, which refuse this system too: the administrator learns the reason that names the id.
             return refused(requestId, administrator, "system_reserved", system + " is a reserved system id: mcp-" + system
@@ -221,7 +230,9 @@ public final class ServerAdmin {
         List<ManifestValidator.Rejection> rejections = registry.checkPulled(manifest, asManifest, adapter);
         if (!rejections.isEmpty()) {
             String cause = rejections.stream().map(ManifestValidator.Rejection::reason).filter(java.util.Objects::nonNull).findFirst().orElse(null);
-            audit.emit(base(requestId, administrator, "mcp-" + system).reason("manifest_invalid").outcome("denied"));
+            // The system is not validated yet: it goes into the audit event only when it has the shape of one.
+            audit.emit(base(requestId, administrator, SYSTEM_ID.matcher(system).matches() ? "mcp-" + system : null).reason("manifest_invalid")
+                    .outcome("denied"));
             return Outcome.manifestRejected(String.join("; ", rejections.stream().map(ManifestValidator.Rejection::message).toList()), cause);
         }
         String serverId = "mcp-" + system;
@@ -249,6 +260,15 @@ public final class ServerAdmin {
             audit.emit(base(requestId, administrator, serverId).reason(written.reason()).outcome("denied"));
         }
         return written;
+    }
+
+    /** The administrator named a system and the manifest claims another one (vectors server-connection/add-expected-system-*). */
+    static boolean systemMismatch(String expectedSystem, String manifestSystem) {
+        return expectedSystem != null && !expectedSystem.equals(manifestSystem);
+    }
+
+    private static String shortened(String text) {
+        return text.length() <= 40 ? text : text.substring(0, 40) + "...";
     }
 
     private Outcome<Item> refused(String requestId, GatewayUser administrator, String reason, String message) {
@@ -356,6 +376,7 @@ public final class ServerAdmin {
             return Outcome.rejected("invalid_request", null);
         }
         Instant now = clock.instant();
+        ServerConfig.Connection[] replaced = {null};
         Outcome<ServerConfig> decided = store.locked(serverId, tx -> {
             Optional<ServerConfig> current = tx.config();
             if (current.isEmpty()) {
@@ -373,6 +394,7 @@ public final class ServerAdmin {
             ServerConfig after = new ServerConfig(before.serverId(), before.system(), before.internalUrl(), before.credential(), before.enabled(),
                     before.adapter(), before.allowPlainHttp(), before.status(), before.lastCheckedAt(), before.lastError(), connection, null);
             tx.saveState(after);
+            replaced[0] = before.connection();
             return Outcome.ok(after);
         });
         if (!decided.succeeded()) {
@@ -383,6 +405,9 @@ public final class ServerAdmin {
         }
         audit.emit(base(requestId, administrator, serverId).reason("server_connection_approved").tlsMode(tlsMode).fingerprint(fingerprint)
                 .outcome("ok"));
+        if (replaced[0] != null && !java.util.Objects.equals(replaced[0].fingerprint(), fingerprint)) {
+            checks.forgetClient(replaced[0]);
+        }
         applyHere();
         Optional<ServerConfig> after = checks.check(requestId, serverId);
         return after.<Outcome<Item>>map(config -> Outcome.ok(item(config))).orElseGet(() -> Outcome.of(Outcome.Status.NOT_FOUND));
@@ -444,10 +469,12 @@ public final class ServerAdmin {
         List<String> removedSwitches = new ArrayList<>();
         List<String> removedNamespaces = new ArrayList<>();
         boolean[] hadPolicies = {false};
+        ServerConfig.Connection[] gone = {null};
         Outcome<Void> result = store.locked(serverId, tx -> {
             if (tx.config().isEmpty()) {
                 return Outcome.of(Outcome.Status.NOT_FOUND);
             }
+            gone[0] = tx.config().get().connection();
             var state = tx.lockPolicyState();
             removedNamespaces.addAll(tx.namespaces());
             MappingCleanup.Result cleaned = MappingCleanup.strip(json, state.scopeMapping(), new TreeSet<>(removedNamespaces));
@@ -465,6 +492,9 @@ public final class ServerAdmin {
             return Outcome.noContent();
         });
         if (result.succeeded()) {
+            if (gone[0] != null) {
+                checks.forgetClient(gone[0]);
+            }
             audit.emit(base(requestId, administrator, serverId).reason("server_deleted").outcome("ok"));
             removedScopes.forEach(removed -> audit.emit(base(requestId, administrator, serverId).reason("scope_mapping_entry_removed")
                     .outcome("ok").group(removed.group()).resource(new PendingCall.Resource(removed.type(), removed.local(), null))));

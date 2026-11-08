@@ -64,6 +64,9 @@ class DefinitionReadSingleFlightTest {
     private final AtomicInteger toolsListCalls = new AtomicInteger();
     private final AtomicBoolean serverFails = new AtomicBoolean();
     private Duration toolsListTimeout = Duration.ofSeconds(5);
+    private Duration readWaitLimit = Duration.ofSeconds(60);
+    private final java.util.concurrent.CountDownLatch stuck = new java.util.concurrent.CountDownLatch(1);
+    private final AtomicBoolean blockTheRead = new AtomicBoolean();
     private McpGatewayService service;
 
     private void setUp() throws Exception {
@@ -82,6 +85,9 @@ class DefinitionReadSingleFlightTest {
         UpstreamSessions upstream = mock(UpstreamSessions.class);
         when(upstream.call(any(), any(), any(), any(), any(), any(), any(), anyBoolean())).thenAnswer(invocation -> {
             toolsListCalls.incrementAndGet();
+            if (blockTheRead.get()) {
+                stuck.await(20, java.util.concurrent.TimeUnit.SECONDS);
+            }
             Thread.sleep(300);
             if (serverFails.get()) {
                 throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE, "response not complete in time");
@@ -98,7 +104,7 @@ class DefinitionReadSingleFlightTest {
                 new RateLimitAuditThrottle(Duration.ofSeconds(10), System::nanoTime, meters),
                 new EndpointAuditThrottle(Duration.ofSeconds(10), 50, System::currentTimeMillis, meters, audit, "mcp-gateway", () -> 0L),
                 new ToolsListCursor("0123456789abcdef".getBytes(), JSON), killSwitches, new ToolAccess(authorizer),
-                toolsListTimeout, Clock.systemUTC());
+                toolsListTimeout, Clock.systemUTC(), readWaitLimit);
     }
 
     private String callOnce() throws Exception {
@@ -151,5 +157,30 @@ class DefinitionReadSingleFlightTest {
         serverFails.set(false);
         assertThat(callOnce()).as("the failure was not kept").isEqualTo("tool_disabled");
         assertThat(toolsListCalls.get()).isEqualTo(2);
+    }
+
+    @Test
+    void aCallThatWaitsForAReadThatNeverEndsIsRefusedAtTheLimitAndTheNextCallIsNotStuckBehindIt() throws Exception {
+        readWaitLimit = Duration.ofMillis(400);
+        setUp();
+        blockTheRead.set(true);
+        try (ExecutorService callers = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<String> leader = callers.submit(this::callOnce);
+            while (toolsListCalls.get() == 0) {
+                Thread.sleep(10);
+            }
+
+            long started = System.nanoTime();
+            String waiter = callOnce();
+
+            assertThat(waiter).isEqualTo("upstream_unavailable");
+            assertThat(Duration.ofNanos(System.nanoTime() - started)).as("not blocked behind the stuck read").isLessThan(Duration.ofSeconds(5));
+            blockTheRead.set(false);
+            long next = System.nanoTime();
+            assertThat(callOnce()).as("the stuck read was dropped, a new one is made").isEqualTo("tool_disabled");
+            assertThat(Duration.ofNanos(System.nanoTime() - next)).isLessThan(Duration.ofSeconds(5));
+            stuck.countDown();
+            assertThat(leader.get(10, java.util.concurrent.TimeUnit.SECONDS)).isEqualTo("tool_disabled");
+        }
     }
 }

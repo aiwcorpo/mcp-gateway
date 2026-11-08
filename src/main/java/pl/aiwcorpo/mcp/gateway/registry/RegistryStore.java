@@ -189,14 +189,11 @@ public class RegistryStore {
 
         /**
          * Before a server is added: what an earlier removal or a race left under its id is purged (tools, manifests, policies, namespaces and
-         * switches; the risk floors stay). Rows of a build before this one are legacy: they are taken again, once.
+         * switches; the risk floors stay). Nothing is adopted: the id comes from a manifest that anyone who answers at an address can write,
+         * so an approval that an old row carries must not pass to whoever claims the id.
          */
         public void purgeLeftovers() {
             wrote = true;
-            boolean legacy = jdbc.sql("DELETE FROM registry_legacy WHERE server_id = ?").param(serverId).update() > 0;
-            if (legacy) {
-                return;
-            }
             for (String table : List.of("registry_tools", "kill_switches", "registry_policies", "registry_namespaces", "registry_servers")) {
                 jdbc.sql("DELETE FROM " + table + " WHERE server_id = ?").param(serverId).update();
             }

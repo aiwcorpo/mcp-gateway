@@ -10,6 +10,11 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,6 +36,12 @@ import tools.jackson.databind.json.JsonMapper;
  * now resolves to a refused address is not connected to. The HTTP client resolves the name again when it connects (a window that is
  * not closed): for {@code ca} and {@code pinned} the TLS handshake stops a rebinding name from being trusted, {@code plain} accepts the
  * window. Every request carries a new token of the right purpose and no client certificate.
+ *
+ * <p>Clients are cached only for the approved trust: one per {@code ca} and per {@code plain}, one per approved pinned fingerprint. A
+ * pull before the approval of a connection trusts a fingerprint that the server chose, so it gets a client of its own that is closed
+ * after the request; a server that presents a new certificate at every handshake must not leave a client and a selector thread behind
+ * for each. The headers of a response are bound by the request timeout; the body gets the rest of the same budget, after which the
+ * stream is closed under the reader, so a server that sends one byte at a time cannot hold a caller.
  */
 public final class ServerLinks {
 
@@ -38,7 +49,9 @@ public final class ServerLinks {
     private static final int MAX_MANIFEST_BYTES = 1024 * 1024;
     private static final int MAX_ACK_BYTES = 64 * 1024;
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
-    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(10);
+    private static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(10);
+    private static final ScheduledExecutorService DEADLINES = Executors.newSingleThreadScheduledExecutor(
+            Thread.ofPlatform().daemon().name("server-link-deadline").factory());
 
     /** Why a pull or a push did not reach the server's answer. */
     public enum Failure { ADDRESS_REFUSED, TLS_HANDSHAKE_FAILED, UNREACHABLE, REJECTED, INVALID }
@@ -62,9 +75,16 @@ public final class ServerLinks {
     private final ServerTls tls;
     private final InternalTokenIssuer tokens;
     private final JsonMapper json;
+    private final Duration requestTimeout;
     private final Map<String, HttpClient> clients = new ConcurrentHashMap<>();
 
     public ServerLinks(AddressPolicy addresses, ServerTls tls, InternalTokenIssuer tokens, JsonMapper json) {
+        this(addresses, tls, tokens, json, DEFAULT_REQUEST_TIMEOUT);
+    }
+
+    /** @param requestTimeout the budget of one pull or push, the headers and the body together */
+    public ServerLinks(AddressPolicy addresses, ServerTls tls, InternalTokenIssuer tokens, JsonMapper json, Duration requestTimeout) {
+        this.requestTimeout = requestTimeout;
         this.addresses = addresses;
         this.tls = tls;
         this.tokens = tokens;
@@ -94,9 +114,30 @@ public final class ServerLinks {
         return addresses.check(hostOf(url));
     }
 
-    /** The HTTP client for a trust; one per mode and pinned certificate, shared by the servers that use it. */
+    /**
+     * The HTTP client for the APPROVED trust of a server, shared by the servers that use it: one per {@code ca}, one per {@code plain}, one
+     * per approved pinned fingerprint. Never call it with a fingerprint the server chose before the approval.
+     */
     public HttpClient client(String tlsMode, String fingerprint) {
-        return clients.computeIfAbsent(tlsMode + "|" + fingerprint, key -> tls.client(tlsMode, fingerprint, CONNECT_TIMEOUT));
+        return clients.computeIfAbsent(cacheKey(tlsMode, fingerprint), key -> tls.client(tlsMode, fingerprint, CONNECT_TIMEOUT));
+    }
+
+    private static String cacheKey(String tlsMode, String fingerprint) {
+        return ServerTls.PINNED.equals(tlsMode) ? tlsMode + "|" + fingerprint : tlsMode;
+    }
+
+    /**
+     * Forgets the client of a pinned fingerprint that no approval holds any more. The client is only dropped from the cache, not shut down:
+     * another server may still hold it through its upstream client, and a client that nothing references is released with its selector thread.
+     */
+    public void evict(String tlsMode, String fingerprint) {
+        if (ServerTls.PINNED.equals(tlsMode) && fingerprint != null) {
+            clients.remove(cacheKey(tlsMode, fingerprint));
+        }
+    }
+
+    int cachedClients() {
+        return clients.size();
     }
 
 
@@ -127,24 +168,45 @@ public final class ServerLinks {
         return internalUrl.resolve("/.well-known/" + name);
     }
 
-    /** {@code GET /.well-known/mcp-manifest} under a trust, without a token: the server serves its manifest openly (C14). */
+    /** {@code GET /.well-known/mcp-manifest} under the approved trust, without a token: the server serves its manifest openly (C14). */
     public Pull pullManifest(URI internalUrl, String tlsMode, String fingerprint) {
+        return pull(internalUrl, client(tlsMode, fingerprint));
+    }
+
+    /**
+     * The same pull before the connection is approved, under what a probe proposes. A pinned fingerprint here is whatever the server presented,
+     * so the client is built for this one request and closed after it; {@code ca} and {@code plain} hold nothing the server chose and use the
+     * shared client.
+     */
+    public Pull pullManifestBeforeApproval(URI internalUrl, String tlsMode, String fingerprint) {
+        if (!ServerTls.PINNED.equals(tlsMode)) {
+            return pull(internalUrl, client(tlsMode, fingerprint));
+        }
+        Optional<AddressPolicy.Refusal> refusal = checkAddress(internalUrl);
+        if (refusal.isPresent()) {
+            return Pull.failed(Failure.ADDRESS_REFUSED, refusal.get().message());
+        }
+        try (HttpClient once = tls.client(tlsMode, fingerprint, CONNECT_TIMEOUT)) {
+            return pull(internalUrl, once);
+        }
+    }
+
+    private Pull pull(URI internalUrl, HttpClient http) {
         Optional<AddressPolicy.Refusal> refusal = checkAddress(internalUrl);
         if (refusal.isPresent()) {
             return Pull.failed(Failure.ADDRESS_REFUSED, refusal.get().message());
         }
         String requestId = UuidV7.next();
-        HttpRequest request = HttpRequest.newBuilder(wellKnown(internalUrl, "mcp-manifest")).timeout(REQUEST_TIMEOUT)
+        HttpRequest request = HttpRequest.newBuilder(wellKnown(internalUrl, "mcp-manifest")).timeout(requestTimeout)
                 .header("X-Request-Id", requestId).header("Accept", "application/json").GET().build();
         try {
-            HttpResponse<InputStream> response = client(tlsMode, fingerprint).send(request, HttpResponse.BodyHandlers.ofInputStream());
-            try (InputStream in = new BoundedInputStream(response.body(), MAX_MANIFEST_BYTES)) {
-                byte[] body = in.readAllBytes();
-                if (response.statusCode() != 200) {
-                    return Pull.failed(Failure.REJECTED, "GET /.well-known/mcp-manifest answered " + response.statusCode());
-                }
-                return new Pull(json.readTree(body), ServerTls.leafOf(response.sslSession()), null, null);
+            long deadline = System.nanoTime() + requestTimeout.toNanos();
+            HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            byte[] body = readBody(response, MAX_MANIFEST_BYTES, deadline);
+            if (response.statusCode() != 200) {
+                return Pull.failed(Failure.REJECTED, "GET /.well-known/mcp-manifest answered " + response.statusCode());
             }
+            return new Pull(json.readTree(body), ServerTls.leafOf(response.sslSession()), null, null);
         } catch (JacksonException | BoundedInputStream.LimitExceededException e) {
             return Pull.failed(Failure.INVALID, "the manifest is not a JSON document of a size the gateway takes");
         } catch (IOException e) {
@@ -157,27 +219,70 @@ public final class ServerLinks {
         }
     }
 
-    /** {@code POST /.well-known/mcp-policy-data} under the approved trust; {@code revision} is the revision of {@code body} and of the token. */
+    /**
+     * Whether the answer to a push says that the server did not take the data because it holds a higher revision than the one pushed
+     * (vectors policy-data-push/ack-*); {@code accepted: false} with the same or a lower revision is the periodic push of unchanged data.
+     */
+    public static boolean serverHoldsNewer(JsonNode ack, long pushedRevision) {
+        return ack != null && !ack.path("accepted").asBoolean(true) && ack.path("revision").asLong(0) > pushedRevision;
+    }
+
+    /**
+     * Reads the body of a response up to {@code maxBytes} and no later than {@code deadlineNanos} ({@link System#nanoTime}): at the deadline the
+     * stream is closed under the reader, which ends the read with an {@link IOException}.
+     */
+    private static byte[] readBody(HttpResponse<InputStream> response, int maxBytes, long deadlineNanos) throws IOException {
+        InputStream raw = response.body();
+        AtomicBoolean expired = new AtomicBoolean();
+        ScheduledFuture<?> guard = DEADLINES.schedule(() -> {
+            expired.set(true);
+            try {
+                raw.close();
+            } catch (IOException e) {
+                // the reader sees the closed stream either way
+            }
+        }, Math.max(0, deadlineNanos - System.nanoTime()), TimeUnit.NANOSECONDS);
+        try (InputStream in = new BoundedInputStream(raw, maxBytes)) {
+            return in.readAllBytes();
+        } catch (IOException e) {
+            if (expired.get() && !(e instanceof BoundedInputStream.LimitExceededException)) {
+                throw new IOException("the body did not arrive in time", e);
+            }
+            throw e;
+        } finally {
+            guard.cancel(false);
+        }
+    }
+
+    /**
+     * {@code POST /.well-known/mcp-policy-data} under the approved trust; {@code revision} is the revision of {@code body} and of the token.
+     * An answer {@code accepted: false} with a revision above the one pushed means that the server holds data this gateway does not have: that
+     * is not a delivery, it is logged, and the caller treats it like a push that failed.
+     */
     public Push pushPolicyData(URI internalUrl, String serverId, String tlsMode, String fingerprint, long revision, JsonNode body) {
         if (checkAddress(internalUrl).isPresent()) {
             return new Push(false, 0, null, Failure.ADDRESS_REFUSED);
         }
         String requestId = UuidV7.next();
-        HttpRequest request = HttpRequest.newBuilder(wellKnown(internalUrl, "mcp-policy-data")).timeout(REQUEST_TIMEOUT)
+        HttpRequest request = HttpRequest.newBuilder(wellKnown(internalUrl, "mcp-policy-data")).timeout(requestTimeout)
                 .header("Authorization", "Bearer " + tokens.forPolicyData(serverId, requestId, revision)).header("X-Request-Id", requestId)
                 .header("Content-Type", "application/json").header("Accept", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body))).build();
         try {
+            long deadline = System.nanoTime() + requestTimeout.toNanos();
             HttpResponse<InputStream> response = client(tlsMode, fingerprint).send(request, HttpResponse.BodyHandlers.ofInputStream());
-            try (InputStream in = new BoundedInputStream(response.body(), MAX_ACK_BYTES)) {
-                byte[] answer = in.readAllBytes();
-                if (response.statusCode() != 200) {
-                    log.warn("policy data of {} was refused with {}", serverId, response.statusCode());
-                    return new Push(false, response.statusCode(), null, Failure.REJECTED);
-                }
-                JsonNode ack = answer.length == 0 ? null : json.readTree(answer);
-                return new Push(true, 200, ack, null);
+            byte[] answer = readBody(response, MAX_ACK_BYTES, deadline);
+            if (response.statusCode() != 200) {
+                log.warn("policy data of {} was refused with {}", serverId, response.statusCode());
+                return new Push(false, response.statusCode(), null, Failure.REJECTED);
             }
+            JsonNode ack = answer.length == 0 ? null : json.readTree(answer);
+            if (serverHoldsNewer(ack, revision)) {
+                log.warn("{} answered the policy data of revision {} with accepted false and revision {}: it holds data this gateway does not have",
+                        serverId, revision, ack.path("revision").asLong());
+                return new Push(false, 200, ack, Failure.REJECTED);
+            }
+            return new Push(true, 200, ack, null);
         } catch (JacksonException | BoundedInputStream.LimitExceededException e) {
             return new Push(false, 200, null, Failure.INVALID);
         } catch (IOException e) {

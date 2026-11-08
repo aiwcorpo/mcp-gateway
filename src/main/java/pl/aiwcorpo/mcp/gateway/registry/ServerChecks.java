@@ -103,6 +103,11 @@ public final class ServerChecks implements DisposableBean {
         return now.minus(interval).plus(interval.compareTo(RETRY_AFTER_FAILURE) < 0 ? interval : RETRY_AFTER_FAILURE);
     }
 
+    /** Drops the cached client of a connection that no approval of this server holds any more. */
+    public void forgetClient(ServerConfig.Connection connection) {
+        links.evict(connection.tlsMode(), connection.fingerprint());
+    }
+
     /** The loop's look at the timer; public for the tests, which do not wait for it. */
     public void tick() {
         try {
@@ -155,7 +160,7 @@ public final class ServerChecks implements DisposableBean {
                     ? "the TLS handshake with the server failed" : "no TLS handshake could be made with the address");
         }
         String mode = ConnectionRules.proposal(true, presented.validatesAsCa());
-        ServerLinks.Pull pull = links.pullManifest(url, mode, presented.leaf().fingerprint());
+        ServerLinks.Pull pull = links.pullManifestBeforeApproval(url, mode, presented.leaf().fingerprint());
         if (!pull.succeeded()) {
             return failed(pull, true);
         }
@@ -201,16 +206,28 @@ public final class ServerChecks implements DisposableBean {
                 log.warn("{}: the manifest it serves is not taken: {}", serverId, rejected.reason() == null ? "schema or rule" : rejected.reason());
             }
         }
+        return applyObservation(requestId, serverId, config.connection(), seen, status, error, now);
+    }
+
+    /**
+     * Stores what one look found, unless the connection of the server changed since the look was made: {@code observedWith} is the
+     * connection the look was judged against, and an approval that landed meanwhile makes the observation stale.
+     */
+    Optional<ServerConfig> applyObservation(String requestId, String serverId, ServerConfig.Connection observedWith, Observation seen,
+                                            String finalStatus, String finalError, Instant now) {
         boolean[] changed = {false};
         ServerConfig.PendingConnection[] recorded = {null};
-        String finalStatus = status;
-        String finalError = error;
         store.locked(serverId, tx -> {
             Optional<ServerConfig> current = tx.config();
             if (current.isEmpty()) {
                 return null;
             }
             ServerConfig before = current.get();
+            if (!sameTrust(observedWith, before.connection())) {
+                // An approval landed while this look was on the network: what it saw was judged against a connection that is not the
+                // one the server has now, so it must not renew, clear or record anything (it could pin another certificate).
+                return null;
+            }
             ServerConfig.Connection connection = before.connection();
             if (seen.renewed() != null && connection != null) {
                 ServerCertificate leaf = seen.renewed();
@@ -252,6 +269,13 @@ public final class ServerChecks implements DisposableBean {
         return store.config(serverId);
     }
 
+    private static boolean sameTrust(ServerConfig.Connection observed, ServerConfig.Connection current) {
+        if (observed == null || current == null) {
+            return observed == current;
+        }
+        return observed.tlsMode().equals(current.tlsMode()) && Objects.equals(observed.fingerprint(), current.fingerprint());
+    }
+
     private static boolean sameObservation(ServerConfig before, ServerConfig after) {
         return before.status().equals(after.status()) && Objects.equals(before.lastError(), after.lastError())
                 && Objects.equals(before.connection(), after.connection()) && Objects.equals(before.pendingConnection(), after.pendingConnection());
@@ -284,7 +308,7 @@ public final class ServerChecks implements DisposableBean {
                 return Observation.failed(ServerConfig.UNREACHABLE, "tls_handshake_failed");
             }
             String mode = ConnectionRules.proposal(true, presented.validatesAsCa());
-            ServerLinks.Pull pull = links.pullManifest(url, mode, presented.leaf().fingerprint());
+            ServerLinks.Pull pull = links.pullManifestBeforeApproval(url, mode, presented.leaf().fingerprint());
             return afterPull(pull, config, pendingOf(mode, presented, "first_connection", now), false, null);
         }
         ServerLinks.Pull pull = links.pullManifest(url, approved.tlsMode(), approved.fingerprint());

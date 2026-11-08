@@ -38,12 +38,27 @@ class ServerConnectionVectorsTest {
                     case "check" -> check(document);
                     case "availability" -> availability(document);
                     case "firstConnection" -> firstConnection(document);
+                    case "addSystem" -> addSystem(document);
                     default -> throw new AssertionError("unknown kind in " + vector.name());
                 }
             }));
         }
-        assertThat(tests).hasSize(24);
+        assertThat(tests).hasSize(28);
         return tests;
+    }
+
+    private void addSystem(JsonNode vector) {
+        JsonNode input = vector.path("input").path("addSystem");
+        JsonNode expected = vector.path("expected");
+
+        boolean refused = ServerAdmin.systemMismatch(text(input.get("expectedSystem")), input.path("manifestSystem").asString());
+
+        String why = vector.path("description").asString();
+        assertThat(refused).as(why).isEqualTo(expected.path("status").asInt() == 422);
+        if (refused) {
+            assertThat(expected.path("error").asString()).isEqualTo("server_rejected");
+            assertThat(expected.path("reason").asString()).isEqualTo("system_mismatch");
+        }
     }
 
     private void approve(JsonNode vector) {
