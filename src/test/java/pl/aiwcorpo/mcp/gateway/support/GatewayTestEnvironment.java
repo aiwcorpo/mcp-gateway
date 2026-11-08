@@ -307,8 +307,11 @@ public final class GatewayTestEnvironment {
                         + "\"],\"type\":\"" + row.credentialType() + "\"}");
                 upsert.setBoolean(5, row.enabled());
                 upsert.setBoolean(6, row.adapter());
-                upsert.setString(7, row.connectionJson());
-                upsert.setString(8, row.connectionJson() == null ? "pending_approval" : "connected");
+                // A server that the test moves to another address presents another certificate: what was approved for the shared one would
+                // only make the first check fail, so it starts as a new server and the development bootstrap approves what it sees.
+                String approved = urls.containsKey(row.serverId()) ? null : row.connectionJson();
+                upsert.setString(7, approved);
+                upsert.setString(8, approved == null ? "pending_approval" : "connected");
                 upsert.executeUpdate();
             }
             try (java.sql.Statement bump = connection.createStatement()) {

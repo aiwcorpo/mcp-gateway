@@ -123,7 +123,9 @@ class StreamableHttpClientTest {
             exchange.close();
         });
         StreamableHttpClient guarded = new StreamableHttpClient(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/mcp"),
-                HttpClient.newHttpClient(), JSON, Duration.ofSeconds(1), LIMIT, () -> java.util.Optional.of("169.254.169.254 is a link-local address"));
+                HttpClient.newHttpClient(), JSON, Duration.ofSeconds(1), LIMIT, url -> {
+                    throw new java.io.IOException("169.254.169.254 is a link-local address");
+                });
 
         assertThatThrownBy(() -> guarded.post(request(), IntNode.valueOf(1))).isInstanceOfSatisfying(UpstreamException.class, e -> {
             assertThat(e.kind()).isEqualTo(UpstreamException.Kind.UNAVAILABLE);

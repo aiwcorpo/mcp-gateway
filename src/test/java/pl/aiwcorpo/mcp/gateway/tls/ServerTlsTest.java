@@ -27,6 +27,7 @@ class ServerTlsTest {
     private static final GatewayTestEnvironment env = GatewayTestEnvironment.get();
     private static final ServerTls WITH_BUNDLE = new ServerTls(env.serverCas);
     private static final ServerTls DEFAULTS_ONLY = new ServerTls(null);
+    private static final java.util.List<java.net.InetAddress> LOOPBACK = java.util.List.of(java.net.InetAddress.getLoopbackAddress());
     private static TestMcpServer selfSigned;
     private static TestMcpServer otherHost;
     private static TestMcpServer plain;
@@ -112,7 +113,7 @@ class ServerTlsTest {
 
     @Test
     void theProbeReadsTheLeafAndSaysWhetherItValidatesAsCaForTheHost() throws Exception {
-        ServerTls.Presented signed = WITH_BUNDLE.probe("127.0.0.1", env.jira.port(), Duration.ofSeconds(5));
+        ServerTls.Presented signed = WITH_BUNDLE.probe("127.0.0.1", env.jira.port(), LOOPBACK, Duration.ofSeconds(5));
         assertThat(signed.validatesAsCa()).isTrue();
         assertThat(signed.leaf().fingerprint()).isEqualTo(env.fingerprint(env.jira)).matches("^sha256:[0-9a-f]{64}$");
         assertThat(signed.leaf().subject()).isEqualTo("CN=mcp-jira");
@@ -120,17 +121,17 @@ class ServerTlsTest {
         assertThat(signed.leaf().sans()).contains("127.0.0.1", "localhost");
         assertThat(signed.leaf().notAfter()).isAfter(java.time.Instant.now());
 
-        ServerTls.Presented own = WITH_BUNDLE.probe("127.0.0.1", selfSigned.port(), Duration.ofSeconds(5));
+        ServerTls.Presented own = WITH_BUNDLE.probe("127.0.0.1", selfSigned.port(), LOOPBACK, Duration.ofSeconds(5));
         assertThat(own.validatesAsCa()).as("self-signed").isFalse();
         assertThat(own.leaf().fingerprint()).isEqualTo(env.fingerprint(selfSigned));
 
-        assertThat(WITH_BUNDLE.probe("127.0.0.1", otherHost.port(), Duration.ofSeconds(5)).validatesAsCa()).as("for another host").isFalse();
-        assertThat(DEFAULTS_ONLY.probe("127.0.0.1", env.jira.port(), Duration.ofSeconds(5)).validatesAsCa()).as("without the bundle").isFalse();
+        assertThat(WITH_BUNDLE.probe("127.0.0.1", otherHost.port(), LOOPBACK, Duration.ofSeconds(5)).validatesAsCa()).as("for another host").isFalse();
+        assertThat(DEFAULTS_ONLY.probe("127.0.0.1", env.jira.port(), LOOPBACK, Duration.ofSeconds(5)).validatesAsCa()).as("without the bundle").isFalse();
     }
 
     @Test
     void theProbeFailsForAnAddressThatSpeaksNoTls() {
-        assertThatThrownBy(() -> WITH_BUNDLE.probe("127.0.0.1", plain.port(), Duration.ofSeconds(5))).isInstanceOf(IOException.class);
+        assertThatThrownBy(() -> WITH_BUNDLE.probe("127.0.0.1", plain.port(), LOOPBACK, Duration.ofSeconds(5))).isInstanceOf(IOException.class);
     }
 
     @Test

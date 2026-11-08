@@ -111,4 +111,48 @@ class AddressPolicyVectorsTest {
             assertThat(ServerUrl.parse(bad)).as(bad).isEmpty();
         }
     }
+
+    @Test
+    void theMetadataAddressesOfOtherCloudsAreRefusedInEveryFormTheyCanBeWritten() {
+        for (String address : List.of("100.100.100.200", "192.0.0.192", "169.254.169.254", "fd00:ec2::254",
+                "::ffff:100.100.100.200", "::ffff:c000:c0", "::100.100.100.200", "64:ff9b::6464:64c8", "64:ff9b::c000:c0",
+                "2002:6464:64c8::1", "2002:c000:c0::", "2002:a9fe:a9fe::1")) {
+            AddressPolicy.Verdict verdict = policy.judge(address);
+
+            assertThat(verdict.allowed()).as(address).isFalse();
+            assertThat(verdict.cls()).as(address).isIn("metadata", "link_local");
+        }
+        for (String text : List.of("http://1684301000/", "http://0x64.0x64.0x64.0xc8/", "http://0300.0.0.0300/", "http://3221225664/")) {
+            String host = ServerUrl.parse(text).orElseThrow().host();
+            assertThat(policy.check(host).map(AddressPolicy.Refusal::cls)).as(text).hasValue("metadata");
+        }
+        assertThat(policy.judge("100.100.100.201").allowed()).as("the neighbours are ordinary addresses").isTrue();
+        assertThat(policy.judge("192.0.0.193").allowed()).isTrue();
+        assertThat(policy.judge("2002:6464:64c9::1").allowed()).isTrue();
+    }
+
+    @Test
+    void theDeploymentCanRefuseMoreAddressesAndRangesAlsoInEmbeddedForms() {
+        AddressPolicy configured = new AddressPolicy(false, AddressPolicy.parseList("10.9.0.0/16, 203.0.113.7 ,fd12::/16,,"));
+
+        assertThat(configured.judge("10.9.4.5").allowed()).isFalse();
+        assertThat(configured.judge("10.9.4.5").cls()).isEqualTo("refused_by_configuration");
+        assertThat(configured.judge("10.10.0.1").allowed()).isTrue();
+        assertThat(configured.judge("203.0.113.7").allowed()).isFalse();
+        assertThat(configured.judge("203.0.113.8").allowed()).isTrue();
+        assertThat(configured.judge("fd12:1::5").allowed()).isFalse();
+        assertThat(configured.judge("fd13::1").allowed()).isTrue();
+        assertThat(configured.judge("::ffff:10.9.4.5").allowed()).as("an IPv4 range covers the mapped form").isFalse();
+        assertThat(configured.judge("64:ff9b::a09:405").allowed()).as("and NAT64").isFalse();
+        assertThat(configured.check("10.9.255.255").map(AddressPolicy.Refusal::message)).hasValueSatisfying(message -> assertThat(message).contains("10.9.255.255"));
+        assertThat(new AddressPolicy(false).judge("10.9.4.5").allowed()).as("nothing is refused without the setting").isTrue();
+    }
+
+    @Test
+    void aSettingThatIsNoAddressOrRangeStopsTheGateway() {
+        for (String bad : List.of("10.9.0.0/33", "not-an-address", "10.0.0.0/x", "fd12::/129", "10.0.0.0/8/8", "example")) {
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> new AddressPolicy(false, AddressPolicy.parseList(bad)))
+                    .as(bad).isInstanceOf(IllegalArgumentException.class);
+        }
+    }
 }
