@@ -23,7 +23,8 @@ import tools.jackson.databind.node.ObjectNode;
 
 /**
  * The registry of servers through the admin API (C5 /admin/v1/servers): the only list of servers, changed at runtime. A server made
- * from the template is added, registers its manifest, is approved and called without a restart of anything, and removed again.
+ * from the template is added by its address, is approved (connection, policies, tools) and called without a restart of anything, and
+ * removed again.
  */
 class ServerRegistryApiTest extends GatewayTestBase {
 
@@ -34,7 +35,7 @@ class ServerRegistryApiTest extends GatewayTestBase {
 
     @AfterEach
     void removeWhatTheTestAdded() throws Exception {
-        for (String serverId : List.of("mcp-notes", "mcp-notesb", "mcp-xnotes")) {
+        for (String serverId : List.of("mcp-notes", "mcp-notesb", "mcp-xnotes", "mcp-floor")) {
             adminCall("DELETE", "/admin/v1/servers/" + serverId, null);
         }
         started.forEach(TestMcpServer::close);
@@ -45,18 +46,21 @@ class ServerRegistryApiTest extends GatewayTestBase {
     @org.springframework.beans.factory.annotation.Autowired
     pl.aiwcorpo.mcp.gateway.policy.PolicyService policies;
 
-    private static String serverBody(String serverId, String system, String url) {
-        return "{\"serverId\":\"" + serverId + "\",\"system\":\"" + system + "\",\"internalUrl\":\"" + url + "\","
-                + "\"credential\":{\"required\":true,\"acceptedTypes\":[\"user-secret\"],\"type\":\"user-secret\"}}";
+    private static String addBody(String url) {
+        return "{\"internalUrl\":\"" + url + "\"}";
     }
 
-    private TestMcpServer startNotes() throws Exception {
-        TestMcpServer server = env.startServer("mcp-notes");
+    private TestMcpServer start(String serverId) throws Exception {
+        TestMcpServer server = env.startServer(serverId);
         started.add(server);
         return server;
     }
 
-    private String notesUrl(TestMcpServer server) {
+    private TestMcpServer startNotes() throws Exception {
+        return start("mcp-notes");
+    }
+
+    private String url(TestMcpServer server) {
         return "https://127.0.0.1:" + server.port() + "/mcp";
     }
 
@@ -64,18 +68,43 @@ class ServerRegistryApiTest extends GatewayTestBase {
         return JSON.readTree(response.body());
     }
 
+    private void approveEverything(String serverId, ObjectNode manifest, String... tools) throws Exception {
+        HttpResponse<String> server = adminCall("GET", "/admin/v1/servers/" + serverId, null);
+        JsonNode pending = json(server).path("pendingConnection");
+        assertThat(adminCall("POST", "/admin/v1/servers/" + serverId + "/connection/approve",
+                "{\"tlsMode\":\"" + pending.path("tlsMode").asString() + "\",\"fingerprint\":\"" + pending.path("fingerprint").asString()
+                        + "\"}").statusCode()).isEqualTo(200);
+        assertThat(adminCall("POST", "/admin/v1/registry/servers/" + serverId + "/policies/approve",
+                "{\"policiesHash\":\"" + manifest.path("policiesHash").asString() + "\"}").statusCode()).isEqualTo(200);
+        for (String tool : tools) {
+            assertThat(adminCall("POST", "/admin/v1/registry/servers/" + serverId + "/tools/" + tool + "/approve",
+                    "{\"definitionHash\":\"" + pl.aiwcorpo.mcp.gateway.support.Manifests.tool(manifest, tool).path("definitionHash").asString()
+                            + "\"}").statusCode()).isEqualTo(204);
+        }
+    }
+
     @Test
-    void aServerIsCreatedReadChangedAndDeletedWithItsETag(CapturedOutput output) throws Exception {
+    void aServerIsAddedByItsAddressReadChangedAndDeletedWithItsETag(CapturedOutput output) throws Exception {
+        TestMcpServer notes = startNotes();
         String requestId = UuidV7.next();
         Map<String, String> asRequest = Map.of("X-Request-Id", requestId);
 
-        HttpResponse<String> created = adminCall("POST", "/admin/v1/servers", serverBody("mcp-notes", "notes", "https://127.0.0.1:9/mcp"), asRequest);
+        HttpResponse<String> created = adminCall("POST", "/admin/v1/servers", addBody(url(notes)), asRequest);
         assertThat(created.statusCode()).as(created.body()).isEqualTo(201);
         assertThat(created.headers().firstValue("Location")).contains(NOTES);
         JsonNode body = json(created);
-        assertThat(body.has("tlsName")).as("the certificate is pinned to the serverId, there is no name to set").isFalse();
+        assertThat(body.path("serverId").asString()).as("derived from the manifest: mcp-<system>").isEqualTo("mcp-notes");
+        assertThat(body.path("system").asString()).isEqualTo("notes");
         assertThat(body.path("enabled").asBoolean()).isTrue();
         assertThat(body.path("adapter").asBoolean()).isFalse();
+        assertThat(body.path("allowPlainHttp").asBoolean()).isFalse();
+        assertThat(body.path("status").asString()).isEqualTo("pending_approval");
+        assertThat(body.path("connection").isNull()).isTrue();
+        assertThat(body.path("pendingConnection").path("tlsMode").asString()).as("the certificate of the internal CA names the host").isEqualTo("ca");
+        assertThat(body.path("pendingConnection").path("reason").asString()).isEqualTo("first_connection");
+        assertThat(body.path("pendingConnection").path("validatesAsCa").asBoolean()).isTrue();
+        assertThat(body.path("pendingConnection").path("fingerprint").asString()).isEqualTo(env.fingerprint(notes));
+        assertThat(body.path("credential").path("acceptedTypes").toString()).as("derived from the manifest").isEqualTo("[\"user-secret\"]");
         assertThat(Contracts.gatewayAdminErrors("ServerConfig", body)).isEmpty();
 
         HttpResponse<String> read = adminCall("GET", NOTES, null);
@@ -94,52 +123,75 @@ class ServerRegistryApiTest extends GatewayTestBase {
         assertThat(etag(updated)).as("the document changed, so did its ETag").isNotEqualTo(etag(created));
         assertThat(adminCall("PATCH", NOTES, "{\"enabled\":true}", Map.of("If-Match", etag(created))).statusCode())
                 .as("the old ETag is stale now").isEqualTo(412);
-        assertThat(adminCall("PATCH", NOTES, "{\"serverId\":\"mcp-other\"}", Map.of("If-Match", etag(updated))).statusCode())
-                .as("serverId never changes").isEqualTo(400);
-        assertThat(adminCall("PATCH", NOTES, "{\"adapter\":true}", Map.of("If-Match", etag(updated))).statusCode())
-                .as("adapter is set when the server is added").isEqualTo(400);
-        assertThat(adminCall("PATCH", NOTES, "{\"tlsName\":\"mcp-notes.internal\"}", Map.of("If-Match", etag(updated))).statusCode())
-                .as("the name of the certificate is the serverId, there is none to set").isEqualTo(400);
+        for (String field : List.of("{\"serverId\":\"mcp-other\"}", "{\"adapter\":true}", "{\"internalUrl\":\"https://127.0.0.1:9/mcp\"}",
+                "{\"allowPlainHttp\":true}", "{\"tlsName\":\"mcp-notes.internal\"}")) {
+            assertThat(adminCall("PATCH", NOTES, field, Map.of("If-Match", etag(updated))).statusCode()).as(field).isEqualTo(400);
+        }
 
         assertThat(adminCall("DELETE", NOTES, null, asRequest).statusCode()).isEqualTo(204);
         assertThat(adminCall("GET", NOTES, null).statusCode()).isEqualTo(404);
         assertThat(adminCall("DELETE", NOTES, null).statusCode()).isEqualTo(404);
 
-        List<String> reasons = auditEvents(output, requestId).stream().filter(e -> "admin_change".equals(e.path("event").asString()))
-                .map(e -> e.path("reason").asString()).toList();
-        assertThat(reasons).containsExactly("server_created", "server_updated", "server_deleted");
-        JsonNode update = auditEvents(output, requestId).stream().filter(e -> "server_updated".equals(e.path("reason").asString())).findFirst()
-                .orElseThrow();
+        List<JsonNode> ofTheServer = auditEvents(output, requestId).stream().filter(e -> "admin_change".equals(e.path("event").asString())).toList();
+        List<String> reasons = ofTheServer.stream().map(e -> e.path("reason").asString()).toList();
+        assertThat(reasons).contains("server_created", "server_updated", "server_deleted");
+        assertThat(reasons).as("what the first pull brought is pending, READ_ONLY tools included").contains("definition_submitted", "policies_submitted");
+        assertThat(reasons).doesNotContain("definition_registered");
+        JsonNode update = ofTheServer.stream().filter(e -> "server_updated".equals(e.path("reason").asString())).findFirst().orElseThrow();
         assertThat(update.path("changedFields").toString()).as("names, never values").isEqualTo("[\"enabled\"]");
         assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", update)).isEmpty();
-        assertThat(auditEvents(output, requestId)).allSatisfy(event -> {
-            assertThat(event.path("server").asString()).isEqualTo("mcp-notes");
-            assertThat(event.path("sub").asString()).isEqualTo(ADMIN_SUB);
-        });
+        assertThat(ofTheServer).allSatisfy(event -> assertThat(event.path("server").asString()).isEqualTo("mcp-notes"));
+        assertThat(ofTheServer.stream().filter(e -> List.of("server_created", "server_updated", "server_deleted").contains(e.path("reason").asString())))
+                .allSatisfy(event -> assertThat(event.path("sub").asString()).isEqualTo(ADMIN_SUB));
     }
 
     @Test
-    void reservedSystemsMismatchesAndInconsistentCredentialsAreRefused() throws Exception {
+    void anAddressIsRefusedForAReasonBeforeAnythingIsStored() throws Exception {
         for (String system : List.of("gateway", "offboarding", "portal", "broker", "prometheus", "platform", "admin", "registry", "adapter",
                 "internal", "ci")) {
-            HttpResponse<String> response = adminCall("POST", "/admin/v1/servers", serverBody("mcp-" + system, system, "https://127.0.0.1:9/mcp"));
+            TestMcpServer reserved = start("mcp-" + system);
+            HttpResponse<String> response = adminCall("POST", "/admin/v1/servers", addBody(url(reserved)));
             assertThat(response.statusCode()).as(system).isEqualTo(422);
             assertThat(json(response).path("error").asString()).isEqualTo("server_rejected");
             assertThat(json(response).path("reason").asString()).as(system).isEqualTo("system_reserved");
         }
-        assertThat(json(adminCall("POST", "/admin/v1/servers", serverBody("mcp-notes", "other", "https://127.0.0.1:9/mcp"))).path("reason").asString())
-                .isEqualTo("server_id_mismatch");
-        String mixed = "{\"serverId\":\"mcp-notes\",\"system\":\"notes\",\"internalUrl\":\"https://127.0.0.1:9/mcp\",\"credential\":"
+        TestMcpServer notes = startNotes();
+        String mixed = "{\"internalUrl\":\"" + url(notes) + "\",\"credential\":"
                 + "{\"required\":true,\"acceptedTypes\":[\"service-account\",\"user-secret\"],\"type\":\"service-account\"}}";
         assertThat(json(adminCall("POST", "/admin/v1/servers", mixed)).path("reason").asString()).isEqualTo("credential_types_mixed");
-        String notAccepted = "{\"serverId\":\"mcp-notes\",\"system\":\"notes\",\"internalUrl\":\"https://127.0.0.1:9/mcp\",\"credential\":"
+        String notAccepted = "{\"internalUrl\":\"" + url(notes) + "\",\"credential\":"
                 + "{\"required\":true,\"acceptedTypes\":[\"user-secret\"],\"type\":\"user-oauth\"}}";
         assertThat(json(adminCall("POST", "/admin/v1/servers", notAccepted)).path("reason").asString()).isEqualTo("credential_type_not_accepted");
+        String otherTypes = "{\"internalUrl\":\"" + url(notes) + "\",\"credential\":"
+                + "{\"required\":true,\"acceptedTypes\":[\"user-oauth\"],\"type\":\"user-oauth\"}}";
+        HttpResponse<String> mismatch = adminCall("POST", "/admin/v1/servers", otherTypes);
+        assertThat(mismatch.statusCode()).as("the manifest accepts user-secret only").isEqualTo(422);
+        assertThat(json(mismatch).path("reason").asString()).isEqualTo("manifest_invalid");
+        assertThat(json(mismatch).path("manifestReason").asString()).isEqualTo("credential_type_mismatch");
+        assertThat(Contracts.gatewayAdminErrors("ServerRejected", json(mismatch))).isEmpty();
 
-        for (String bad : List.of("{}", "[]", "not json", serverBody("mcp-notes", "notes", "http://127.0.0.1:9/mcp"),
-                serverBody("MCP-notes", "notes", "https://127.0.0.1:9/mcp"), serverBody("mcp-n", "n", "https://127.0.0.1:9/mcp"),
-                "{\"serverId\":\"mcp-notes\",\"system\":\"notes\",\"internalUrl\":\"https://127.0.0.1:9/mcp\",\"credential\":"
-                        + "{\"required\":true,\"acceptedTypes\":[],\"type\":\"user-secret\"},\"extra\":1}")) {
+        assertThat(json(adminCall("POST", "/admin/v1/servers", addBody("http://127.0.0.1:" + notes.port() + "/mcp"))).path("reason").asString())
+                .as("http needs the flag").isEqualTo("plain_http_not_allowed");
+        String closed = "https://127.0.0.1:" + GatewayProcessPorts.unused() + "/mcp";
+        assertThat(json(adminCall("POST", "/admin/v1/servers", addBody(closed))).path("reason").asString())
+                .as("nothing listens there").isEqualTo("tls_handshake_failed");
+        notes.manifestStatus(404);
+        assertThat(json(adminCall("POST", "/admin/v1/servers", addBody(url(notes)))).path("reason").asString())
+                .isEqualTo("manifest_unreachable");
+        notes.manifestStatus(200);
+        ObjectNode broken = notes.manifest();
+        pl.aiwcorpo.mcp.gateway.support.Manifests.tool(broken, "get_issue").put("definitionHash", "sha256:" + "0".repeat(64));
+        notes.serveManifest(broken);
+        HttpResponse<String> invalid = adminCall("POST", "/admin/v1/servers", addBody(url(notes)));
+        assertThat(json(invalid).path("reason").asString()).isEqualTo("manifest_invalid");
+        notes.serveManifest(null);
+
+        for (String bad : List.of("{}", "[]", "not json", "{\"internalUrl\":1}", "{\"internalUrl\":\"https://u:p@127.0.0.1:9/mcp\"}",
+                "{\"internalUrl\":\"https://127.0.0.1:9/mcp#x\"}", "{\"internalUrl\":\"ftp://127.0.0.1/mcp\"}", "{\"internalUrl\":\"https:///mcp\"}",
+                "{\"internalUrl\":\"https://" + "a".repeat(260) + "/mcp\"}", "{\"internalUrl\":\"https://127.0.0.1:99999/mcp\"}",
+                "{\"internalUrl\":\"https://127.0.0.1:9/mcp\",\"serverId\":\"mcp-notes\"}",
+                "{\"internalUrl\":\"https://127.0.0.1:9/mcp\",\"allowPlainHttp\":\"yes\"}",
+                "{\"internalUrl\":\"https://127.0.0.1:9/mcp\",\"credential\":{\"required\":true,\"acceptedTypes\":[],\"type\":\"user-secret\"}}")) {
             assertThat(adminCall("POST", "/admin/v1/servers", bad).statusCode()).as(bad).isEqualTo(400);
         }
         assertThat(adminCall("GET", NOTES, null).statusCode()).as("nothing was stored").isEqualTo(404);
@@ -147,13 +199,15 @@ class ServerRegistryApiTest extends GatewayTestBase {
 
     @Test
     void aServerThatExistsIsAConflictAndOnlyAnAdministratorChangesTheRegistry() throws Exception {
-        assertThat(adminCall("POST", "/admin/v1/servers", serverBody("mcp-notes", "notes", "https://127.0.0.1:9/mcp")).statusCode()).isEqualTo(201);
-        HttpResponse<String> again = adminCall("POST", "/admin/v1/servers", serverBody("mcp-notes", "notes", "https://127.0.0.1:9/mcp"));
+        TestMcpServer notes = startNotes();
+        assertThat(adminCall("POST", "/admin/v1/servers", addBody(url(notes))).statusCode()).isEqualTo(201);
+        HttpResponse<String> again = adminCall("POST", "/admin/v1/servers", addBody(url(notes)));
         assertThat(again.statusCode()).isEqualTo(409);
         assertThat(json(again).path("error").asString()).isEqualTo("server_exists");
 
         String user = env.idp.token(BOB_SUB, "bob", List.of("mcp-jira-read"), "mcp-gateway-admin", "mcp-portal-bff");
-        for (String[] call : new String[][] {{"GET", "/admin/v1/servers"}, {"POST", "/admin/v1/servers"}, {"GET", NOTES}, {"DELETE", NOTES}}) {
+        for (String[] call : new String[][] {{"GET", "/admin/v1/servers"}, {"POST", "/admin/v1/servers"}, {"GET", NOTES}, {"DELETE", NOTES},
+                {"POST", NOTES + "/refresh"}, {"POST", NOTES + "/connection/approve"}}) {
             HttpResponse<String> refused = admin(env.bffTls, call[0], call[1], user, call[0].equals("POST") ? "{}" : null);
             assertThat(refused.statusCode()).as(call[0] + " " + call[1]).isEqualTo(403);
         }
@@ -162,7 +216,7 @@ class ServerRegistryApiTest extends GatewayTestBase {
     }
 
     @Test
-    void aServerAddedAtRuntimeServesItsToolsWithoutARestartAndLeavesNothingWhenRemoved(CapturedOutput output) throws Exception {
+    void aServerAddedAtRuntimeServesItsToolsOnlyOnceEverythingIsApprovedAndLeavesNothingWhenRemoved(CapturedOutput output) throws Exception {
         TestMcpServer notes = startNotes();
         String sub = UUID.randomUUID().toString();
         String token = env.idp.token(sub, "nora", NOTES_USER);
@@ -171,36 +225,40 @@ class ServerRegistryApiTest extends GatewayTestBase {
         assertThat(stream.nextMessage(Duration.ofSeconds(2)).path("method").asString()).isEqualTo("notifications/subscriptions/acknowledged");
         assertThat(stream.nextMessage(Duration.ofSeconds(1))).as("nothing changed yet").isNull();
 
-        assertThat(adminCall("POST", "/admin/v1/servers", serverBody("mcp-notes", "notes", notesUrl(notes))).statusCode()).isEqualTo(201);
+        HttpResponse<String> added = adminCall("POST", "/admin/v1/servers", addBody(url(notes)));
+        assertThat(added.statusCode()).isEqualTo(201);
         ObjectNode manifest = notes.manifest();
-        HttpResponse<String> registered = admin(env.pipelineTls("mcp-notes"), "PUT", "/admin/v1/registry/servers/mcp-notes", null,
-                JSON.writeValueAsString(manifest));
-        assertThat(registered.statusCode()).as(registered.body()).isEqualTo(200);
-        assertThat(json(registered).path("policiesStatus").asString()).isEqualTo("pending_approval");
-        assertThat(listedTools(token)).as("tools are invisible until the policies are approved").noneMatch(name -> name.startsWith("notes__"));
+        JsonNode entry = registryEntryOf("mcp-notes");
+        assertThat(entry.path("policiesStatus").asString()).isEqualTo("pending_approval");
+        for (JsonNode tool : entry.path("tools")) {
+            assertThat(tool.path("status").asString()).as(tool.path("name").asString() + ": a pulled READ_ONLY tool is not approved").isEqualTo("pending_approval");
+            assertThat(tool.path("source").asString()).isEqualTo("manifest");
+        }
+        assertThat(listedTools(token)).as("nothing is listed until the connection, the policies and the tool are approved")
+                .noneMatch(name -> name.startsWith("notes__"));
         assertThat(toolError(callNotes(token, "{\"issueKey\":\"ABC-1\"}")).path("error").asString()).isEqualTo("tool_disabled");
 
-        HttpResponse<String> approved = asAdminWithBody("POST", "/admin/v1/registry/servers/mcp-notes/policies/approve",
-                "{\"policiesHash\":\"" + manifest.path("policiesHash").asString() + "\"}");
-        assertThat(approved.statusCode()).as(approved.body()).isEqualTo(200);
+        JsonNode pending = json(added).path("pendingConnection");
+        assertThat(adminCall("POST", NOTES + "/connection/approve", "{\"tlsMode\":\"ca\",\"fingerprint\":\"" + pending.path("fingerprint").asString() + "\"}")
+                .statusCode()).isEqualTo(200);
+        assertThat(asAdminWithBody("POST", "/admin/v1/registry/servers/mcp-notes/policies/approve",
+                "{\"policiesHash\":\"" + manifest.path("policiesHash").asString() + "\"}").statusCode()).isEqualTo(200);
+        assertThat(listedTools(token)).as("the tools themselves still wait").noneMatch(name -> name.startsWith("notes__"));
+        for (String tool : List.of("get_issue", "search_issues")) {
+            assertThat(adminCall("POST", "/admin/v1/registry/servers/mcp-notes/tools/" + tool + "/approve", "{\"definitionHash\":\""
+                    + pl.aiwcorpo.mcp.gateway.support.Manifests.tool(manifest, tool).path("definitionHash").asString() + "\"}").statusCode())
+                    .isEqualTo(204);
+        }
 
         assertThat(stream.nextMessage(Duration.ofSeconds(6))).as("the list of the client changed: no restart, no reconnect").isNotNull();
         assertThat(listedTools(token)).contains("notes__get_issue", "notes__search_issues").doesNotContain("notes__delete_issue");
         HttpResponse<String> result = callNotes(token, "{\"issueKey\":\"ABC-1\"}");
         assertThat(JSON.readTree(result.body()).path("result").path("isError").asBoolean(false)).as(result.body()).isFalse();
-        assertThat(notes.requests().stream().filter(r -> "tools/call".equals(r.rpcMethod()))).hasSize(1);
+        assertThat(notes.requests().stream().filter(r -> "tools/call".equals(r.rpcMethod()) && r.status() == 200)).hasSize(1);
 
-        HttpResponse<String> catalog = admin("GET", "/admin/v1/registry/servers", ADMIN_SUB, "a.admin", List.of("mcp-platform-admin"), null);
-        JsonNode listed = json(catalog);
-        JsonNode entry = null;
-        for (JsonNode server : listed) {
-            if ("mcp-notes".equals(server.path("serverId").asString())) {
-                entry = server;
-            }
-        }
-        assertThat(entry).isNotNull();
-        assertThat(entry.path("policiesStatus").asString()).isEqualTo("approved");
-        assertThat(entry.path("policiesHash").asString()).isEqualTo(manifest.path("policiesHash").asString());
+        JsonNode approved = registryEntryOf("mcp-notes");
+        assertThat(approved.path("policiesStatus").asString()).isEqualTo("approved");
+        assertThat(approved.path("policiesHash").asString()).isEqualTo(manifest.path("policiesHash").asString());
 
         String requestId = UuidV7.next();
         assertThat(adminCall("DELETE", NOTES, null, Map.of("X-Request-Id", requestId)).statusCode()).isEqualTo(204);
@@ -219,10 +277,8 @@ class ServerRegistryApiTest extends GatewayTestBase {
     @Test
     void deletingAServerRemovesItsMappingEntriesAndFreesItsNamespace(CapturedOutput output) throws Exception {
         TestMcpServer notes = startNotes();
-        assertThat(adminCall("POST", "/admin/v1/servers", serverBody("mcp-notes", "notes", notesUrl(notes))).statusCode()).isEqualTo(201);
+        assertThat(adminCall("POST", "/admin/v1/servers", addBody(url(notes))).statusCode()).isEqualTo(201);
         ObjectNode manifest = notes.manifest();
-        assertThat(admin(env.pipelineTls("mcp-notes"), "PUT", "/admin/v1/registry/servers/mcp-notes", null, JSON.writeValueAsString(manifest))
-                .statusCode()).isEqualTo(200);
         assertThat(asAdminWithBody("POST", "/admin/v1/registry/servers/mcp-notes/policies/approve",
                 "{\"policiesHash\":\"" + manifest.path("policiesHash").asString() + "\"}").statusCode()).isEqualTo(200);
         String mapping = "{\"scopeMapping\":[{\"group\":\"mcp-notes-proj-ABC\",\"scopes\":[\"Notes::Project/ABC\"]},"
@@ -232,11 +288,12 @@ class ServerRegistryApiTest extends GatewayTestBase {
         assertThat(put.statusCode()).as(put.body()).isEqualTo(200);
 
         // A second server cannot take the namespace of the first one, whatever its manifest says.
-        assertThat(adminCall("POST", "/admin/v1/servers", serverBody("mcp-xnotes", "xnotes", "https://127.0.0.1:8443/mcp")).statusCode()).isEqualTo(201);
-        ObjectNode thief = xnotesManifest();
-        HttpResponse<String> refused = registerAs("mcp-xnotes", thief);
+        TestMcpServer thief = start("mcp-xnotes");
+        thief.serveManifest(xnotesManifest());
+        HttpResponse<String> refused = adminCall("POST", "/admin/v1/servers", addBody(url(thief)));
         assertThat(refused.statusCode()).as(refused.body()).isEqualTo(422);
         assertThat(json(refused).path("reason").asString()).as(refused.body()).isEqualTo("namespace_conflict");
+        assertThat(adminCall("GET", "/admin/v1/servers/mcp-xnotes", null).statusCode()).as("nothing was stored").isEqualTo(404);
 
         String requestId = UuidV7.next();
         assertThat(adminCall("DELETE", NOTES, null, Map.of("X-Request-Id", requestId)).statusCode()).isEqualTo(204);
@@ -248,35 +305,30 @@ class ServerRegistryApiTest extends GatewayTestBase {
                 .filter(e -> "scope_mapping_entry_removed".equals(e.path("reason").asString())).toList();
         assertThat(removed.stream().map(e -> e.path("resource").path("type").asString() + "/" + e.path("resource").path("id").asString()))
                 .containsExactlyInAnyOrder("Notes::Project/ABC", "Notes::Project/XYZ");
-        assertThat(registerAs("mcp-xnotes", thief).statusCode()).as("the namespace is free again").isEqualTo(200);
+        assertThat(adminCall("POST", "/admin/v1/servers", addBody(url(thief))).statusCode()).as("the namespace is free again").isEqualTo(201);
     }
 
     @Test
     void theRiskFloorsOutliveTheServerAndLeftoverRowsAreNotTakenByTheServerThatComesNext() throws Exception {
-        String url = "https://127.0.0.1:8443/mcp";
-        assertThat(adminCall("POST", "/admin/v1/servers", serverBody("mcp-floor", "floor", url)).statusCode()).isEqualTo(201);
+        TestMcpServer floor = start("mcp-floor");
         ObjectNode destructive = pl.aiwcorpo.mcp.gateway.support.Manifests.manifest("mcp-floor", "floor", "1.0.0", List.of("user-secret"),
                 pl.aiwcorpo.mcp.gateway.support.Manifests.Tool.destructive("wipe"));
-        assertThat(registerAs("mcp-floor", destructive).statusCode()).isEqualTo(200);
+        floor.serveManifest(destructive);
+        assertThat(adminCall("POST", "/admin/v1/servers", addBody(url(floor))).statusCode()).isEqualTo(201);
         assertThat(adminCall("DELETE", "/admin/v1/servers/mcp-floor", null).statusCode()).isEqualTo(204);
         assertThat(jdbc.sql("SELECT risk FROM registry_risk_floor WHERE server_id = 'mcp-floor' AND tool = 'wipe'").query(Long.class).single())
                 .as("the floor stays when the server is deleted").isEqualTo(2L);
 
         // A row that a race left behind is not what the new server starts with.
         jdbc.sql("INSERT INTO registry_policies (server_id, pending_hash, pending_policies, pending_resource_types, pending_version, pending_source) "
-                + "VALUES ('mcp-floor', 'sha256:" + "a".repeat(64) + "', '{}'::jsonb, '[]'::jsonb, '1.0.0', 'ci')").update();
-        assertThat(adminCall("POST", "/admin/v1/servers", serverBody("mcp-floor", "floor", url)).statusCode()).isEqualTo(201);
-        assertThat(jdbc.sql("SELECT count(*) FROM registry_policies WHERE server_id = 'mcp-floor'").query(Long.class).single()).isZero();
-
+                + "VALUES ('mcp-floor', 'sha256:" + "a".repeat(64) + "', '{}'::jsonb, '[]'::jsonb, '1.0.0', 'manifest')").update();
         ObjectNode lowered = pl.aiwcorpo.mcp.gateway.support.Manifests.manifest("mcp-floor", "floor", "1.1.0", List.of("user-secret"),
                 pl.aiwcorpo.mcp.gateway.support.Manifests.Tool.readOnly("wipe"));
-        assertThat(registerAs("mcp-floor", lowered).statusCode()).isEqualTo(200);
-        JsonNode entry = null;
-        for (JsonNode server : json(adminCall("GET", "/admin/v1/registry/servers", null))) {
-            if ("mcp-floor".equals(server.path("serverId").asString())) {
-                entry = server;
-            }
-        }
+        floor.serveManifest(lowered);
+        assertThat(adminCall("POST", "/admin/v1/servers", addBody(url(floor))).statusCode()).isEqualTo(201);
+        assertThat(jdbc.sql("SELECT pending_hash FROM registry_policies WHERE server_id = 'mcp-floor'").query(String.class).single())
+                .as("the leftover row was purged, the policies are those of the pulled manifest").isEqualTo(lowered.path("policiesHash").asString());
+        JsonNode entry = registryEntryOf("mcp-floor");
         assertThat(entry.path("tools").get(0).path("status").asString()).as("not approved as READ_ONLY without an administrator").isEqualTo("pending_approval");
         assertThat(entry.path("tools").get(0).path("riskLowered").asBoolean()).isTrue();
 
@@ -285,9 +337,8 @@ class ServerRegistryApiTest extends GatewayTestBase {
         jdbc.sql("DELETE FROM registry_risk_floor WHERE server_id = 'mcp-floor'").update();
         jdbc.sql("INSERT INTO registry_legacy (server_id) VALUES ('mcp-floor')").update();
         jdbc.sql("INSERT INTO registry_policies (server_id, pending_hash, pending_policies, pending_resource_types, pending_version, pending_source) "
-                + "VALUES ('mcp-floor', 'sha256:" + "b".repeat(64) + "', '{}'::jsonb, '[]'::jsonb, '1.0.0', 'ci')").update();
-        assertThat(adminCall("POST", "/admin/v1/servers", serverBody("mcp-floor", "floor", url)).statusCode()).isEqualTo(201);
-        assertThat(jdbc.sql("SELECT count(*) FROM registry_policies WHERE server_id = 'mcp-floor'").query(Long.class).single()).isEqualTo(1L);
+                + "VALUES ('mcp-floor', 'sha256:" + "b".repeat(64) + "', '{}'::jsonb, '[]'::jsonb, '1.0.0', 'manifest')").update();
+        assertThat(adminCall("POST", "/admin/v1/servers", addBody(url(floor))).statusCode()).isEqualTo(201);
         assertThat(jdbc.sql("SELECT count(*) FROM registry_legacy WHERE server_id = 'mcp-floor'").query(Long.class).single()).isZero();
         adminCall("DELETE", "/admin/v1/servers/mcp-floor", null);
         jdbc.sql("DELETE FROM registry_risk_floor WHERE server_id = 'mcp-floor'").update();
@@ -296,6 +347,15 @@ class ServerRegistryApiTest extends GatewayTestBase {
 
     // --- helpers -----------------------------------------------------------------------------------------------
 
+    private JsonNode registryEntryOf(String serverId) throws Exception {
+        for (JsonNode server : json(adminCall("GET", "/admin/v1/registry/servers", null))) {
+            if (serverId.equals(server.path("serverId").asString())) {
+                return server;
+            }
+        }
+        throw new AssertionError(serverId + " is not in the registry");
+    }
+
     private ObjectNode xnotesManifest() {
         ObjectNode manifest = pl.aiwcorpo.mcp.gateway.support.Manifests.manifest("mcp-xnotes", "xnotes", "1.0.0", List.of("user-secret"),
                 pl.aiwcorpo.mcp.gateway.support.Manifests.Tool.readOnly("get_note"));
@@ -303,10 +363,6 @@ class ServerRegistryApiTest extends GatewayTestBase {
         manifest.set("policies", Fragments.policies("notes"));
         manifest.put("policiesHash", Fragments.hash((ObjectNode) manifest.get("policies"), (tools.jackson.databind.node.ArrayNode) manifest.get("resourceTypes")));
         return manifest;
-    }
-
-    private HttpResponse<String> registerAs(String serverId, ObjectNode manifest) throws Exception {
-        return admin(env.pipelineTls(serverId), "PUT", "/admin/v1/registry/servers/" + serverId, null, JSON.writeValueAsString(manifest));
     }
 
     private HttpResponse<String> asAdminWithBody(String method, String path, String body) throws Exception {
@@ -332,5 +388,12 @@ class ServerRegistryApiTest extends GatewayTestBase {
                 "MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "subscriptions/listen"));
         await().atMost(Duration.ofSeconds(3)).until(() -> client.status() == 200);
         return client;
+    }
+
+    /** A port nothing listens on. */
+    private static final class GatewayProcessPorts {
+        static int unused() throws java.io.IOException {
+            return pl.aiwcorpo.mcp.gateway.support.GatewayProcess.freePort();
+        }
     }
 }

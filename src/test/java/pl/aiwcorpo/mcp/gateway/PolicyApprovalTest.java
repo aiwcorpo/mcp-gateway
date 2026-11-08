@@ -32,12 +32,16 @@ class PolicyApprovalTest extends GatewayTestBase {
     @BeforeEach
     void addTheServer() throws Exception {
         pinned = env.startServer("mcp-pinned");
-        String body = "{\"serverId\":\"mcp-pinned\",\"system\":\"pinned\",\"internalUrl\":\"https://127.0.0.1:" + pinned.port() + "/mcp\","
-                + "\"credential\":{\"required\":true,\"acceptedTypes\":[\"user-secret\"],\"type\":\"user-secret\"}}";
-        assertThat(adminCall("POST", "/admin/v1/servers", body).statusCode()).isEqualTo(201);
+        HttpResponse<String> added = adminCall("POST", "/admin/v1/servers", "{\"internalUrl\":\"https://127.0.0.1:" + pinned.port() + "/mcp\"}");
+        assertThat(added.statusCode()).as(added.body()).isEqualTo(201);
         manifest = pinned.manifest();
-        HttpResponse<String> registered = admin(env.pipelineTls("mcp-pinned"), "PUT", SERVER, null, JSON.writeValueAsString(manifest));
-        assertThat(registered.statusCode()).as(registered.body()).isEqualTo(200);
+        // The connection and the tool are approved, so that the policies are the one thing that is still waiting.
+        JsonNode pending = JSON.readTree(added.body()).path("pendingConnection");
+        assertThat(adminCall("POST", "/admin/v1/servers/mcp-pinned/connection/approve", "{\"tlsMode\":\"" + pending.path("tlsMode").asString()
+                + "\",\"fingerprint\":\"" + pending.path("fingerprint").asString() + "\"}").statusCode()).isEqualTo(200);
+        assertThat(adminCall("POST", SERVER + "/tools/get_issue/approve", "{\"definitionHash\":\""
+                + pl.aiwcorpo.mcp.gateway.support.Manifests.tool(manifest, "get_issue").path("definitionHash").asString() + "\"}").statusCode())
+                .isEqualTo(204);
     }
 
     @AfterEach
@@ -69,7 +73,7 @@ class PolicyApprovalTest extends GatewayTestBase {
     }
 
     @Test
-    void theFirstRegistrationWaitsForAnApprovalThatNeedsTheHashOfWhatWaits() throws Exception {
+    void theFirstPullWaitsForAnApprovalThatNeedsTheHashOfWhatWaits() throws Exception {
         JsonNode waiting = registryEntry();
         assertThat(waiting.path("policiesStatus").asString()).isEqualTo("pending_approval");
         assertThat(waiting.path("pendingPoliciesHash").asString()).isEqualTo(hash());
@@ -80,7 +84,7 @@ class PolicyApprovalTest extends GatewayTestBase {
         JsonNode diff = JSON.readTree(pending.body());
         assertThat(diff.path("approvedHash").isNull()).isTrue();
         assertThat(diff.path("pendingHash").asString()).isEqualTo(hash());
-        assertThat(diff.path("source").asString()).isEqualTo("ci");
+        assertThat(diff.path("source").asString()).isEqualTo("manifest");
         assertThat(diff.path("pendingPolicies").path("namespace").asString()).isEqualTo("Pinned");
         assertThat(diff.path("pendingResourceTypes").findValuesAsString("type")).contains("Pinned::Project", "Pinned::Issue");
         assertThat(pl.aiwcorpo.mcp.gateway.support.Contracts.gatewayAdminErrors("PendingPolicies", diff)).isEmpty();
@@ -112,7 +116,7 @@ class PolicyApprovalTest extends GatewayTestBase {
         String token = env.idp.token(UUID.randomUUID().toString(), "pia", GROUPS);
         assertThat(listed(token)).contains("pinned__get_issue");
 
-        // The server is redeployed with a policy that nobody approved; nothing registered it.
+        // The server is redeployed with a policy that nobody approved.
         pinned.driftPolicies(true);
 
         await().atMost(Duration.ofSeconds(15)).pollInterval(Duration.ofMillis(500)).untilAsserted(() -> {

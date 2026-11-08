@@ -29,4 +29,11 @@ public final class Contracts {
                 "classpath:mcp-contracts/openapi/gateway-admin.v1.yaml#/components/schemas/" + component));
         return schema.validate(value).stream().map(Object::toString).toList();
     }
+
+    /** Errors of {@code value} against a schema of C14, the interface of the servers ({@code PolicyData}, {@code PolicyDataAck}). */
+    public static List<String> serverInterfaceErrors(String component, JsonNode value) {
+        Schema schema = SCHEMAS.getSchema(SchemaLocation.of(
+                "classpath:mcp-contracts/openapi/mcp-server.v1.yaml#/components/schemas/" + component));
+        return schema.validate(value).stream().map(Object::toString).toList();
+    }
 }

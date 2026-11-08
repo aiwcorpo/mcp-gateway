@@ -1,6 +1,7 @@
 package pl.aiwcorpo.mcp.gateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 import java.net.http.HttpResponse;
 import java.util.List;
@@ -259,10 +260,12 @@ class PolicyAdminApiTest extends GatewayTestBase {
         String ai = env.idp.token(ALICE_SUB, "alice", ALICE_GROUPS, "mcp-gateway", "claude-ai");
         assertThat(toolError(callGetIssue(ai)).path("error").asString()).as("the list of the database is the one in force").isEqualTo("not_found_or_denied");
         assertThat(toolError(callGetIssue(aliceToken())).path("error").asString()).isEmpty();
-        HttpResponse<String> data = java.net.http.HttpClient.newBuilder().sslContext(env.policyClientJiraTls).build().send(
-                java.net.http.HttpRequest.newBuilder(java.net.URI.create("https://localhost:" + env.internalPort + "/internal/v1/policy-data")).GET().build(),
-                HttpResponse.BodyHandlers.ofString());
-        assertThat(json(data).path("allowedClients").toString()).isEqualTo("[\"claude-code\"]");
+        await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() -> {
+            java.util.List<pl.aiwcorpo.mcp.testserver.TestMcpServer.RecordedRequest> pushes = env.jira.policyPushes();
+            assertThat(pushes).isNotEmpty();
+            assertThat(JSON.readTree(pushes.getLast().body()).path("allowedClients").toString()).as("the data the gateway pushed to the server")
+                    .isEqualTo("[\"claude-code\"]");
+        });
     }
 
     @Test

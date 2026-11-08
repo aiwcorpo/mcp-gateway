@@ -109,6 +109,39 @@ public final class TestPki {
         return List.of(crt, key);
     }
 
+    /**
+     * A keystore with a self-signed certificate (no CA stands behind it), like the one the starter generates at its first start. Returns
+     * the path; {@link #fingerprint} gives what an administrator pins.
+     */
+    public static Path selfSigned(Path dir, String file, String cn, List<String> names) throws Exception {
+        KeyPair keys = keyPair();
+        X500Name name = new X500Name("CN=" + cn);
+        X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(name, serial(), Date.from(Instant.now().minusSeconds(60)),
+                Date.from(Instant.now().plus(Duration.ofDays(30))), name, keys.getPublic());
+        GeneralName[] sans = names.stream().map(n -> n.matches("^[0-9.]+$")
+                ? new GeneralName(GeneralName.iPAddress, n) : new GeneralName(GeneralName.dNSName, n)).toArray(GeneralName[]::new);
+        if (sans.length > 0) {
+            builder.addExtension(Extension.subjectAlternativeName, false, new GeneralNames(sans));
+        }
+        X509Certificate cert = sign(builder, keys);
+        KeyStore store = KeyStore.getInstance("PKCS12");
+        store.load(null, null);
+        store.setKeyEntry(cn, keys.getPrivate(), PASSWORD, new Certificate[] {cert});
+        Path path = dir.resolve(file);
+        save(store, path);
+        return path;
+    }
+
+    /** The fingerprint (sha256 of the DER) of the certificate in a keystore, as the gateway shows and pins it. */
+    public static String fingerprint(Path keystore) throws Exception {
+        KeyStore store = KeyStore.getInstance("PKCS12");
+        try (java.io.InputStream in = Files.newInputStream(keystore)) {
+            store.load(in, PASSWORD);
+        }
+        String alias = store.aliases().nextElement();
+        return pl.aiwcorpo.mcp.gateway.tls.ServerCertificate.fingerprintOf(store.getCertificate(alias).getEncoded());
+    }
+
     /** The CA certificate alone, for a client that is to trust this PKI and nothing else. */
     public Path caPem(String name) throws Exception {
         Path path = dir.resolve(name + ".crt");

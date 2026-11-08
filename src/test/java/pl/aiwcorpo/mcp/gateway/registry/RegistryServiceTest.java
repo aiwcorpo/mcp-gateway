@@ -36,8 +36,8 @@ import tools.jackson.databind.node.ObjectNode;
 
 /**
  * The registry service on a real PostgreSQL, with its own server registry for a server of its own (mcp-regtest, so that the manifests
- * and approvals of the application's servers are left alone): registration, approval of tools and of policies, what a running server
- * presents, the start.
+ * and approvals of the application's servers are left alone): what a pulled manifest does (it approves nothing), approval of tools and
+ * of policies, what a running server presents, the start.
  */
 class RegistryServiceTest extends GatewayTestBase {
 
@@ -84,9 +84,15 @@ class RegistryServiceTest extends GatewayTestBase {
         }
     }
 
+    /** A server whose connection is approved: the tools of a server wait until it is (CC-249). */
     private static ServerConfig configOf(String credentialType) {
-        return new ServerConfig(SERVER, SYSTEM, URI.create("https://mcp-regtest.internal:8443/mcp"),
-                new ServerConfig.Credential(true, List.of(credentialType), credentialType), true, false);
+        return configOf(SERVER, SYSTEM, credentialType);
+    }
+
+    private static ServerConfig configOf(String serverId, String system, String credentialType) {
+        return new ServerConfig(serverId, system, URI.create("https://" + serverId + ".internal:8443/mcp"),
+                new ServerConfig.Credential(true, List.of(credentialType), credentialType), true, false, false, "connected", null, null,
+                new ServerConfig.Connection("ca", null, null, null, List.of(), null, "test", Instant.parse("2026-11-08T00:00:00Z")), null);
     }
 
     /** A new start of the gateway with the credential type that the server is configured with now. */
@@ -109,12 +115,28 @@ class RegistryServiceTest extends GatewayTestBase {
         return Manifests.manifest(SERVER, SYSTEM, version, List.of(Manifests.USER_SECRET), tools);
     }
 
-    /** Registers the manifest as the pipeline does and, as the administrator does, approves its policies when they wait. */
-    private Result.Accepted register(ObjectNode manifest) {
-        Result result = service.register(requestId, SERVER, manifest, "ci");
+    /** The gateway pulls the manifest: nothing in it is approved. */
+    private Result.Accepted pull(ObjectNode manifest) {
+        Result result = service.applyPulled(requestId, SERVER, manifest);
         assertThat(result).isInstanceOf(Result.Accepted.class);
-        approvePoliciesOf(manifest);
         return (Result.Accepted) result;
+    }
+
+    /**
+     * Pulls the manifest and does what an administrator does with it when nothing is in doubt: approves its policies when they wait, and
+     * the tools that read only and wait without a lowered risk.
+     */
+    private Result.Accepted register(ObjectNode manifest) {
+        Result.Accepted accepted = pull(manifest);
+        approvePoliciesOf(manifest);
+        for (RegisteredTool tool : List.copyOf(service.registered(SERVER).orElseThrow().tools().values())) {
+            RegisteredTool.Pending pending = tool.pending();
+            if (pending != null && !pending.riskLowered() && "READ_ONLY".equals(pending.entry().path("risk").asString())
+                    && "manifest".equals(pending.source())) {
+                service.approve(requestId, SERVER, tool.name(), pending.hash(), false, admin());
+            }
+        }
+        return accepted;
     }
 
     private void approvePoliciesOf(ObjectNode manifest) {
@@ -141,19 +163,41 @@ class RegistryServiceTest extends GatewayTestBase {
     }
 
     @Test
-    void aRegistrationApprovesReadOnlyToolsAndServesOnlyThose(CapturedOutput output) {
+    void aPullApprovesNothingNotEvenAToolThatOnlyReadsAndServesNothing(CapturedOutput output) {
         ObjectNode manifest = manifest("1.4.0", Tool.readOnly("get_issue"), Tool.update("update_issue"), Tool.destructive("delete_issue"));
 
-        register(manifest);
+        pull(manifest);
+        approvePoliciesOf(manifest);
 
-        assertThat(server().tools()).containsOnlyKeys("get_issue");
-        assertThat(server().tools().get("get_issue").definitionHash()).isEqualTo(hash(manifest, "get_issue"));
-        assertThat(tool("update_issue").pending().change()).isEqualTo("new");
-        assertThat(tool("delete_issue").pending().source()).isEqualTo("ci");
+        assertThat(server().tools()).as("the policies are approved, the tools are not").isEmpty();
+        for (String name : List.of("get_issue", "update_issue", "delete_issue")) {
+            assertThat(tool(name).approved()).as(name).isNull();
+            assertThat(tool(name).pending().change()).isEqualTo("new");
+            assertThat(tool(name).pending().source()).isEqualTo("manifest");
+            assertThat(tool(name).pending().hash()).isEqualTo(hash(manifest, name));
+        }
         assertThat(store.tools(SERVER)).containsOnlyKeys("get_issue", "update_issue", "delete_issue");
-        List<String> reasons = auditReasons(output, requestId);
-        assertThat(reasons).containsExactlyInAnyOrder("definition_registered", "definition_submitted", "definition_submitted",
+        assertThat(auditReasons(output, requestId)).containsExactlyInAnyOrder("definition_submitted", "definition_submitted", "definition_submitted",
                 "policies_submitted", "policies_approved");
+        assertThat(servers.resolveForCall("regtest__get_issue")).hasValueSatisfying(found -> assertThat(found.tool().disabled()).isTrue());
+
+        assertThat(service.approve(requestId, SERVER, "get_issue", hash(manifest, "get_issue"), false, admin())).isInstanceOf(Approval.Approved.class);
+        assertThat(server().tools()).containsOnlyKeys("get_issue");
+    }
+
+    @Test
+    void aPullOfTheSameManifestAgainChangesNothingAndLeavesNoEvent(CapturedOutput output) {
+        ObjectNode manifest = manifest("1.4.0", Tool.readOnly("get_issue"));
+        register(manifest);
+        long counter = jdbc.sql("SELECT version FROM registry_changes WHERE id = 1").query(Long.class).single();
+        requestId = pl.aiwcorpo.mcp.gateway.jwt.UuidV7.next();
+
+        pull(manifest);
+
+        assertThat(jdbc.sql("SELECT version FROM registry_changes WHERE id = 1").query(Long.class).single())
+                .as("a pull that changes nothing moves no counter: the instances read nothing again").isEqualTo(counter);
+        assertThat(server().tools()).containsOnlyKeys("get_issue");
+        assertThat(auditReasons(output, requestId)).doesNotContain("definition_submitted", "tool_removed");
     }
 
     @Test
@@ -186,14 +230,16 @@ class RegistryServiceTest extends GatewayTestBase {
         service.approve(requestId, SERVER, "update_issue", hash(manifest, "update_issue"), false, admin());
 
         ObjectNode lowered = manifest("1.5.0", Tool.readOnly("get_issue").described("Reviewed text."), Tool.readOnly("update_issue"));
-        Result result = service.register(requestId, SERVER, lowered, "ci");
+        Result result = service.applyPulled(requestId, SERVER, lowered);
 
-        assertThat(result).as("the manifest is taken, only that tool waits").isInstanceOf(Result.Accepted.class);
-        assertThat(tool("get_issue").approved().version()).isEqualTo("1.5.0");
+        assertThat(result).as("the manifest is taken, and nothing in it is approved").isInstanceOf(Result.Accepted.class);
+        assertThat(tool("get_issue").pending().version()).isEqualTo("1.5.0");
+        assertThat(tool("get_issue").approved().version()).as("what was approved stays in force").isEqualTo("1.4.0");
         RegisteredTool.Pending pending = tool("update_issue").pending();
         assertThat(pending.riskLowered()).isTrue();
         assertThat(pending.change()).isEqualTo("changed");
         assertThat(tool("update_issue").approved().version()).as("what was approved stays in force").isEqualTo("1.4.0");
+        assertThat(tool("get_issue").pending().riskLowered()).as("the same risk as before: a change, no lowering").isFalse();
         String hash = hash(lowered, "update_issue");
 
         Approval refused = service.approve(requestId, SERVER, "update_issue", hash, false, admin());
@@ -251,7 +297,7 @@ class RegistryServiceTest extends GatewayTestBase {
         register(manifest("1.4.0", Tool.destructive("delete_issue")));
 
         ObjectNode update = manifest("1.5.0", Tool.update("delete_issue"));
-        assertThat(service.register(requestId, SERVER, update, "ci")).isInstanceOf(Result.Accepted.class);
+        assertThat(service.applyPulled(requestId, SERVER, update)).isInstanceOf(Result.Accepted.class);
 
         RegisteredTool.Pending pending = tool("delete_issue").pending();
         assertThat(pending.riskLowered()).isTrue();
@@ -272,15 +318,15 @@ class RegistryServiceTest extends GatewayTestBase {
     @Test
     void aManifestOfTheDevEnvironmentOrOfAnotherCredentialTypeIsRefusedWithItsReason() {
         ObjectNode dev = manifest("1.4.0", Tool.readOnly("get_issue")).put("environment", "dev");
-        Result environment = service.register(requestId, SERVER, dev, "ci");
+        Result environment = service.applyPulled(requestId, SERVER, dev);
         assertThat(((Result.Rejected) environment).reason()).isEqualTo("environment_mismatch");
 
         ObjectNode otherType = Manifests.manifest(SERVER, SYSTEM, "1.4.0", List.of("user-oauth"), Tool.readOnly("get_issue"));
-        Result credential = service.register(requestId, SERVER, otherType, "ci");
+        Result credential = service.applyPulled(requestId, SERVER, otherType);
         assertThat(((Result.Rejected) credential).reason()).isEqualTo("credential_type_mismatch");
         assertThat(store.findServer(SERVER)).isEmpty();
 
-        assertThat(service(servers, true).register(requestId, SERVER, dev, "ci")).as("dev mode takes it").isInstanceOf(Result.Accepted.class);
+        assertThat(service(servers, true).applyPulled(requestId, SERVER, dev)).as("dev mode takes it").isInstanceOf(Result.Accepted.class);
     }
 
     @Test
@@ -335,7 +381,7 @@ class RegistryServiceTest extends GatewayTestBase {
     }
 
     @Test
-    void anEntryOfThePipelineIsNeverReplacedByWhatTheServerPresents() {
+    void anEntryOfAPullIsNeverReplacedByWhatTheServerPresents() {
         ObjectNode approved = manifest("1.4.0", Tool.update("update_issue"));
         register(approved);
         service.approve(requestId, SERVER, "update_issue", hash(approved, "update_issue"), false, admin());
@@ -348,7 +394,7 @@ class RegistryServiceTest extends GatewayTestBase {
 
         assertThat(verdicts).containsEntry("update_issue", Verdict.CHANGED);
         RegisteredTool.Pending pending = tool("update_issue").pending();
-        assertThat(pending.source()).isEqualTo("ci");
+        assertThat(pending.source()).isEqualTo("manifest");
         assertThat(pending.hash()).isEqualTo(pendingHash);
         assertThat(pending.version()).isEqualTo("1.5.0");
     }
@@ -396,18 +442,19 @@ class RegistryServiceTest extends GatewayTestBase {
         assertThat(store.tools(SERVER)).as("nothing was deleted").containsOnlyKeys("get_issue", "update_issue");
         assertThat(store.findServer(SERVER)).isPresent();
 
-        // A manifest that passes registers again and the server is back.
+        // A manifest that passes is taken again and the server is back.
         ObjectNode accepted = Manifests.manifest(SERVER, SYSTEM, "1.5.0", List.of("token-exchange"), Tool.readOnly("get_issue"));
-        assertThat(afterRestart.register(requestId, SERVER, accepted, "ci")).isInstanceOf(Result.Accepted.class);
+        assertThat(afterRestart.applyPulled(requestId, SERVER, accepted)).isInstanceOf(Result.Accepted.class);
         assertThat(restarted.find(SERVER).orElseThrow().enabled()).isTrue();
     }
 
     @Test
     void aHeldManifestOfTheDevEnvironmentDisablesTheServerAtAProductionStart() {
         ObjectNode dev = manifest("1.4.0", Tool.readOnly("get_issue")).put("environment", "dev");
-        assertThat(service(servers, true).register(requestId, SERVER, dev, "ci")).isInstanceOf(Result.Accepted.class);
+        assertThat(service(servers, true).applyPulled(requestId, SERVER, dev)).isInstanceOf(Result.Accepted.class);
         assertThat(service.approvePolicies(requestId, SERVER, dev.path("policiesHash").asString(), admin()))
                 .isInstanceOf(RegistryService.PoliciesApproval.Approved.class);
+        assertThat(service.approve(requestId, SERVER, "get_issue", hash(dev, "get_issue"), false, admin())).isInstanceOf(Approval.Approved.class);
 
         ServerRegistry restarted = restartWith("user-secret");
 
@@ -433,30 +480,17 @@ class RegistryServiceTest extends GatewayTestBase {
     }
 
     @Test
-    void theDevBootstrapApprovesWhatTheServerServesOnceAndNeverReplacesAState() {
-        ObjectNode served = manifest("1.0.0", Tool.readOnly("get_issue"), Tool.update("update_issue"));
-        when(fetcher.fetch(any())).thenReturn(Optional.of(served));
-
-        service.bootstrapMissing();
-
-        assertThat(server().tools()).containsOnlyKeys("get_issue", "update_issue");
-        assertThat(store.findServer(SERVER).orElseThrow().source()).isEqualTo("bootstrap");
-
-        when(fetcher.fetch(any())).thenReturn(Optional.of(manifest("2.0.0", Tool.readOnly("get_issue"))));
-        service.bootstrapMissing();
-        assertThat(server().tools()).containsOnlyKeys("get_issue", "update_issue");
-    }
-
-    @Test
     void theToolsOfAServerWaitUntilItsPoliciesAreApprovedAndTheApprovalNeedsTheHashOfWhatWaits(CapturedOutput output) {
         ObjectNode manifest = manifest("1.4.0", Tool.readOnly("get_issue"));
-        assertThat(service.register(requestId, SERVER, manifest, "ci")).isInstanceOf(Result.Accepted.class);
+        assertThat(service.applyPulled(requestId, SERVER, manifest)).isInstanceOf(Result.Accepted.class);
 
         StoredPoliciesView waiting = policiesOfServer();
         assertThat(waiting.approvedHash()).isNull();
         assertThat(waiting.pendingHash()).isEqualTo(manifest.path("policiesHash").asString());
-        assertThat(waiting.pendingSource()).isEqualTo("ci");
-        assertThat(server().tools()).as("approved by the review of the commit, but not served before the policies are approved").isEmpty();
+        assertThat(waiting.pendingSource()).isEqualTo("manifest");
+        assertThat(service.approve(requestId, SERVER, "get_issue", manifest.path("tools").get(0).path("definitionHash").asString(), false, admin()))
+                .isInstanceOf(Approval.Approved.class);
+        assertThat(server().tools()).as("approved, but not served before the policies are approved").isEmpty();
         assertThat(servers.resolveForCall("regtest__get_issue")).hasValueSatisfying(found -> assertThat(found.tool().disabled()).isTrue());
 
         assertThat(service.approvePolicies(requestId, SERVER, "sha256:" + "0".repeat(64), admin()))
@@ -478,7 +512,7 @@ class RegistryServiceTest extends GatewayTestBase {
     }
 
     @Test
-    void aRegistrationWithOtherPoliciesBlocksTheToolsUntilAnAdministratorApprovesThem() {
+    void aPullWithOtherPoliciesBlocksTheToolsUntilAnAdministratorApprovesThem() {
         register(manifest("1.4.0", Tool.readOnly("get_issue")));
         assertThat(server().tools()).containsOnlyKeys("get_issue");
         long before = policies.snapshot().revision();
@@ -487,13 +521,13 @@ class RegistryServiceTest extends GatewayTestBase {
         changed.withObject("/policies").withArray("/files").addObject().put("name", "zz-extra.cedar")
                 .put("text", "@id(\"regtest-extra\") forbid (principal, action == Regtest::Action::\"read\", resource) when { context.client == \"nobody\" };");
         changed.put("policiesHash", Fragments.hash((ObjectNode) changed.get("policies"), (tools.jackson.databind.node.ArrayNode) changed.get("resourceTypes")));
-        assertThat(service.register(requestId, SERVER, changed, "ci")).isInstanceOf(Result.Accepted.class);
+        assertThat(service.applyPulled(requestId, SERVER, changed)).isInstanceOf(Result.Accepted.class);
 
         StoredPoliciesView waiting = policiesOfServer();
         assertThat(waiting.pendingHash()).isEqualTo(changed.path("policiesHash").asString());
         assertThat(waiting.approvedHash()).as("what was approved stays the approved one").isNotEqualTo(waiting.pendingHash());
         assertThat(server().tools()).as("blocked until approved again").isEmpty();
-        assertThat(policies.snapshot().revision()).as("a registration changes no data the servers are served").isEqualTo(before);
+        assertThat(policies.snapshot().revision()).as("a pull changes no data the servers are served").isEqualTo(before);
 
         assertThat(service.approvePolicies(requestId, SERVER, changed.path("policiesHash").asString(), admin()))
                 .isInstanceOf(RegistryService.PoliciesApproval.Approved.class);
@@ -508,7 +542,7 @@ class RegistryServiceTest extends GatewayTestBase {
                 .put("text", "@id(\"regtest-call\") forbid (principal, action == Action::\"call\", resource);");
         broken.put("policiesHash", Fragments.hash((ObjectNode) broken.get("policies"), (tools.jackson.databind.node.ArrayNode) broken.get("resourceTypes")));
 
-        Result result = service.register(requestId, SERVER, broken, "ci");
+        Result result = service.applyPulled(requestId, SERVER, broken);
 
         assertThat(((Result.Rejected) result).reason()).isEqualTo("policies_invalid");
         assertThat(store.findServer(SERVER)).isEmpty();
@@ -519,7 +553,7 @@ class RegistryServiceTest extends GatewayTestBase {
     void aNamespaceBelongsToTheFirstServerThatDeclaredIt() {
         register(manifest("1.4.0", Tool.readOnly("get_issue")));
         store.locked("mcp-regother", tx -> {
-            tx.saveConfig(new ServerConfig("mcp-regother", "regother", URI.create("https://mcp-regother.internal:8443/mcp"), new ServerConfig.Credential(true, List.of("user-secret"), "user-secret"), true, false), true);
+            tx.saveConfig(configOf("mcp-regother", "regother", "user-secret"), true);
             return null;
         });
         try {
@@ -530,7 +564,7 @@ class RegistryServiceTest extends GatewayTestBase {
             thief.set("policies", regtestFragment.get("policies"));
             thief.put("policiesHash", regtestFragment.path("policiesHash").asString());
 
-            Result result = service.register(requestId, "mcp-regother", thief, "ci");
+            Result result = service.applyPulled(requestId, "mcp-regother", thief);
 
             assertThat(((Result.Rejected) result).reason()).isEqualTo("namespace_conflict");
             assertThat(store.findServer("mcp-regother")).isEmpty();
@@ -582,8 +616,7 @@ class RegistryServiceTest extends GatewayTestBase {
     }
 
     private static ServerConfig otherConfig(String serverId, String system) {
-        return new ServerConfig(serverId, system, URI.create("https://" + serverId + ".internal:8443/mcp"),
-                new ServerConfig.Credential(true, List.of("user-secret"), "user-secret"), true, false);
+        return configOf(serverId, system, "user-secret");
     }
 
     private void addServer(String serverId, String system) {
@@ -608,15 +641,15 @@ class RegistryServiceTest extends GatewayTestBase {
     }
 
     @Test
-    void aRegistrationClaimsNoNamespaceAndOnlyTheApprovalOfTheFirstServerOwnsIt() {
+    void aPullClaimsNoNamespaceAndOnlyTheApprovalOfTheFirstServerOwnsIt() {
         addServer("mcp-regother", "regother");
         try {
             ObjectNode squatter = declaring("mcp-regother", "regother", "regtest");
-            assertThat(service.register(requestId, "mcp-regother", squatter, "ci")).as("a pending registration holds nothing")
+            assertThat(service.applyPulled(requestId, "mcp-regother", squatter)).as("a pending pull holds nothing")
                     .isInstanceOf(Result.Accepted.class);
 
             register(manifest("1.4.0", Tool.readOnly("get_issue")));
-            assertThat(server().tools()).as("the rightful server is not kept out by the registration that came first").containsOnlyKeys("get_issue");
+            assertThat(server().tools()).as("the rightful server is not kept out by the pull that came first").containsOnlyKeys("get_issue");
 
             assertThat(service.approvePolicies(requestId, "mcp-regother", squatter.path("policiesHash").asString(), admin()))
                     .isInstanceOfSatisfying(RegistryService.PoliciesApproval.Rejected.class, r -> assertThat(r.reason()).isEqualTo("namespace_conflict"));
@@ -631,7 +664,7 @@ class RegistryServiceTest extends GatewayTestBase {
         addServer("mcp-regother", "regother");
         try {
             ObjectNode waiting = declaring("mcp-regother", "regother", "regtest");
-            assertThat(service.register(requestId, "mcp-regother", waiting, "ci")).isInstanceOf(Result.Accepted.class);
+            assertThat(service.applyPulled(requestId, "mcp-regother", waiting)).isInstanceOf(Result.Accepted.class);
             register(manifest("1.4.0", Tool.readOnly("get_issue")));
             jdbc.sql("UPDATE policy_state SET scope_mapping = ?::jsonb WHERE id = 1").param("[{\"group\":\"mcp-regtest-team\",\"scopes\":"
                     + "[\"Regtest::Project/ABC\",\"Jira::Project/ABC\"]},{\"group\":\"mcp-regtest-only\",\"scopes\":[\"Regtest::Project/XYZ\"]}]").update();
@@ -639,7 +672,7 @@ class RegistryServiceTest extends GatewayTestBase {
                     .isInstanceOf(RegistryService.PoliciesApproval.Rejected.class);
 
             ObjectNode moved = declaring(SERVER, SYSTEM, "regmoved");
-            assertThat(service.register(requestId, SERVER, moved, "ci")).isInstanceOf(Result.Accepted.class);
+            assertThat(service.applyPulled(requestId, SERVER, moved)).isInstanceOf(Result.Accepted.class);
             assertThat(service.approvePolicies(requestId, SERVER, moved.path("policiesHash").asString(), admin()))
                     .isInstanceOf(RegistryService.PoliciesApproval.Approved.class);
 
@@ -665,10 +698,11 @@ class RegistryServiceTest extends GatewayTestBase {
     void aWriteForAServerThatWasRemovedMeanwhileFindsNothing() {
         ObjectNode manifest = manifest("1.4.0", Tool.readOnly("get_issue"), Tool.update("update_issue"));
         register(manifest);
+        service.approve(requestId, SERVER, "update_issue", hash(manifest, "update_issue"), false, admin());
         // This instance still holds the server; the row is gone, as when another instance deleted it while the call waited for its lock.
         jdbc.sql("DELETE FROM servers WHERE server_id = ?").param(SERVER).update();
 
-        assertThat(service.register(requestId, SERVER, manifest("1.5.0", Tool.readOnly("get_issue")), "ci")).isInstanceOf(Result.UnknownServer.class);
+        assertThat(service.applyPulled(requestId, SERVER, manifest("1.5.0", Tool.readOnly("get_issue")))).isInstanceOf(Result.UnknownServer.class);
         assertThat(service.approve(requestId, SERVER, "update_issue", hash(manifest, "update_issue"), false, admin())).isInstanceOf(Approval.NotFound.class);
         assertThat(service.approvePolicies(requestId, SERVER, manifest.path("policiesHash").asString(), admin()))
                 .isInstanceOf(RegistryService.PoliciesApproval.NotFound.class);
@@ -723,11 +757,11 @@ class RegistryServiceTest extends GatewayTestBase {
     }
 
     @Test
-    void aHeldManifestOfAnotherKindThanTheServerIsRegisteredAsDisablesTheServer() {
+    void aHeldManifestOfAnotherKindThanTheServerWasAddedAsDisablesTheServer() {
         ObjectNode adapterManifest = Manifests.adapter(SERVER, SYSTEM, "0.1.0", Tool.readOnly("get_issue"));
         jdbc.sql("UPDATE servers SET adapter = true WHERE server_id = ?").param(SERVER).update();
         service.reloadChanged();
-        assertThat(service.submitAdapter(requestId, SERVER, adapterManifest)).isInstanceOf(Result.Accepted.class);
+        assertThat(service.applyPulled(requestId, SERVER, adapterManifest)).isInstanceOf(Result.Accepted.class);
         assertThat(server().enabled()).isTrue();
 
         // The settings now say it is no adapter (an operator's edit of the table, the only way: adapter is set when a server is added).

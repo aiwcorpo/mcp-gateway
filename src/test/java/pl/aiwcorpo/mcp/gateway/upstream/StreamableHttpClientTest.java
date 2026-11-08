@@ -112,6 +112,44 @@ class StreamableHttpClientTest {
         assertThat(response.message().path("result").path("ok").asBoolean()).isTrue();
     }
 
+    @Test
+    void aRefusedAddressStopsTheRequestBeforeAnyConnectionIsMade() {
+        respond("application/json", "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}".getBytes(StandardCharsets.UTF_8), 1);
+        AtomicReference<Boolean> reached = new AtomicReference<>(false);
+        server.removeContext("/mcp");
+        server.createContext("/mcp", exchange -> {
+            reached.set(true);
+            exchange.sendResponseHeaders(200, -1);
+            exchange.close();
+        });
+        StreamableHttpClient guarded = new StreamableHttpClient(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/mcp"),
+                HttpClient.newHttpClient(), JSON, Duration.ofSeconds(1), LIMIT, () -> java.util.Optional.of("169.254.169.254 is a link-local address"));
+
+        assertThatThrownBy(() -> guarded.post(request(), IntNode.valueOf(1))).isInstanceOfSatisfying(UpstreamException.class, e -> {
+            assertThat(e.kind()).isEqualTo(UpstreamException.Kind.UNAVAILABLE);
+            assertThat(e.getMessage()).startsWith("address_refused");
+        });
+        assertThat(reached.get()).as("the address was judged at the connection, which was never made").isFalse();
+    }
+
+    @Test
+    void aConflictCarriesItsBodySoThatTheStaleDataOfAServerCanBeRecognised() throws Exception {
+        server.removeContext("/mcp");
+        server.createContext("/mcp", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            byte[] body = "{\"error\":\"policy_data_stale\",\"heldRevision\":null,\"requiredRevision\":5}".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(409, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+
+        UpstreamResponse response = client.post(request(), IntNode.valueOf(1));
+
+        assertThat(response.status()).isEqualTo(409);
+        assertThat(response.message().path("error").asString()).isEqualTo("policy_data_stale");
+    }
+
     private void respond(String type, byte[] bytes, long times) {
         contentType.set(type);
         chunk.set(bytes);

@@ -22,8 +22,10 @@ import pl.aiwcorpo.mcp.testserver.Tls;
 /**
  * Everything around the gateway under test, started once per JVM: internal CA and certificates (gateway, BFF, a
  * component of another name, a certificate of a foreign CA), IdP stand-in, broker stub, the test MCP server as
- * mcp-jira and as mcp-gitlab, a server with a certificate for the wrong name (as mcp-confluence), Redis with the
- * ACL of the dev stack and PostgreSQL, whose registry of servers is seeded with them.
+ * mcp-jira and as mcp-gitlab (certificates of the internal CA, which the gateway trusts through {@code MCP_SERVER_TRUSTED_CAS}), a server
+ * that presents another certificate than the one pinned for it (as mcp-confluence), Redis with the
+ * ACL of the dev stack and PostgreSQL, whose registry of servers is seeded with them. Test servers are reached by address, as in
+ * production: nothing about them is configured but their URL.
  */
 public final class GatewayTestEnvironment {
 
@@ -49,7 +51,8 @@ public final class GatewayTestEnvironment {
     public final BrokerStub broker;
     public final TestMcpServer jira;
     public final TestMcpServer gitlab;
-    public final TestMcpServer wrongName;
+    /** The server behind mcp-confluence: its certificate is not the one that the approved connection of that server pins. */
+    public final TestMcpServer pinnedElsewhere;
     /** Where the gateway's internal JWT keys are fetched from: what the test servers started here verify tokens with. */
     public final JwksKeySource gatewayKeys;
     /** The foreign server behind an adapter: mcp-opensearch in adapter mode (the test server stands in for the foreign one). */
@@ -57,6 +60,9 @@ public final class GatewayTestEnvironment {
     public final GenericContainer<?> redis;
     public final GenericContainer<?> postgres;
     public final SSLContext gatewayClientTls;
+    /** The CA bundle the gateway adds to its server trust (MCP_SERVER_TRUSTED_CAS): the internal CA of the tests. */
+    public final Path serverCas;
+    private final java.util.Map<Integer, String> fingerprints = new java.util.concurrent.ConcurrentHashMap<>();
     /** Client TLS identities for the admin API: the BFF, another component of the internal CA, a foreign CA. */
     public final SSLContext bffTls;
     public final SSLContext otherComponentTls;
@@ -66,22 +72,9 @@ public final class GatewayTestEnvironment {
     public final SSLContext scraperTls;
     /** A server identity of the internal CA (mcp-jira, serverAuth only), as servers use when they fetch the JWKS. */
     public final SSLContext serverIdentityTls;
-    /** Pipelines of the registry (CC-161): one certificate per server, and the former shared name, which is refused. */
-    public final SSLContext ciGitlabTls;
-    public final SSLContext ciJiraTls;
-    public final SSLContext sharedCiTls;
     /** The offboarding process (CC-155). */
     public final SSLContext offboardingTls;
-    /** Adapters (CC-206): one certificate per server, mcp-adapter-<serverId>; and the pipeline of the adapter server, which may not use that channel. */
-    public final SSLContext adapterOpensearchTls;
-    public final SSLContext adapterJiraTls;
-    public final SSLContext adapterGitlabTls;
-    public final SSLContext ciOpensearchTls;
-    /** Identities that ask for policy data (C5 getPolicyData): a server of the registry, one that is not in it, a server certificate without clientAuth. */
-    public final SSLContext policyClientJiraTls;
-    public final SSLContext policyClientGitlabTls;
-    public final SSLContext policyClientUnknownTls;
-    public final SSLContext policyClientServerOnlyTls;
+
     /** The test servers' addresses, as registry rows: serverId to the port its test server listens on. */
 
     public static synchronized GatewayTestEnvironment get() {
@@ -100,23 +93,15 @@ public final class GatewayTestEnvironment {
         pki = new TestPki(dir);
         gatewayKeystore = pki.issue("gateway.p12", "mcp-gateway", List.of("mcp-gateway.internal", "localhost", "127.0.0.1"),
                 true, true);
-        Path jiraKeystore = pki.issue("jira.p12", "mcp-jira", List.of("mcp-jira.internal", "localhost"), true, false);
-        Path gitlabKeystore = pki.issue("gitlab.p12", "mcp-gitlab", List.of("mcp-gitlab.internal", "localhost"), true, false);
-        Path wrongKeystore = pki.issue("wrong.p12", "mcp-confluence", List.of("mcp-jira.internal"), true, false);
+        Path jiraKeystore = pki.issue("jira.p12", "mcp-jira", List.of("127.0.0.1", "localhost"), true, false);
+        Path gitlabKeystore = pki.issue("gitlab.p12", "mcp-gitlab", List.of("127.0.0.1", "localhost"), true, false);
+        Path confluenceKeystore = pki.issue("confluence.p12", "mcp-confluence", List.of("127.0.0.1", "localhost"), true, false);
+        serverCas = pki.caPem("server-cas");
         Path bffKeystore = pki.issue("bff.p12", "mcp-portal-bff", List.of(), false, true);
         Path scraperKeystore = pki.issue("scraper.p12", "mcp-prometheus", List.of(), false, true);
-        Path ciKeystore = pki.issue("ci.p12", "mcp-registry-ci", List.of(), false, true);
-        Path ciGitlabKeystore = pki.issue("ci-gitlab.p12", "mcp-registry-ci-mcp-gitlab", List.of(), false, true);
-        Path ciJiraKeystore = pki.issue("ci-jira.p12", "mcp-registry-ci-mcp-jira", List.of(), false, true);
-        Path opensearchKeystore = pki.issue("opensearch.p12", "mcp-opensearch", List.of("mcp-opensearch.internal", "localhost"), true, false);
-        Path adapterOpensearchKeystore = pki.issue("adapter-opensearch.p12", "mcp-adapter-mcp-opensearch", List.of(), false, true);
-        Path adapterJiraKeystore = pki.issue("adapter-jira.p12", "mcp-adapter-mcp-jira", List.of(), false, true);
-        Path adapterGitlabKeystore = pki.issue("adapter-gitlab.p12", "mcp-adapter-mcp-gitlab", List.of(), false, true);
-        Path ciOpensearchKeystore = pki.issue("ci-opensearch.p12", "mcp-registry-ci-mcp-opensearch", List.of(), false, true);
+        Path opensearchKeystore = pki.issue("opensearch.p12", "mcp-opensearch", List.of("127.0.0.1", "localhost"), true, false);
+        Path otherKeystore = pki.issue("other.p12", "mcp-other-component", List.of(), false, true);
         Path offboardingKeystore = pki.issue("offboarding.p12", "mcp-offboarding", List.of(), false, true);
-        Path policyJiraKeystore = pki.issue("policy-jira.p12", "mcp-jira", List.of("mcp-jira.internal"), true, true);
-        Path policyGitlabKeystore = pki.issue("policy-gitlab.p12", "mcp-gitlab", List.of("mcp-gitlab.internal"), true, true);
-        Path policyUnknownKeystore = pki.issue("policy-unknown.p12", "mcp-nowhere", List.of("mcp-nowhere.internal"), true, true);
         TestPki foreign = new TestPki(Files.createDirectory(dir.resolve("foreign")));
         Path foreignKeystore = foreign.issue("bff.p12", "mcp-portal-bff", List.of(), false, true);
         Path brokerKeystore = pki.issue("broker.p12", "mcp-credential-broker", List.of("mcp-credential-broker.internal"),
@@ -137,11 +122,12 @@ public final class GatewayTestEnvironment {
         // The update tool is part of the manifest every gateway of the tests takes from this server (the shared context turns it off again
         // once it has the manifest, TestServers), as the static tools of 1.x were.
         jira.updateTool(true);
+        jira.updateToolInManifest(true);
         gitlab = new TestMcpServer(new TestMcpServer.Config("mcp-gitlab", "/mcp", "https://mcp-gateway.internal", false, null,
                 gatewayKeys), Tls.fromPkcs12(gitlabKeystore, pki.truststore(), TestPki.PASSWORD),
                 new InetSocketAddress("127.0.0.1", 0)).start();
-        wrongName = new TestMcpServer(new TestMcpServer.Config("mcp-confluence", "/mcp", "https://mcp-gateway.internal",
-                false, null, gatewayKeys), Tls.fromPkcs12(wrongKeystore, pki.truststore(), TestPki.PASSWORD),
+        pinnedElsewhere = new TestMcpServer(new TestMcpServer.Config("mcp-confluence", "/mcp", "https://mcp-gateway.internal",
+                false, null, gatewayKeys), Tls.fromPkcs12(confluenceKeystore, pki.truststore(), TestPki.PASSWORD),
                 new InetSocketAddress("127.0.0.1", 0)).start();
 
         opensearch = new TestMcpServer(new TestMcpServer.Config("mcp-opensearch", "/mcp", "https://mcp-gateway.internal", false, null,
@@ -163,54 +149,107 @@ public final class GatewayTestEnvironment {
         postgres.start();
 
         bffTls = Tls.fromPkcs12(bffKeystore, pki.truststore(), TestPki.PASSWORD);
-        otherComponentTls = Tls.fromPkcs12(ciKeystore, pki.truststore(), TestPki.PASSWORD);
+        otherComponentTls = Tls.fromPkcs12(otherKeystore, pki.truststore(), TestPki.PASSWORD);
         foreignCaTls = Tls.fromKeyStores(load(foreignKeystore), TestPki.PASSWORD, load(pki.truststore()));
         noClientCertificateTls = trustOnly;
         scraperTls = Tls.fromPkcs12(scraperKeystore, pki.truststore(), TestPki.PASSWORD);
         serverIdentityTls = Tls.fromPkcs12(jiraKeystore, pki.truststore(), TestPki.PASSWORD);
-        ciGitlabTls = Tls.fromPkcs12(ciGitlabKeystore, pki.truststore(), TestPki.PASSWORD);
-        ciJiraTls = Tls.fromPkcs12(ciJiraKeystore, pki.truststore(), TestPki.PASSWORD);
-        sharedCiTls = otherComponentTls;
         offboardingTls = Tls.fromPkcs12(offboardingKeystore, pki.truststore(), TestPki.PASSWORD);
-        adapterOpensearchTls = Tls.fromPkcs12(adapterOpensearchKeystore, pki.truststore(), TestPki.PASSWORD);
-        adapterJiraTls = Tls.fromPkcs12(adapterJiraKeystore, pki.truststore(), TestPki.PASSWORD);
-        adapterGitlabTls = Tls.fromPkcs12(adapterGitlabKeystore, pki.truststore(), TestPki.PASSWORD);
-        ciOpensearchTls = Tls.fromPkcs12(ciOpensearchKeystore, pki.truststore(), TestPki.PASSWORD);
-        policyClientJiraTls = Tls.fromPkcs12(policyJiraKeystore, pki.truststore(), TestPki.PASSWORD);
-        policyClientGitlabTls = Tls.fromPkcs12(policyGitlabKeystore, pki.truststore(), TestPki.PASSWORD);
-        policyClientUnknownTls = Tls.fromPkcs12(policyUnknownKeystore, pki.truststore(), TestPki.PASSWORD);
-        policyClientServerOnlyTls = serverIdentityTls;
+        fingerprints.put(jira.port(), TestPki.fingerprint(jiraKeystore));
+        fingerprints.put(gitlab.port(), TestPki.fingerprint(gitlabKeystore));
+        fingerprints.put(pinnedElsewhere.port(), TestPki.fingerprint(confluenceKeystore));
+        fingerprints.put(opensearch.port(), TestPki.fingerprint(opensearchKeystore));
         seedServers();
     }
 
     /**
-     * A test MCP server that a test adds to the registry at runtime: its certificate names {@code serverId}, it verifies the gateway's tokens
-     * and serves the manifest of its system (Project and Issue types, policies of its own namespace).
+     * A test MCP server that a test adds to the registry at runtime by its address: its certificate is signed by the internal CA and names
+     * 127.0.0.1, so it validates as {@code ca} (the gateway trusts that CA). It verifies the gateway's tokens, serves the manifest of its
+     * system (Project and Issue types, policies of its own namespace) and holds the policy data the gateway pushes.
      */
     public TestMcpServer startServer(String serverId) throws Exception {
-        Path keystore = pki.issue(serverId + "-runtime.p12", serverId, List.of(serverId + ".internal", "localhost"), true, false);
-        return new TestMcpServer(new TestMcpServer.Config(serverId, "/mcp", "https://mcp-gateway.internal", false, null, gatewayKeys),
+        return startServer(serverId, 0);
+    }
+
+    /** As above on a port that was used before: the same address with a new certificate, as a renewal or a replacement looks to the gateway. */
+    public TestMcpServer startServer(String serverId, int port) throws Exception {
+        Path keystore = pki.issue(serverId + "-runtime-" + System.nanoTime() + ".p12", serverId, List.of("127.0.0.1", "localhost"), true, false);
+        TestMcpServer started = new TestMcpServer(new TestMcpServer.Config(serverId, "/mcp", "https://mcp-gateway.internal", false, null, gatewayKeys),
+                Tls.fromPkcs12(keystore, pki.truststore(), TestPki.PASSWORD), new InetSocketAddress("127.0.0.1", port)).start();
+        fingerprints.put(started.port(), TestPki.fingerprint(keystore));
+        return started;
+    }
+
+    /** The sidecar of an adapter in front of a foreign server: its manifest says source adapter and it takes the classification claims. */
+    public TestMcpServer startAdapterServer(String serverId) throws Exception {
+        Path keystore = pki.issue(serverId + "-adapter.p12", serverId, List.of("127.0.0.1", "localhost"), true, false);
+        TestMcpServer started = new TestMcpServer(new TestMcpServer.Config(serverId, "/mcp", "https://mcp-gateway.internal", false, null, gatewayKeys)
+                .asAdapter(), Tls.fromPkcs12(keystore, pki.truststore(), TestPki.PASSWORD), new InetSocketAddress("127.0.0.1", 0)).start();
+        fingerprints.put(started.port(), TestPki.fingerprint(keystore));
+        return started;
+    }
+
+    /** As {@link #startServer} with a self-signed certificate (no CA stands behind it): it validates as nothing, so it is pinned. */
+    public TestMcpServer startSelfSignedServer(String serverId) throws Exception {
+        return startSelfSignedServer(serverId, 0);
+    }
+
+    public TestMcpServer startSelfSignedServer(String serverId, int port) throws Exception {
+        Path keystore = TestPki.selfSigned(dir, serverId + "-self-" + System.nanoTime() + ".p12", serverId, List.of("127.0.0.1"));
+        TestMcpServer started = new TestMcpServer(new TestMcpServer.Config(serverId, "/mcp", "https://mcp-gateway.internal", false, null, gatewayKeys),
+                tlsOf(keystore), new InetSocketAddress("127.0.0.1", port)).start();
+        fingerprints.put(started.port(), TestPki.fingerprint(keystore));
+        return started;
+    }
+
+    /** A server that presents a certificate of the internal CA for another host than the one it is reached at: a certificate that does not validate as {@code ca}. */
+    public TestMcpServer startServerForAnotherHost(String serverId) throws Exception {
+        Path keystore = pki.issue(serverId + "-elsewhere.p12", serverId, List.of("another-host.test"), true, false);
+        TestMcpServer started = new TestMcpServer(new TestMcpServer.Config(serverId, "/mcp", "https://mcp-gateway.internal", false, null, gatewayKeys),
                 Tls.fromPkcs12(keystore, pki.truststore(), TestPki.PASSWORD), new InetSocketAddress("127.0.0.1", 0)).start();
+        fingerprints.put(started.port(), TestPki.fingerprint(keystore));
+        return started;
     }
 
-    /** The pipeline of one server (CC-161): a certificate with the CN {@code mcp-registry-ci-<serverId>}. */
-    public SSLContext pipelineTls(String serverId) throws Exception {
-        return Tls.fromPkcs12(pki.issue("ci-" + serverId + "-runtime.p12", "mcp-registry-ci-" + serverId, List.of(), false, true),
-                pki.truststore(), TestPki.PASSWORD);
+    /** As {@link #startServer} over plain http, as a server in the Docker network of the platform. */
+    public TestMcpServer startPlainServer(String serverId) throws Exception {
+        return new TestMcpServer(new TestMcpServer.Config(serverId, "/mcp", "https://mcp-gateway.internal", false, null, gatewayKeys),
+                null, new InetSocketAddress("127.0.0.1", 0)).start();
     }
 
-    /** One row of {@code servers}: what an administrator would have posted to {@code /admin/v1/servers}. */
+    /** The fingerprint of the certificate a test server of this environment presents, as the gateway shows it. */
+    public String fingerprint(TestMcpServer server) {
+        return fingerprints.get(server.port());
+    }
+
+    private SSLContext tlsOf(Path selfSignedKeystore) throws Exception {
+        return Tls.fromKeyStores(load(selfSignedKeystore), TestPki.PASSWORD, load(pki.truststore()));
+    }
+
+    /** One row of {@code servers}: what the registry holds of a server before the gateway has looked at it (or after an administrator approved its connection). */
     public record ServerRow(String serverId, String system, String url, String credentialType, boolean credentialRequired, boolean enabled,
-                            boolean adapter) {
+                            boolean adapter, String connectionJson) {
+        public ServerRow(String serverId, String system, String url, String credentialType, boolean credentialRequired, boolean enabled,
+                         boolean adapter) {
+            this(serverId, system, url, credentialType, credentialRequired, enabled, adapter, null);
+        }
     }
 
-    /** The servers every gateway of the tests starts with: the test servers behind them (mcp-jira, mcp-gitlab, mcp-confluence behind a certificate of the wrong name, a disabled mcp-servicedesk, mcp-opensearch behind an adapter). */
+    /**
+     * The servers every gateway of the tests starts with: the test servers behind them (mcp-jira and mcp-gitlab, which the gateway has not
+     * looked at yet; mcp-confluence with an approved connection that pins another certificate than the one the server presents; a disabled
+     * mcp-servicedesk; mcp-opensearch behind an adapter).
+     */
     public List<ServerRow> servers() {
+        String pinned = "{\"tlsMode\":\"pinned\",\"fingerprint\":\"" + fingerprints.get(jira.port())
+                + "\",\"subject\":\"CN=mcp-jira\",\"issuer\":\"CN=test-internal-ca\",\"sans\":[],\"notAfter\":null,"
+                + "\"approvedBy\":\"test-seed\",\"approvedAt\":\"2026-11-08T00:00:00Z\"}";
         return List.of(
                 new ServerRow("mcp-jira", "jira", "https://127.0.0.1:" + jira.port() + "/mcp", "user-secret", true, true, false),
                 new ServerRow("mcp-gitlab", "gitlab", "https://127.0.0.1:" + gitlab.port() + "/mcp", "user-secret", true, true, false),
-                new ServerRow("mcp-confluence", "confluence", "https://127.0.0.1:" + wrongName.port() + "/mcp", "user-secret", false, true, false),
-                new ServerRow("mcp-servicedesk", "servicedesk", "https://127.0.0.1:9/mcp", "user-secret", false, false, false),
+                new ServerRow("mcp-confluence", "confluence", "https://127.0.0.1:" + pinnedElsewhere.port() + "/mcp", "user-secret", false, true,
+                        false, pinned),
+                new ServerRow("mcp-servicedesk", "servicedesk", "https://127.0.0.1:9/mcp", "user-secret", false, false, false, pinned),
                 new ServerRow("mcp-opensearch", "opensearch", "https://127.0.0.1:" + opensearch.port() + "/mcp", "user-secret", true, true, true));
     }
 
@@ -255,9 +294,11 @@ public final class GatewayTestEnvironment {
                 .load().migrate();
         try (java.sql.Connection connection = connection(database);
              java.sql.PreparedStatement upsert = connection.prepareStatement("INSERT INTO servers (server_id, system, internal_url, "
-                     + "credential, enabled, adapter) VALUES (?, ?, ?, ?::jsonb, ?, ?) ON CONFLICT (server_id) DO UPDATE SET "
+                     + "credential, enabled, adapter, connection, status) VALUES (?, ?, ?, ?::jsonb, ?, ?, ?::jsonb, ?) "
+                     + "ON CONFLICT (server_id) DO UPDATE SET "
                      + "internal_url = EXCLUDED.internal_url, credential = EXCLUDED.credential, "
-                     + "enabled = EXCLUDED.enabled, adapter = EXCLUDED.adapter")) {
+                     + "enabled = EXCLUDED.enabled, adapter = EXCLUDED.adapter, connection = EXCLUDED.connection, "
+                     + "status = EXCLUDED.status")) {
             for (ServerRow row : servers()) {
                 upsert.setString(1, row.serverId());
                 upsert.setString(2, row.system());
@@ -266,6 +307,8 @@ public final class GatewayTestEnvironment {
                         + "\"],\"type\":\"" + row.credentialType() + "\"}");
                 upsert.setBoolean(5, row.enabled());
                 upsert.setBoolean(6, row.adapter());
+                upsert.setString(7, row.connectionJson());
+                upsert.setString(8, row.connectionJson() == null ? "pending_approval" : "connected");
                 upsert.executeUpdate();
             }
             try (java.sql.Statement bump = connection.createStatement()) {
@@ -350,8 +393,14 @@ public final class GatewayTestEnvironment {
         registry.add("spring.datasource.username", () -> "gateway");
         registry.add("spring.datasource.password", () -> POSTGRES_PASSWORD);
         registry.add("gateway.public-url", () -> PUBLIC_URL);
+        // Servers are reached by address and trusted as ca through the CA of the tests; they listen on the loopback interface, which the
+        // address check refuses unless the devstack allows it. The loop looks at its timers often, and refresh has no pause (its limit has a test of its own).
+        registry.add("gateway.servers.trusted-cas", serverCas::toString);
+        registry.add("gateway.servers.allow-loopback", () -> "true");
+        registry.add("gateway.servers.loop-poll", () -> "200ms");
+        registry.add("gateway.servers.refresh-interval", () -> "0s");
         // The shared context takes the manifests of the servers once, at start (TestServers); a server added later by a test waits for its own
-        // registration and approval, as in production. A process of its own bootstraps (properties()).
+        // approvals, as in production. A process of its own bootstraps (properties()).
         registry.add("gateway.registry.bootstrap-from-server", () -> "false");
         registry.add("gateway.registry.bootstrap-retry", () -> "500ms");
         registry.add("gateway.registry.definition-check-ttl", () -> "1s");

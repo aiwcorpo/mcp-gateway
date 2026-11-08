@@ -90,7 +90,7 @@ public abstract class GatewayTestBase {
         env.broker.grant("alice-pat", 60);
         env.broker.clear();
         env.jira.clearRequests();
-        env.wrongName.clearRequests();
+        env.pinnedElsewhere.clearRequests();
         credentialCache.clear();
         await().atMost(Duration.ofSeconds(10)).until(invalidations::live);
     }

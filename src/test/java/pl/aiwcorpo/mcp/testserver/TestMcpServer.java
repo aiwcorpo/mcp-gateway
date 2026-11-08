@@ -24,17 +24,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.regex.Pattern;
 
-import javax.naming.InvalidNameException;
-import javax.naming.ldap.LdapName;
-import javax.naming.ldap.Rdn;
 import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLParameters;
-import javax.net.ssl.SSLPeerUnverifiedException;
 
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpsConfigurator;
-import com.sun.net.httpserver.HttpsExchange;
 import com.sun.net.httpserver.HttpsParameters;
 import com.sun.net.httpserver.HttpsServer;
 
@@ -44,9 +39,10 @@ import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * MCP server for gateway tests and the M1 demo in the place of mcp-jira: Streamable HTTP (2025-03-26 ..
- * 2025-11-25, sessions), mTLS with client CN mcp-gateway only, internal JWT (C2) on every HTTP request, the
- * credential from C3 forwarded to Jira, one C8 audit line per tools/call on stdout. Records every request for
+ * MCP server for gateway tests and the M1 demo in the place of mcp-jira, built as the starter builds a server (CC-249): Streamable HTTP
+ * (2025-03-26 .. 2025-11-25, sessions) over TLS with any certificate or over plain http, no client certificate, internal JWT (C2) of the right
+ * purpose on every request, {@code GET /.well-known/mcp-manifest} and {@code POST /.well-known/mcp-policy-data} (C14) with the fail-closed
+ * gate of the policy data, the credential from C3 forwarded to Jira, one C8 audit line per tools/call on stdout. Records every request for
  * assertions.
  */
 public final class TestMcpServer implements AutoCloseable {
@@ -90,29 +86,40 @@ public final class TestMcpServer implements AutoCloseable {
     }
 
     private final Config config;
-    private final HttpsServer server;
+    private final HttpServer server;
     private final InternalJwtVerifier verifier;
     private final HttpClient jira;
     private final Map<String, Session> sessions = new ConcurrentHashMap<>();
     private final List<RecordedRequest> recorded = new CopyOnWriteArrayList<>();
     private final List<RecordedRequest> manifestReads = new CopyOnWriteArrayList<>();
+    private final List<RecordedRequest> policyPushes = new CopyOnWriteArrayList<>();
+    private volatile pl.aiwcorpo.mcp.manifest.PolicyDataGate.Data heldPolicyData;
+    private volatile boolean policyPushFails;
+    private volatile boolean policyPushIgnored;
+    private volatile int manifestStatus = 200;
+    private volatile JsonNode servedManifest;
 
+    /** @param sslContext the certificate the server presents; null serves plain http (a server in the Docker network of the platform) */
     public TestMcpServer(Config config, SSLContext sslContext, InetSocketAddress address) throws IOException {
         this.config = Objects.requireNonNull(config);
         this.verifier = new InternalJwtVerifier(config.issuer(), config.serverId(), config.allowTestKeys(),
                 config.devstackProfile(), config.keys(), java.time.Clock.systemUTC()).asAdapterReceiver(config.adapterReceiver());
         this.jira = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3))
                 .followRedirects(HttpClient.Redirect.NEVER).build();
-        this.server = HttpsServer.create(address, 0);
-        server.setHttpsConfigurator(new HttpsConfigurator(sslContext) {
-            @Override
-            public void configure(HttpsParameters params) {
-                SSLParameters ssl = sslContext.getDefaultSSLParameters();
-                ssl.setNeedClientAuth(true);
-                params.setSSLParameters(ssl);
-            }
-        });
+        if (sslContext == null) {
+            this.server = HttpServer.create(address, 0);
+        } else {
+            HttpsServer https = HttpsServer.create(address, 0);
+            https.setHttpsConfigurator(new HttpsConfigurator(sslContext) {
+                @Override
+                public void configure(HttpsParameters params) {
+                    params.setSSLParameters(sslContext.getDefaultSSLParameters());
+                }
+            });
+            this.server = https;
+        }
         server.createContext(config.path(), this::handle);
+        server.createContext("/.well-known/", this::handleWellKnown);
         server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
     }
 
@@ -129,14 +136,54 @@ public final class TestMcpServer implements AutoCloseable {
         return List.copyOf(recorded);
     }
 
-    /** The reads of {@code GET /mcp-manifest}: the gateway makes one at every check of the definitions of a running server (its policies). */
+    /** The reads of {@code GET /.well-known/mcp-manifest}: the gateway makes one at every check of the definitions of a running server (its policies). */
     public List<RecordedRequest> manifestReads() {
         return List.copyOf(manifestReads);
+    }
+
+    /** The pushes of {@code POST /.well-known/mcp-policy-data} the server received, valid or not. */
+    public List<RecordedRequest> policyPushes() {
+        return List.copyOf(policyPushes);
+    }
+
+    /** The revision of the policy data the server holds, or -1 when it holds none (as after a restart). */
+    public long heldRevision() {
+        return heldPolicyData == null ? -1 : heldPolicyData.revision();
+    }
+
+    /** Forgets the policy data, as a restart does: the next tools/call is refused as policy_data_stale until the gateway pushes. */
+    public void forgetPolicyData() {
+        heldPolicyData = null;
+    }
+
+    /** {@code POST /.well-known/mcp-policy-data} answers 503 while this is on: a push that does not reach the server. */
+    public void failPolicyPush(boolean value) {
+        policyPushFails = value;
+    }
+
+    /** Pushes are answered 200 but the data is not kept: a server that stays behind whatever the gateway sends. */
+    public void holdPolicyDataBehind() {
+        policyPushIgnored = true;
+    }
+
+    public void holdPolicyDataBehind(boolean value) {
+        policyPushIgnored = value;
+    }
+
+    /** {@code GET /.well-known/mcp-manifest} answers this status instead of 200 (503: not built yet). */
+    public void manifestStatus(int status) {
+        manifestStatus = status;
+    }
+
+    /** From now on the manifest endpoint serves this document instead of the one of the server (null: its own again). */
+    public void serveManifest(JsonNode manifest) {
+        servedManifest = manifest;
     }
 
     public void clearRequests() {
         recorded.clear();
         manifestReads.clear();
+        policyPushes.clear();
     }
 
     /** Forgets every session, as after a restart; clients must initialize again (404 on the old id). */
@@ -153,22 +200,9 @@ public final class TestMcpServer implements AutoCloseable {
         try (exchange) {
             Map<String, List<String>> headers = lowerCase(exchange.getRequestHeaders());
             String body = new String(exchange.getRequestBody().readNBytes(1 << 20), StandardCharsets.UTF_8);
-            if (!"mcp-gateway".equals(clientCommonName(exchange))) {
-                record(exchange, headers, body, null, null, 403, "client_cn", null, null);
-                send(exchange, 403, null, null);
-                return;
-            }
             switch (exchange.getRequestMethod()) {
                 case "POST" -> post(exchange, headers, body);
                 case "DELETE" -> delete(exchange, headers, body);
-                case "GET" -> {
-                    if ("/mcp-manifest".equals(exchange.getRequestURI().getPath())) {
-                        manifest(exchange, headers, body);
-                    } else {
-                        record(exchange, headers, body, null, null, 405, null, null, null);
-                        send(exchange, 405, null, null);
-                    }
-                }
                 default -> {
                     record(exchange, headers, body, null, null, 405, null, null, null);
                     send(exchange, 405, null, null);
@@ -204,6 +238,7 @@ public final class TestMcpServer implements AutoCloseable {
     private volatile boolean driftedPolicies;
     private volatile Map<String, String> additionalGroups = Map.of();
     private volatile boolean updateTool;
+    private volatile boolean updateToolInManifest;
     private volatile String reportedVersion = "0.1.0";
 
     /** From now on {@code tools/list} leaves this tool out: a server that dropped it. */
@@ -233,9 +268,17 @@ public final class TestMcpServer implements AutoCloseable {
         return mostCallsInFlight.get();
     }
 
-    /** Serves the UPDATE tool {@code add_comment}, which only answers: tests count its executions in {@link #requests()}. */
+    /** Lists and serves the UPDATE tool {@code add_comment}, which only answers: tests count its executions in {@link #requests()}. */
     public void updateTool(boolean enabled) {
         updateTool = enabled;
+    }
+
+    /**
+     * The manifest names {@code add_comment} whether or not {@code tools/list} lists it. The gateway pulls the manifest again and again, so a tool
+     * that only the list of a test leaves out must stay in it, or the registry would drop what an administrator approved.
+     */
+    public void updateToolInManifest(boolean enabled) {
+        updateToolInManifest = enabled;
     }
 
     /** Serves {@code count} more READ_ONLY tools named {@code bulk_tool_NNN}, in the list and in the manifest: a long list to page. */
@@ -264,17 +307,101 @@ public final class TestMcpServer implements AutoCloseable {
         reportedVersion = version;
     }
 
-    /** {@code GET /mcp-manifest} (C6): the definitions as they are approved, with their hashes. */
+    private void handleWellKnown(HttpExchange exchange) throws IOException {
+        try (exchange) {
+            Map<String, List<String>> headers = lowerCase(exchange.getRequestHeaders());
+            String body = new String(exchange.getRequestBody().readNBytes(1 << 20), StandardCharsets.UTF_8);
+            String path = exchange.getRequestURI().getPath();
+            String method = exchange.getRequestMethod();
+            if ("GET".equals(method) && "/.well-known/mcp-manifest".equals(path)) {
+                manifest(exchange, headers, body);
+            } else if ("POST".equals(method) && "/.well-known/mcp-policy-data".equals(path)) {
+                policyData(exchange, headers, body);
+            } else {
+                send(exchange, 404, null, null);
+            }
+        }
+    }
+
+    /** {@code GET /.well-known/mcp-manifest} (C14): the definitions as they are, with their hashes. */
     private void manifest(HttpExchange exchange, Map<String, List<String>> headers, String body) throws IOException {
         InternalJwtVerifier.Result auth = verifier.verify(first(headers, "authorization"), first(headers, "x-request-id"),
-                InternalJwtVerifier.RequestRule.forHttp("GET", "/mcp-manifest"));
+                InternalJwtVerifier.RequestRule.forHttp("GET", "/.well-known/mcp-manifest"));
         if (!auth.valid()) {
             manifestReads.add(new RecordedRequest("GET", headers, body, null, null, 401, auth.reason(), null, null));
             send(exchange, 401, null, null);
             return;
         }
+        if (manifestStatus != 200) {
+            manifestReads.add(new RecordedRequest("GET", headers, body, null, null, manifestStatus, null, (String) auth.claims().get("sub"), null));
+            send(exchange, manifestStatus, null, null);
+            return;
+        }
         manifestReads.add(new RecordedRequest("GET", headers, body, null, null, 200, null, (String) auth.claims().get("sub"), null));
-        send(exchange, 200, "application/json", JSON.writeValueAsString(manifest()));
+        exchange.getResponseHeaders().set("Cache-Control", "no-store");
+        JsonNode served = servedManifest != null ? servedManifest : config.adapterReceiver() ? adapterManifest() : manifest();
+        send(exchange, 200, "application/json", JSON.writeValueAsString(served));
+    }
+
+    /**
+     * {@code POST /.well-known/mcp-policy-data} (C14): replaces the data held with a strictly newer revision and says what the gate now
+     * decides. The data is kept in memory only.
+     */
+    private void policyData(HttpExchange exchange, Map<String, List<String>> headers, String body) throws IOException {
+        InternalJwtVerifier.Result auth = verifier.verify(first(headers, "authorization"), first(headers, "x-request-id"),
+                InternalJwtVerifier.RequestRule.forHttp("POST", "/.well-known/mcp-policy-data"));
+        if (!auth.valid()) {
+            policyPushes.add(new RecordedRequest("POST", headers, body, null, null, 401, auth.reason(), null, null));
+            send(exchange, 401, null, null);
+            return;
+        }
+        JsonNode data;
+        try {
+            data = JSON.readTree(body);
+        } catch (RuntimeException e) {
+            data = null;
+        }
+        if (data == null || !data.path("revision").isIntegralNumber() || !data.path("scopeMapping").isArray()) {
+            policyPushes.add(new RecordedRequest("POST", headers, body, null, null, 400, "invalid_body", null, null));
+            send(exchange, 400, null, null);
+            return;
+        }
+        if (policyPushFails) {
+            policyPushes.add(new RecordedRequest("POST", headers, body, null, null, 503, null, null, null));
+            send(exchange, 503, null, null);
+            return;
+        }
+        long offered = data.path("revision").asLong();
+        pl.aiwcorpo.mcp.manifest.PolicyDataGate.Data held = heldPolicyData;
+        if (policyPushIgnored) {
+            ObjectNode ignored = JSON.createObjectNode();
+            ignored.put("revision", held == null ? 0 : held.revision());
+            ignored.put("accepted", false);
+            ignored.put("gate", "policy_data_stale");
+            policyPushes.add(new RecordedRequest("POST", headers, body, null, null, 200, null, null, null));
+            send(exchange, 200, "application/json", JSON.writeValueAsString(ignored));
+            return;
+        }
+        boolean accepted = pl.aiwcorpo.mcp.manifest.PolicyDataGate.acceptRevision(
+                held == null ? java.util.OptionalLong.empty() : java.util.OptionalLong.of(held.revision()), offered);
+        if (accepted) {
+            heldPolicyData = new pl.aiwcorpo.mcp.manifest.PolicyDataGate.Data(offered,
+                    java.util.Optional.ofNullable(data.path("approvedPoliciesHash").asString(null)), true);
+        }
+        pl.aiwcorpo.mcp.manifest.PolicyDataGate.Data now = heldPolicyData;
+        pl.aiwcorpo.mcp.manifest.PolicyDataGate.Decision gate = pl.aiwcorpo.mcp.manifest.PolicyDataGate.decide(ownPoliciesHash(), now,
+                java.util.OptionalLong.of(now.revision()));
+        ObjectNode ack = JSON.createObjectNode();
+        ack.put("revision", now.revision());
+        ack.put("accepted", accepted);
+        ack.put("gate", gate.allowed() ? "ok" : gate.reason());
+        policyPushes.add(new RecordedRequest("POST", headers, body, null, null, 200, null, null, null));
+        send(exchange, 200, "application/json", JSON.writeValueAsString(ack));
+    }
+
+    /** The hash of the policies this server's own manifest declares; the gate compares it with what the gateway approved. */
+    private String ownPoliciesHash() {
+        return manifest().path("policiesHash").asString(null);
     }
 
     /** The manifest of this server as a build of its reviewed commit would write it: what {@code GET /mcp-manifest} serves. */
@@ -287,7 +414,7 @@ public final class TestMcpServer implements AutoCloseable {
         manifest.put("serverId", config.serverId());
         manifest.put("version", "1.0.0");
         manifest.put("system", system);
-        manifest.put("internalUrl", "https://" + config.serverId() + ".internal:" + port() + config.path());
+        manifest.put("internalUrl", (server instanceof HttpsServer ? "https" : "http") + "://localhost:" + port() + config.path());
         manifest.set("credential", credential);
         pl.aiwcorpo.mcp.gateway.support.Fragments.apply(manifest, system);
         String namespace = pl.aiwcorpo.mcp.gateway.support.Fragments.namespace(system);
@@ -298,7 +425,7 @@ public final class TestMcpServer implements AutoCloseable {
             manifest.put("policiesHash", pl.aiwcorpo.mcp.gateway.support.Fragments.hash(policies, (ArrayNode) manifest.get("resourceTypes")));
         }
         ArrayNode tools = manifest.putArray("tools");
-        for (JsonNode definition : toolDefinitions(Map.of())) {
+        for (JsonNode definition : toolDefinitions(Map.of(), true)) {
             String name = definition.path("name").asString();
             boolean destructive = "delete_issue".equals(name);
             boolean update = "add_comment".equals(name);
@@ -319,7 +446,7 @@ public final class TestMcpServer implements AutoCloseable {
     }
 
     /**
-     * The manifest an adapter in front of this server would submit (CC-193): {@code source: adapter}, entries without risk and action
+     * The manifest an adapter in front of this server serves (CC-193): {@code source: adapter}, entries without risk and action
      * and without resource references, hashes without them.
      */
     public ObjectNode adapterManifest() {
@@ -338,6 +465,10 @@ public final class TestMcpServer implements AutoCloseable {
                     JSON.writeValueAsString(entry), system, JSON.writeValueAsString(manifest.get("credential"))));
         }
         return manifest;
+    }
+
+    private static String sessionIdOf(Map<String, List<String>> headers) {
+        return first(headers, "mcp-session-id");
     }
 
     private void delete(HttpExchange exchange, Map<String, List<String>> headers, String body) throws IOException {
@@ -385,6 +516,34 @@ public final class TestMcpServer implements AutoCloseable {
             return;
         }
         String sub = (String) auth.claims().get("sub");
+
+        if ("tools/call".equals(method) && !config.adapterReceiver()) {
+            // The fail-closed gate (C14): data that is behind decides nothing, and this refusal comes before any other.
+            long required = auth.claims().get("prv") instanceof Number number ? number.longValue() : 0;
+            pl.aiwcorpo.mcp.manifest.PolicyDataGate.Data held = heldPolicyData;
+            pl.aiwcorpo.mcp.manifest.PolicyDataGate.Decision gate = pl.aiwcorpo.mcp.manifest.PolicyDataGate.decide(ownPoliciesHash(), held,
+                    java.util.OptionalLong.of(required));
+            if (!gate.allowed() && "policy_data_stale".equals(gate.reason())) {
+                ObjectNode stale = JSON.createObjectNode();
+                stale.put("error", "policy_data_stale");
+                if (held == null) {
+                    stale.putNull("heldRevision");
+                } else {
+                    stale.put("heldRevision", held.revision());
+                }
+                stale.put("requiredRevision", required);
+                record(exchange, headers, body, method, toolName, 409, "policy_data_stale", sub, sessionIdOf(headers));
+                send(exchange, 409, "application/json", JSON.writeValueAsString(stale));
+                return;
+            }
+            if (!gate.allowed()) {
+                record(exchange, headers, body, method, toolName, 200, gate.reason(), sub, sessionIdOf(headers));
+                audit(rid, auth.claims(), toolName, "error", "upstream_unavailable", started);
+                send(exchange, 200, "application/json", response(message.get("id"),
+                        toolError("upstream_unavailable", "The server cannot evaluate this call now.")));
+                return;
+            }
+        }
 
         if ("initialize".equals(method)) {
             String requested = message.path("params").path("protocolVersion").asString("");
@@ -447,7 +606,7 @@ public final class TestMcpServer implements AutoCloseable {
                 record(exchange, headers, body, method, null, 200, null, sub, sessionId);
                 ObjectNode result = JSON.createObjectNode();
                 ArrayNode listed = JSON.createArrayNode();
-                toolDefinitions(descriptionOverrides).forEach(definition -> {
+                toolDefinitions(descriptionOverrides, false).forEach(definition -> {
                     if (!hiddenTools.contains(definition.path("name").asString())) {
                         listed.add(definition);
                     }
@@ -578,7 +737,7 @@ public final class TestMcpServer implements AutoCloseable {
         }
     }
 
-    private ArrayNode toolDefinitions(Map<String, String> overrides) {
+    private ArrayNode toolDefinitions(Map<String, String> overrides, boolean forManifest) {
         ArrayNode tools = JSON.createArrayNode();
         tools.add(tool("get_issue", "Get issue", overrides.getOrDefault("get_issue", "Returns the key and summary of one Jira issue."),
                 "issueKey", "Issue key, e.g. ABC-123.", true));
@@ -586,7 +745,7 @@ public final class TestMcpServer implements AutoCloseable {
                 "project", "Project key, e.g. ABC.", true));
         tools.add(tool("delete_issue", "Delete issue", overrides.getOrDefault("delete_issue", "Deletes one Jira issue."),
                 "issueKey", "Issue key, e.g. ABC-123.", false));
-        if (updateTool) {
+        if (updateTool || (forManifest && updateToolInManifest)) {
             tools.add(tool("add_comment", "Add comment", "Adds a comment to a Jira issue.", "issueKey", "Issue key, e.g. ABC-123.", false));
         }
         for (int i = 1; i <= extraTools; i++) {
@@ -700,23 +859,6 @@ public final class TestMcpServer implements AutoCloseable {
                         String toolName, int status, String reason, String sub, String sessionId) {
         recorded.add(new RecordedRequest(exchange.getRequestMethod(), headers, body, rpcMethod, toolName, status, reason,
                 sub, sessionId));
-    }
-
-    private static String clientCommonName(HttpExchange exchange) {
-        if (!(exchange instanceof HttpsExchange https)) {
-            return null;
-        }
-        try {
-            LdapName name = new LdapName(https.getSSLSession().getPeerPrincipal().getName());
-            for (Rdn rdn : name.getRdns()) {
-                if ("CN".equalsIgnoreCase(rdn.getType())) {
-                    return rdn.getValue().toString();
-                }
-            }
-        } catch (SSLPeerUnverifiedException | InvalidNameException e) {
-            return null;
-        }
-        return null;
     }
 
     private static Map<String, List<String>> lowerCase(Headers headers) {

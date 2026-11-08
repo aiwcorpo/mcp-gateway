@@ -41,7 +41,7 @@ class IdpTokenClaimsTest extends GatewayTestBase {
         List<String> names = new ArrayList<>();
         internal.propertyNames().forEach(names::add);
         assertThat(names).doesNotContain("vs", "vsc", "something_else");
-        assertThat(names).allMatch(n -> List.of("iss", "aud", "sub", "usr", "grp", "azp", "rid", "prv", "iat", "exp", "jti", "tool").contains(n));
+        assertThat(names).allMatch(n -> List.of("iss", "aud", "sub", "usr", "grp", "azp", "rid", "prv", "iat", "exp", "jti", "tool", "use").contains(n));
     }
 
     @Test

@@ -56,6 +56,7 @@ class DevstackGuardTest {
             "gateway.internal-jwt.allow-test-keys", Map.of("gateway.internal-jwt.allow-test-keys", "true"),
             "gateway.registry.bootstrap-from-server", Map.of("gateway.registry.bootstrap-from-server", "true"),
             "gateway.allow-plain-http", Map.of("gateway.allow-plain-http", "true"),
+            "gateway.servers.allow-loopback", Map.of("gateway.servers.allow-loopback", "true"),
             "gateway.public-url is not https", Map.of("gateway.public-url", "http://localhost:18700"),
             "gateway.oidc.jwks-uri is not https", Map.of("gateway.oidc.jwks-uri", "http://keycloak:8080/certs"),
             "gateway.oidc.token-uri is not https", Map.of("gateway.oidc.token-uri", "http://keycloak:8080/token"));

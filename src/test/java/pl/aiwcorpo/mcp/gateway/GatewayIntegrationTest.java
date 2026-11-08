@@ -255,8 +255,10 @@ class GatewayIntegrationTest extends GatewayTestBase {
         assertThat(hijack.statusCode()).isEqualTo(404);
 
         String bobSession = initialize(bobToken, "2025-11-25");
+        // The definitions of a server are read once for everyone within the check interval: a read that an earlier request made a moment ago
+        // would leave Alice without a session upstream, so each of the two lists starts from no reading.
+        definitions.forget("mcp-jira");
         rpc(aliceToken, aliceSession, "2025-11-25", "tools/list", null);
-        // The definitions of a server are read once for everyone within the check interval, so Bob's list reads them again only after it.
         definitions.forget("mcp-jira");
         rpc(bobToken, bobSession, "2025-11-25", "tools/list", null);
         Map<String, String> upstreamSessionOwner = new LinkedHashMap<>();
@@ -481,7 +483,7 @@ class GatewayIntegrationTest extends GatewayTestBase {
         HttpResponse<String> list = sendModern(aliceToken(), "/s/mcp-confluence/mcp", "tools/list", null, "{}");
         assertThat(list.statusCode()).isEqualTo(200);
         assertThat(JSON.readTree(list.body()).path("result").path("tools").size()).as("a server that cannot be read is left out (CC-180)").isZero();
-        assertThat(env.wrongName.requests()).isEmpty();
+        assertThat(env.pinnedElsewhere.requests()).isEmpty();
     }
 
     @Test

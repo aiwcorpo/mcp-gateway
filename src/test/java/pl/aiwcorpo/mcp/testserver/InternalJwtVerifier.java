@@ -22,7 +22,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Receiver side of the internal JWT (C2, mcp-contracts 3.0.2) as an MCP server or the broker must implement
+ * Receiver side of the internal JWT (C2, mcp-contracts 7.0.0) as an MCP server or the broker must implement
  * it. Rejection reasons are the ones used in {@code test-vectors/jwt}.
  */
 public final class InternalJwtVerifier {
@@ -34,8 +34,18 @@ public final class InternalJwtVerifier {
             .getSchema(SchemaLocation.of("classpath:mcp-contracts/schemas/internal-jwt.schema.json"));
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
-    /** What the receiving endpoint allows: the service variant and the {@code tool} claim. */
-    public record RequestRule(boolean serviceAllowed, ToolRule toolRule, String toolName) {
+    /**
+     * What the receiving endpoint allows: the purpose of the token ({@code use}), the service variant and the {@code tool} claim.
+     * {@code placeholderAudience}: the endpoint also takes the audience of a pull that comes before the server has a serverId (the manifest
+     * at the time a server is added).
+     */
+    public record RequestRule(String purpose, boolean serviceAllowed, ToolRule toolRule, String toolName, boolean placeholderAudience) {
+
+        public static final String PLACEHOLDER_AUDIENCE = "mcp-pending";
+
+        public RequestRule(boolean serviceAllowed, ToolRule toolRule, String toolName) {
+            this("call", serviceAllowed, toolRule, toolName, false);
+        }
 
         public static RequestRule forJsonRpc(String method, String toolName) {
             return switch (method) {
@@ -51,7 +61,13 @@ public final class InternalJwtVerifier {
                     || ("GET".equals(method) && "/v1/authenticator".equals(path))) {
                 return new RequestRule(false, ToolRule.REQUIRED, null);
             }
-            boolean service = ("GET".equals(method) && ("/mcp-manifest".equals(path) || "/v1/systems".equals(path)));
+            if ("GET".equals(method) && "/.well-known/mcp-manifest".equals(path)) {
+                return new RequestRule("manifest", true, ToolRule.ABSENT, null, true);
+            }
+            if ("POST".equals(method) && "/.well-known/mcp-policy-data".equals(path)) {
+                return new RequestRule("policy-data", true, ToolRule.ABSENT, null, false);
+            }
+            boolean service = "GET".equals(method) && "/v1/systems".equals(path);
             return new RequestRule(service, ToolRule.ABSENT, null);
         }
     }
@@ -179,7 +195,8 @@ public final class InternalJwtVerifier {
         if (!issuer.equals(claims.path("iss").asString())) {
             return Result.reject("wrong_issuer");
         }
-        if (!audience.equals(claims.path("aud").asString())) {
+        if (!audience.equals(claims.path("aud").asString())
+                && !(rule.placeholderAudience() && RequestRule.PLACEHOLDER_AUDIENCE.equals(claims.path("aud").asString()))) {
             return Result.reject("wrong_audience");
         }
         long now = Instant.now(clock).getEpochSecond();
@@ -196,6 +213,10 @@ public final class InternalJwtVerifier {
         }
         if (requestIdHeader == null || !requestIdHeader.equals(claims.path("rid").asString())) {
             return Result.reject("request_id_mismatch");
+        }
+        // The purpose is judged before the variant and the tool: a token minted for one purpose is never taken for another (CC-249).
+        if (!rule.purpose().equals(claims.path("use").asString())) {
+            return Result.reject("wrong_purpose");
         }
         boolean service = SERVICE_SUBJECT.equals(claims.path("sub").asString());
         if (service && !rule.serviceAllowed()) {

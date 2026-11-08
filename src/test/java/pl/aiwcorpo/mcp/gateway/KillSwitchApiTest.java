@@ -1,10 +1,8 @@
 package pl.aiwcorpo.mcp.gateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
 
 import java.net.http.HttpResponse;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -213,15 +211,13 @@ class KillSwitchApiTest extends GatewayTestBase {
     }
 
     @Test
-    void aSwitchSurvivesTheRegistrationOfAManifest() throws Exception {
+    void aSwitchSurvivesAPullOfTheManifest() throws Exception {
         env.gitlab.describeAsApproved();
-        String manifest = JSON.writeValueAsString(env.gitlab.manifest());
-        await().atMost(Duration.ofSeconds(10)).until(() -> admin(env.ciGitlabTls, "PUT", "/admin/v1/registry/servers/mcp-gitlab", null, manifest)
-                .statusCode() == 200);
+        assertThat(adminCall("POST", "/admin/v1/servers/mcp-gitlab/refresh", null).statusCode()).isEqualTo(200);
         String path = "/admin/v1/registry/servers/mcp-gitlab/tools/get_issue/kill-switch";
         assertThat(putSwitch(path, "incident").statusCode()).isEqualTo(204);
 
-        assertThat(admin(env.ciGitlabTls, "PUT", "/admin/v1/registry/servers/mcp-gitlab", null, manifest).statusCode()).isEqualTo(200);
+        assertThat(adminCall("POST", "/admin/v1/servers/mcp-gitlab/refresh", null).statusCode()).isEqualTo(200);
 
         JsonNode all = JSON.readTree(asAdmin("GET", "/admin/v1/kill-switches", null).body());
         assertThat(all.path("switches")).hasSize(1);

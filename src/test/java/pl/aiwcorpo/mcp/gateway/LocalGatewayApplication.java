@@ -20,8 +20,8 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * The gateway on a developer's machine with everything around it from the integration tests: Redis and PostgreSQL in containers,
  * the internal CA, the IdP stand-in, the broker stub and the test MCP servers (mcp-jira, mcp-gitlab). The registry starts empty and the
- * test servers are added to it through the admin service, as an administrator would add them; the dev bootstrap then takes their manifests
- * and policies. Needs
+ * test servers are added to it by their address through the admin service, as an administrator would add them (the gateway reads the
+ * certificate and pulls the manifest); the dev bootstrap then approves the connection, the policies and the tools. Needs
  * Docker and nothing else; run it from the IDE (.run/LocalGateway.run.xml) or with
  * {@code MCP_DEVSTACK_ACKNOWLEDGED=true ./mvnw spring-boot:test-run -Dspring-boot.run.mainClass=pl.aiwcorpo.mcp.gateway.LocalGatewayApplication}.
  *
@@ -45,8 +45,7 @@ public final class LocalGatewayApplication {
             if (!row.credentialRequired() || row.adapter() || !row.enabled()) {
                 continue;
             }
-            var body = json.createObjectNode().put("serverId", row.serverId()).put("system", row.system()).put("internalUrl", row.url());
-            body.putObject("credential").put("required", true).put("type", row.credentialType()).putArray("acceptedTypes").add(row.credentialType());
+            var body = json.createObjectNode().put("internalUrl", row.url());
             Outcome<ServerAdmin.Item> outcome = admin.create(UuidV7.next(), body, administrator);
             if (!outcome.succeeded()) {
                 System.err.println("could not add " + row.serverId() + ": " + outcome.reason() + " " + outcome.message());

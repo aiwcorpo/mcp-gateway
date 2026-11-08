@@ -93,7 +93,7 @@ class HighAvailabilityTest {
         broker = new BrokerStub(Tls.fromPkcs12(pki.issue("ha-broker.p12", "mcp-credential-broker", List.of("mcp-credential-broker.internal"),
                 true, false), pki.truststore(), TestPki.PASSWORD), keys);
         jira = new TestMcpServer(new TestMcpServer.Config("mcp-jira", "/mcp", "https://mcp-gateway.internal", false, null, keys),
-                Tls.fromPkcs12(pki.issue("ha-jira.p12", "mcp-jira", List.of("mcp-jira.internal", "localhost"), true, false),
+                Tls.fromPkcs12(pki.issue("ha-jira.p12", "mcp-jira", List.of("127.0.0.1", "localhost"), true, false),
                         pki.truststore(), TestPki.PASSWORD), new java.net.InetSocketAddress("127.0.0.1", 0));
         jira.extraTools(BULK_TOOLS);
         jira.updateTool(true);

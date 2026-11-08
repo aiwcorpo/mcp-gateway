@@ -147,6 +147,33 @@ class GatewaySetupTest {
     }
 
     @Test
+    void theBundleOfCasForTheServersIsOptionalAndWhenNamedMustBeAPemFileOfCertificates() throws Exception {
+        Map<String, String> env = new HashMap<>();
+        GatewaySetup.REQUIRED.forEach(name -> env.put(name, "https://127.0.0.1:1/unused"));
+        env.put("MCP_TLS_KEYSTORE", dir.resolve("missing.p12").toString());
+
+        setup(env).run();
+        assertThat(output.toString(StandardCharsets.UTF_8)).contains("ok    MCP server trust: the default trust store of the JVM (MCP_SERVER_TRUSTED_CAS not set)");
+
+        output.reset();
+        env.put("MCP_SERVER_TRUSTED_CAS", dir.resolve("none.pem").toString());
+        setup(env).run();
+        assertThat(output.toString(StandardCharsets.UTF_8)).contains("FAIL  MCP_SERVER_TRUSTED_CAS " + dir.resolve("none.pem") + " does not exist");
+
+        output.reset();
+        Path text = dir.resolve("text.pem");
+        Files.writeString(text, "not a certificate\n");
+        env.put("MCP_SERVER_TRUSTED_CAS", text.toString());
+        setup(env).run();
+        assertThat(output.toString(StandardCharsets.UTF_8)).contains("FAIL  MCP_SERVER_TRUSTED_CAS " + text + " holds no CA certificate");
+
+        output.reset();
+        env.put("MCP_SERVER_TRUSTED_CAS", pl.aiwcorpo.mcp.gateway.support.GatewayTestEnvironment.get().serverCas.toString());
+        setup(env).run();
+        assertThat(output.toString(StandardCharsets.UTF_8)).contains("ok    MCP server trust: the default trust store of the JVM and the CAs in");
+    }
+
+    @Test
     void namesTheStorePasswordWhenItIsWrong() throws Exception {
         Path store = dir.resolve("store.p12");
         java.security.KeyStore empty = java.security.KeyStore.getInstance("PKCS12");

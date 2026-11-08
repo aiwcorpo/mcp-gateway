@@ -93,8 +93,14 @@ class AdminInputRulesTest extends GatewayTestBase {
         assertThat(body.path("approvedPolicies").path("namespace").asString()).isEqualTo("Jira");
         assertThat(body.path("approvedResourceTypes").findValuesAsString("type")).contains("Jira::Project", "Jira::Issue");
 
-        assertThat(adminCall("POST", "/admin/v1/servers", "{\"serverId\":\"mcp-reader\",\"system\":\"reader\",\"internalUrl\":\"https://127.0.0.1:8443/mcp\","
-                + "\"credential\":{\"required\":true,\"acceptedTypes\":[\"user-secret\"],\"type\":\"user-secret\"}}").statusCode()).isEqualTo(201);
+        try (pl.aiwcorpo.mcp.testserver.TestMcpServer reader = env.startServer("mcp-reader")) {
+            assertThat(adminCall("POST", "/admin/v1/servers", "{\"internalUrl\":\"https://127.0.0.1:" + reader.port() + "/mcp\"}").statusCode())
+                    .isEqualTo(201);
+            assertNothingApproved();
+        }
+    }
+
+    private void assertNothingApproved() throws Exception {
         HttpResponse<String> nothing = adminCall("GET", "/admin/v1/registry/servers/mcp-reader/policies", null);
         assertThat(nothing.statusCode()).as("nothing approved is not a 404").isEqualTo(200);
         assertThat(json(nothing).path("approvedHash").isNull()).isTrue();

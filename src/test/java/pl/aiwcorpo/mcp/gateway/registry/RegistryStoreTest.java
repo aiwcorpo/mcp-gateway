@@ -49,7 +49,7 @@ class RegistryStoreTest extends GatewayTestBase {
         RegisteredTool onlyApproved = toolWith("get_issue", true, false);
 
         store.locked(server, tx -> {
-            tx.saveServer(Manifests.jira("1.0.0", Tool.update("update_issue")), "ci");
+            tx.saveServer(Manifests.jira("1.0.0", Tool.update("update_issue")), "manifest");
             tx.saveTool(both);
             tx.saveTool(onlyPending);
             tx.saveTool(onlyApproved);
@@ -60,7 +60,7 @@ class RegistryStoreTest extends GatewayTestBase {
         assertThat(store.tools(server).get("update_issue")).isEqualTo(both);
         assertThat(store.tools(server).get("create_issue")).isEqualTo(onlyPending);
         assertThat(store.tools(server).get("get_issue")).isEqualTo(onlyApproved);
-        assertThat(store.findServer(server).orElseThrow().source()).isEqualTo("ci");
+        assertThat(store.findServer(server).orElseThrow().source()).isEqualTo("manifest");
     }
 
     @Test
@@ -103,7 +103,7 @@ class RegistryStoreTest extends GatewayTestBase {
         String server = freshServer();
         try {
             store.locked(server, tx -> {
-                tx.saveServer(Manifests.jira("1.0.0", Tool.update("update_issue")), "ci");
+                tx.saveServer(Manifests.jira("1.0.0", Tool.update("update_issue")), "manifest");
                 tx.saveTool(toolWith("update_issue", true, false));
                 throw new IllegalStateException("stop");
             });

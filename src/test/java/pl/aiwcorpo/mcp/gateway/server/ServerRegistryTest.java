@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 
 import pl.aiwcorpo.mcp.gateway.registry.RegisteredTool;
 import pl.aiwcorpo.mcp.gateway.registry.ServerConfig;
+import pl.aiwcorpo.mcp.gateway.support.Configs;
 import pl.aiwcorpo.mcp.gateway.support.Manifests;
 import tools.jackson.databind.JsonNode;
 
@@ -18,7 +19,7 @@ class ServerRegistryTest {
     private static final ServerConfig JIRA = config("mcp-jira", "jira", "user-secret", true, false);
 
     private static ServerConfig config(String serverId, String system, String type, boolean enabled, boolean adapter) {
-        return new ServerConfig(serverId, system, URI.create("https://" + serverId + ".internal:8443/mcp"),
+        return Configs.connected(serverId, system, URI.create("https://" + serverId + ".internal:8443/mcp"),
                 new ServerConfig.Credential(true, List.of(type), type), enabled, adapter);
     }
 
@@ -75,6 +76,23 @@ class ServerRegistryTest {
     }
 
     @Test
+    void whileTheConnectionWaitsForApprovalEveryToolIsKnownAsDisabledAndListedNowhere() {
+        ServerRegistry registry = new ServerRegistry();
+        registry.replaceConfigs(List.of(Configs.waiting("mcp-jira", "jira", URI.create("https://mcp-jira.internal:8443/mcp"),
+                new ServerConfig.Credential(true, List.of("user-secret"), "user-secret"))));
+        registry.apply("mcp-jira", new ServerRegistry.Applied("1.2.3", approved(Manifests.Tool.readOnly("get_issue")), Map.of(), true, true));
+
+        McpServer server = registry.find("mcp-jira").orElseThrow();
+        assertThat(server.connectionApproved()).isFalse();
+        assertThat(server.tools()).as("approved tools and approved policies, but no approved connection (CC-249)").isEmpty();
+        assertThat(registry.resolve("jira__get_issue")).isEmpty();
+        assertThat(registry.resolveForCall("jira__get_issue")).hasValueSatisfying(found -> assertThat(found.tool().disabled()).isTrue());
+
+        registry.replaceConfigs(List.of(JIRA));
+        assertThat(registry.find("mcp-jira").orElseThrow().tools()).as("approved: the same tools are served").containsKey("get_issue");
+    }
+
+    @Test
     void aToolBelowAnEarlierApprovalIsNotServed() {
         ServerRegistry registry = new ServerRegistry();
         registry.replaceConfigs(List.of(JIRA));
@@ -88,13 +106,14 @@ class ServerRegistryTest {
         assertThat(credentialType(new ServerConfig.Credential(true, List.of("user-oauth", "user-secret"), "user-oauth"))).isEqualTo("user-oauth");
         assertThat(credentialType(new ServerConfig.Credential(false, List.of("user-secret"), "user-secret"))).as("no credential, no type").isNull();
         ServerRegistry registry = new ServerRegistry();
-        registry.replaceConfigs(List.of(new ServerConfig("mcp-opensearch", "opensearch", URI.create("https://mcp-opensearch.internal:8443/mcp"), new ServerConfig.Credential(true, List.of("token-exchange"), "token-exchange"), true, false)));
+        registry.replaceConfigs(List.of(Configs.connected("mcp-opensearch", "opensearch", URI.create("https://mcp-opensearch.internal:8443/mcp"),
+                new ServerConfig.Credential(true, List.of("token-exchange"), "token-exchange"), true, false)));
         assertThat(registry.find("mcp-opensearch").orElseThrow().credential().tokenExchange()).isTrue();
     }
 
     private static String credentialType(ServerConfig.Credential credential) {
         ServerRegistry registry = new ServerRegistry();
-        registry.replaceConfigs(List.of(new ServerConfig("mcp-jira", "jira", URI.create("https://mcp-jira.internal:8443/mcp"), credential, true, false)));
+        registry.replaceConfigs(List.of(Configs.connected("mcp-jira", "jira", URI.create("https://mcp-jira.internal:8443/mcp"), credential, true, false)));
         return registry.find("mcp-jira").orElseThrow().credential().type();
     }
 

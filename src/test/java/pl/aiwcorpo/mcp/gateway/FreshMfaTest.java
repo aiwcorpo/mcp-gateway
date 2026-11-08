@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -16,7 +17,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import pl.aiwcorpo.mcp.gateway.admin.FreshMfa;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
 import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
-import tools.jackson.databind.JsonNode;
+import pl.aiwcorpo.mcp.testserver.TestMcpServer;
 
 /**
  * Fresh MFA for the operations that widen access (CC-239, CC-240): {@code auth_time} within 300 s and proof of a second factor ({@code amr}
@@ -26,13 +27,21 @@ class FreshMfaTest extends GatewayTestBase {
 
     private static final List<String> ADMIN = List.of("mcp-platform-admin");
     private static final String SERVER = "/admin/v1/servers/mcp-mfa";
-    private static final String BODY = "{\"serverId\":\"mcp-mfa\",\"system\":\"mfa\",\"internalUrl\":\"https://127.0.0.1:8443/mcp\","
-            + "\"credential\":{\"required\":true,\"acceptedTypes\":[\"user-secret\"],\"type\":\"user-secret\"}}";
+
+    private TestMcpServer mfa;
+    private String body;
+
+    @BeforeEach
+    void startTheServer() throws Exception {
+        mfa = env.startServer("mcp-mfa");
+        body = "{\"internalUrl\":\"https://127.0.0.1:" + mfa.port() + "/mcp\"}";
+    }
 
     @AfterEach
     void remove() throws Exception {
         adminCall("DELETE", SERVER, null);
         jdbc.sql("DELETE FROM policy_overrides").update();
+        mfa.close();
     }
 
     private String token(Long authAge, List<String> amr, String acr) {
@@ -59,7 +68,7 @@ class FreshMfaTest extends GatewayTestBase {
     @Test
     void everyOperationThatWidensAccessNeedsAFreshMfa(CapturedOutput output) throws Exception {
         String fresh = token(10L, List.of("pwd", "otp"), null);
-        assertThat(call(fresh, "POST", "/admin/v1/servers", BODY, Map.of()).statusCode()).isEqualTo(201);
+        assertThat(call(fresh, "POST", "/admin/v1/servers", body, Map.of()).statusCode()).isEqualTo(201);
         String etag = etag(call(fresh, "GET", SERVER, null, Map.of()));
         HttpResponse<String> mapping = call(fresh, "GET", "/admin/v1/policy/scope-mapping", null, Map.of());
         String override = "{\"target\":\"gateway\",\"text\":\"forbid (principal, action == Action::\\\"call\\\", resource is Tool);\"}";
@@ -72,7 +81,7 @@ class FreshMfaTest extends GatewayTestBase {
             Map<String, String> rid = Map.of("X-Request-Id", requestId);
             Map<String, String> match = Map.of("If-Match", etag, "X-Request-Id", requestId);
             Map<String, HttpResponse<String>> refused = new java.util.LinkedHashMap<>();
-            refused.put("createServer", call(stale, "POST", "/admin/v1/servers", BODY.replace("mcp-mfa", "mcp-mfa2").replace("\"mfa\"", "\"mfatwo\""), rid));
+            refused.put("createServer", call(stale, "POST", "/admin/v1/servers", body, rid));
             refused.put("updateServer", call(stale, "PATCH", SERVER, "{\"enabled\":true}", match));
             refused.put("updateServerUrl", call(stale, "PATCH", SERVER, "{\"internalUrl\":\"https://127.0.0.1:9/mcp\"}", match));
             refused.put("deleteServer", call(stale, "DELETE", SERVER, null, rid));
@@ -97,7 +106,7 @@ class FreshMfaTest extends GatewayTestBase {
     @Test
     void switchingAServerOffNeedsNoFreshMfaAndNothingElseDoesAnyMore() throws Exception {
         String fresh = token(10L, List.of("pwd", "otp"), null);
-        assertThat(call(fresh, "POST", "/admin/v1/servers", BODY, Map.of()).statusCode()).isEqualTo(201);
+        assertThat(call(fresh, "POST", "/admin/v1/servers", body, Map.of()).statusCode()).isEqualTo(201);
         String stale = token(4000L, List.of("pwd"), null);
         String etag = etag(call(fresh, "GET", SERVER, null, Map.of()));
 

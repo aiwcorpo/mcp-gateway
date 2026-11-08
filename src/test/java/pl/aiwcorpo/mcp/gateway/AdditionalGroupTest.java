@@ -16,7 +16,8 @@ import tools.jackson.databind.node.ObjectNode;
 
 /**
  * A tool whose manifest entry names an additionalGroup (CC-242) is called only by members of that group as well as of the group of its risk.
- * The group is part of the definition hash, so a change of it goes through the approval of the tool like any other change.
+ * The group is part of the definition hash, so a change of it goes through the approval of the tool like any other change, and a pulled
+ * manifest approves nothing (CC-249).
  */
 class AdditionalGroupTest extends GatewayTestBase {
 
@@ -29,13 +30,28 @@ class AdditionalGroupTest extends GatewayTestBase {
     void addTheServer() throws Exception {
         ops = env.startServer("mcp-ops");
         ops.additionalGroup("get_issue", "ops");
-        String body = "{\"serverId\":\"mcp-ops\",\"system\":\"ops\",\"internalUrl\":\"https://127.0.0.1:" + ops.port() + "/mcp\","
-                + "\"credential\":{\"required\":true,\"acceptedTypes\":[\"user-secret\"],\"type\":\"user-secret\"}}";
-        assertThat(adminCall("POST", "/admin/v1/servers", body).statusCode()).isEqualTo(201);
+        addAndApprove();
+    }
+
+    /** Adds the server by its address and approves the connection, the policies and the two read tools, as an administrator would. */
+    private void addAndApprove() throws Exception {
+        String body = "{\"internalUrl\":\"https://127.0.0.1:" + ops.port() + "/mcp\"}";
+        HttpResponse<String> added = adminCall("POST", "/admin/v1/servers", body);
+        assertThat(added.statusCode()).as(added.body()).isEqualTo(201);
+        JsonNode pending = JSON.readTree(added.body()).path("pendingConnection");
+        assertThat(adminCall("POST", "/admin/v1/servers/mcp-ops/connection/approve", "{\"tlsMode\":\"" + pending.path("tlsMode").asString()
+                + "\",\"fingerprint\":\"" + pending.path("fingerprint").asString() + "\"}").statusCode()).isEqualTo(200);
         manifest = ops.manifest();
-        assertThat(register(manifest).statusCode()).isEqualTo(200);
         assertThat(adminCall("POST", REGISTRY + "/policies/approve", "{\"policiesHash\":\"" + manifest.path("policiesHash").asString() + "\"}")
                 .statusCode()).isEqualTo(200);
+        for (String tool : List.of("get_issue", "search_issues")) {
+            assertThat(adminCall("POST", REGISTRY + "/tools/" + tool + "/approve", "{\"definitionHash\":\"" + hashOf(manifest, tool) + "\"}")
+                    .statusCode()).isEqualTo(204);
+        }
+    }
+
+    private static String hashOf(ObjectNode manifest, String tool) {
+        return pl.aiwcorpo.mcp.gateway.support.Manifests.tool(manifest, tool).path("definitionHash").asString();
     }
 
     @AfterEach
@@ -44,8 +60,10 @@ class AdditionalGroupTest extends GatewayTestBase {
         ops.close();
     }
 
+    /** The server serves this manifest from now on and the gateway pulls it. */
     private HttpResponse<String> register(ObjectNode body) throws Exception {
-        return admin(env.pipelineTls("mcp-ops"), "PUT", REGISTRY, null, JSON.writeValueAsString(body));
+        ops.serveManifest(body);
+        return adminCall("POST", "/admin/v1/servers/mcp-ops/refresh", null);
     }
 
     private String token(String... groups) {
@@ -156,13 +174,17 @@ class AdditionalGroupTest extends GatewayTestBase {
     }
 
     @Test
-    void addingAGroupToAReadOnlyToolIsApprovedByTheReviewOfTheCommit() throws Exception {
+    void addingAGroupToAReadOnlyToolWaitsLikeAnyOtherChangeAndTheOldEntryStaysInForce() throws Exception {
         ops.additionalGroup("search_issues", "ops");
         assertThat(register(ops.manifest()).statusCode()).isEqualTo(200);
 
         JsonNode entry = tool(JSON.readTree(adminCall("GET", "/admin/v1/registry/servers", null).body()), "search_issues");
-        assertThat(entry.path("status").asString()).as("it only narrows access").isEqualTo("approved");
+        assertThat(entry.path("status").asString()).as("a pulled manifest approves nothing, even a group that only narrows access").isEqualTo("pending_approval");
         assertThat(entry.path("additionalGroup").asString()).isEqualTo("mcp-ops-ops");
+        assertThat(listed(token("mcp-ops-read"))).as("the approved entry, without the group, is in force").contains("ops__search_issues");
+
+        assertThat(adminCall("POST", REGISTRY + "/tools/search_issues/approve", "{\"definitionHash\":\"" + entry.path("definitionHash").asString() + "\"}")
+                .statusCode()).isEqualTo(204);
         assertThat(listed(token("mcp-ops-read"))).doesNotContain("ops__search_issues");
         assertThat(listed(token("mcp-ops-read", "mcp-ops-ops"))).contains("ops__search_issues");
     }
@@ -182,32 +204,32 @@ class AdditionalGroupTest extends GatewayTestBase {
     }
 
     @Test
-    void aToolRemovedAndRegisteredAgainWithoutItsGroupWaitsAndWithTheSameGroupFollowsTheNormalRule() throws Exception {
+    void aToolRemovedAndPulledAgainIsNewAndWaitsWhateverItsGroup() throws Exception {
         assertThat(register(without(ops.manifest(), "get_issue")).statusCode()).isEqualTo(200);
         ops.additionalGroup("get_issue", null);
         assertThat(register(ops.manifest()).statusCode()).isEqualTo(200);
-        assertThat(status("get_issue")).as("a new READ_ONLY tool, but the group it had is a floor that outlives the tool").isEqualTo("pending_approval");
-        assertThat(listed(token("mcp-ops-read"))).as("never served without the group").doesNotContain("ops__get_issue");
+        assertThat(status("get_issue")).as("a new tool, with no group").isEqualTo("pending_approval");
+        assertThat(listed(token("mcp-ops-read"))).as("never served while it waits").doesNotContain("ops__get_issue");
 
         assertThat(register(without(ops.manifest(), "get_issue")).statusCode()).isEqualTo(200);
         ops.additionalGroup("get_issue", "ops");
         assertThat(register(ops.manifest()).statusCode()).isEqualTo(200);
-        assertThat(status("get_issue")).as("with the same group it is the normal rule: approved").isEqualTo("approved");
+        assertThat(status("get_issue")).as("with the same group it is new as well: a pulled manifest approves nothing").isEqualTo("pending_approval");
+        String hash = tool(JSON.readTree(adminCall("GET", "/admin/v1/registry/servers", null).body()), "get_issue").path("definitionHash").asString();
+        assertThat(adminCall("POST", REGISTRY + "/tools/get_issue/approve", "{\"definitionHash\":\"" + hash + "\"}").statusCode()).isEqualTo(204);
         assertThat(listed(token("mcp-ops-read"))).doesNotContain("ops__get_issue");
         assertThat(listed(token("mcp-ops-read", "mcp-ops-ops"))).contains("ops__get_issue");
     }
 
     @Test
     void theGroupFloorSurvivesTheDeletionOfTheServer() throws Exception {
-        String body = "{\"serverId\":\"mcp-ops\",\"system\":\"ops\",\"internalUrl\":\"https://127.0.0.1:" + ops.port() + "/mcp\","
-                + "\"credential\":{\"required\":true,\"acceptedTypes\":[\"user-secret\"],\"type\":\"user-secret\"}}";
+        String body = "{\"internalUrl\":\"https://127.0.0.1:" + ops.port() + "/mcp\"}";
         assertThat(adminCall("DELETE", "/admin/v1/servers/mcp-ops", null).statusCode()).isEqualTo(204);
         assertThat(jdbc.sql("SELECT additional_group FROM registry_group_floor WHERE server_id = 'mcp-ops' AND tool = 'get_issue'")
                 .query(String.class).single()).isEqualTo("mcp-ops-ops");
-        assertThat(adminCall("POST", "/admin/v1/servers", body).statusCode()).isEqualTo(201);
-
         ops.additionalGroup("get_issue", null);
-        assertThat(register(ops.manifest()).statusCode()).isEqualTo(200);
+        ops.serveManifest(null);
+        assertThat(adminCall("POST", "/admin/v1/servers", body).statusCode()).isEqualTo(201);
 
         assertThat(status("get_issue")).isEqualTo("pending_approval");
         String hash = tool(JSON.readTree(adminCall("GET", "/admin/v1/registry/servers", null).body()), "get_issue").path("definitionHash").asString();

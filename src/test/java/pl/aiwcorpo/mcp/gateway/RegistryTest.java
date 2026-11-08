@@ -22,9 +22,10 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * The registry through the real gateway, the registry pipeline and the administrators of the portal (C5, CC-097, CC-133, CC-161,
- * CC-162): who may register, what a registration approves, what a server that presents another definition or none loses, and what the
- * administrator sees and approves. The server behind mcp-gitlab is the test server; its manifest is the one it would write in a build.
+ * The registry through the real gateway and the administrators of the portal (C5, CC-097, CC-133, CC-162, CC-249): what a pulled manifest
+ * approves (nothing), what a server that presents another definition or none loses, and what the administrator sees and approves. The
+ * server behind mcp-gitlab is the test server; the manifest it serves is the one it would build, or one the test makes it serve, and the
+ * gateway pulls it on a refresh.
  */
 class RegistryTest extends GatewayTestBase {
 
@@ -42,20 +43,47 @@ class RegistryTest extends GatewayTestBase {
         env.gitlab.describeAsApproved();
         pristine = env.gitlab.manifest();
         await().atMost(Duration.ofSeconds(10)).until(() -> registry.registered("mcp-gitlab").isPresent());
-        register(pristine);
+        env.gitlab.serveManifest(null);
+        assertThat(adminCall("POST", "/admin/v1/servers/mcp-gitlab/refresh", null).statusCode()).isEqualTo(200);
+        approveWhatWaits();
     }
 
     @AfterEach
     void restore() throws Exception {
         env.gitlab.describeAsApproved();
-        assertThat(register(pristine).statusCode()).isEqualTo(200);
+        env.gitlab.serveManifest(null);
+        assertThat(adminCall("POST", "/admin/v1/servers/mcp-gitlab/refresh", null).statusCode()).isEqualTo(200);
+        approveWhatWaits();
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> assertThat(listedTools()).contains("gitlab__get_issue", "gitlab__search_issues"));
     }
 
     // --- helpers ---------------------------------------------------------------------------------------------
 
+    /** The server serves this manifest from now on and the gateway pulls it: the answer is the server as the registry of servers shows it. */
     private HttpResponse<String> register(JsonNode manifest) throws Exception {
-        return admin(env.ciGitlabTls, "PUT", "/admin/v1/registry/servers/mcp-gitlab", null, JSON.writeValueAsString(manifest));
+        env.gitlab.serveManifest(manifest);
+        return adminCall("POST", "/admin/v1/servers/mcp-gitlab/refresh", null);
+    }
+
+    /** The registry's view of mcp-gitlab (C5 RegistryServer): its tools with their states. */
+    private JsonNode registryView() throws Exception {
+        for (JsonNode server : JSON.readTree(asAdmin("GET", "/admin/v1/registry/servers", null).body())) {
+            if ("mcp-gitlab".equals(server.path("serverId").asString())) {
+                return server;
+            }
+        }
+        throw new AssertionError("mcp-gitlab is not in the registry");
+    }
+
+    /** A tool that left the manifest and came back is new and waits; the administrator who restores the state approves it again. */
+    private void approveWhatWaits() throws Exception {
+        for (JsonNode entry : registryView().path("tools")) {
+            if ("pending_approval".equals(entry.path("status").asString())) {
+                assertThat(asAdmin("POST", "/admin/v1/registry/servers/mcp-gitlab/tools/" + entry.path("name").asString() + "/approve",
+                        "{\"definitionHash\":\"" + entry.path("definitionHash").asString() + "\",\"acceptRiskLowering\":true}").statusCode())
+                        .isEqualTo(204);
+            }
+        }
     }
 
     private ObjectNode edited(java.util.function.Consumer<ObjectNode> change) {
@@ -131,43 +159,21 @@ class RegistryTest extends GatewayTestBase {
         return found;
     }
 
-    // --- who may register ------------------------------------------------------------------------------------
+    // --- there is no registration channel ---------------------------------------------------------------------
 
     @Test
-    void onlyThePipelineOfTheServerMayRegisterItsManifest(CapturedOutput output) throws Exception {
-        String path = "/admin/v1/registry/servers/mcp-gitlab";
+    void thereIsNoWayToRegisterAManifestAnyMore() throws Exception {
         String body = JSON.writeValueAsString(pristine);
         String token = env.idp.token(UUID.randomUUID().toString(), "x", List.of(), "mcp-gateway-admin", "mcp-portal-bff");
-
-        HttpResponse<String> registered = admin(env.ciGitlabTls, "PUT", path, null, body);
-        assertThat(registered.statusCode()).isEqualTo(200);
-        assertThat(Contracts.gatewayAdminErrors("RegistryServer", JSON.readTree(registered.body()))).isEmpty();
-
-        assertThat(admin(env.ciJiraTls, "PUT", path, null, body).statusCode()).as("the pipeline of another server").isEqualTo(403);
-        assertThat(admin(env.sharedCiTls, "PUT", path, null, body).statusCode()).as("the former shared name mcp-registry-ci").isEqualTo(403);
-        assertThat(admin(env.bffTls, "PUT", path, token, body).statusCode()).as("the BFF, even with a token").isEqualTo(403);
-        assertThat(admin(env.offboardingTls, "PUT", path, null, body).statusCode()).as("the offboarding process").isEqualTo(403);
-        assertThat(admin(env.noClientCertificateTls, "PUT", path, null, body).statusCode()).as("no certificate").isEqualTo(401);
-        assertThat(admin(env.foreignCaTls, "PUT", path, token, body).statusCode()).as("a certificate of a foreign CA").isEqualTo(401);
-        assertThat(admin(env.ciGitlabTls, "PUT", "/admin/v1/registry/servers/mcp-gitlab/", null, body).statusCode())
-                .as("a path that is not the operation").isNotEqualTo(200);
-        assertThat(admin(env.ciGitlabTls, "GET", "/admin/v1/registry/servers", null, null).statusCode())
-                .as("the pipeline reads nothing: the list is the portal's").isEqualTo(403);
-        assertThat(output.getOut()).contains("\"reason\":\"client_certificate_rejected\"");
-    }
-
-    @Test
-    void theCertificateIsComparedWithThePathAsAWhole() throws Exception {
-        String body = JSON.writeValueAsString(pristine);
-        // The name of mcp-jira's pipeline is a prefix-free sibling of mcp-gitlab's, and neither is a prefix of the other's path.
-        for (String path : List.of("/admin/v1/registry/servers/mcp-gitlab%2F..%2Fmcp-jira", "/admin/v1/registry/servers/mcp-jira",
-                "/admin/v1/registry/servers/MCP-GITLAB", "/admin/v1/registry/servers/mcp-gitlab;x=1/../mcp-jira")) {
-            assertThat(admin(env.ciGitlabTls, "PUT", path, null, body).statusCode()).as(path).isIn(400, 403, 404, 422);
+        for (String path : List.of("/admin/v1/registry/servers/mcp-gitlab", "/admin/v1/registry/adapters/mcp-gitlab")) {
+            assertThat(admin(env.bffTls, "PUT", path, token, body).statusCode()).as("the BFF, even with a token: " + path).isEqualTo(403);
+            assertThat(admin(env.otherComponentTls, "PUT", path, null, body).statusCode()).as("another component: " + path).isEqualTo(403);
+            assertThat(admin(env.noClientCertificateTls, "PUT", path, null, body).statusCode()).as("no certificate: " + path).isEqualTo(401);
         }
         assertThat(registryEntry("get_issue").path("status").asString()).isEqualTo("approved");
     }
 
-    // --- what a registration approves ------------------------------------------------------------------------
+    // --- what a pull approves --------------------------------------------------------------------------------
 
     @Test
     void aNewUpdateToolWaitsForAnAdministratorAndIsApprovedByItsHash(CapturedOutput output) throws Exception {
@@ -183,7 +189,8 @@ class RegistryTest extends GatewayTestBase {
 
         HttpResponse<String> registered = register(withComment);
         assertThat(registered.statusCode()).as(registered.body()).isEqualTo(200);
-        JsonNode view = JSON.readTree(registered.body());
+        assertThat(JSON.readTree(registered.body()).path("status").asString()).isEqualTo("connected");
+        JsonNode view = registryView();
         assertThat(Contracts.gatewayAdminErrors("RegistryServer", view)).isEmpty();
         JsonNode comment = null;
         for (JsonNode t : view.path("tools")) {
@@ -193,7 +200,7 @@ class RegistryTest extends GatewayTestBase {
         }
         assertThat(comment.path("status").asString()).isEqualTo("pending_approval");
         assertThat(comment.path("change").asString()).isEqualTo("new");
-        assertThat(comment.path("source").asString()).isEqualTo("ci");
+        assertThat(comment.path("source").asString()).isEqualTo("manifest");
         assertThat(comment.path("approvedInVersion").isNull()).isTrue();
         assertThat(events(output, "admin_change", "definition_submitted")).anyMatch(e -> hash.equals(e.path("definitionHash").asString())
                 && "add_comment".equals(e.path("tool").asString()) && "mcp-gitlab".equals(e.path("server").asString()));
@@ -208,7 +215,7 @@ class RegistryTest extends GatewayTestBase {
         assertThat(diff.path("approvedEntry").isNull()).isTrue();
         assertThat(diff.path("pendingHash").asString()).isEqualTo(hash);
         assertThat(diff.path("pendingVersion").asString()).isEqualTo("1.0.0");
-        assertThat(diff.path("source").asString()).isEqualTo("ci");
+        assertThat(diff.path("source").asString()).isEqualTo("manifest");
 
         assertThat(admin("GET", "/admin/v1/registry/servers", UUID.randomUUID().toString(), "bob", List.of("mcp-gitlab-read"), null).statusCode())
                 .as("the registry is for administrators").isEqualTo(403);
@@ -304,15 +311,15 @@ class RegistryTest extends GatewayTestBase {
     }
 
     @Test
-    void anEntryOfThePipelineIsNeverReplacedByWhatTheServerPresents() throws Exception {
-        // The reviewed commit changes the text of delete_issue (DESTRUCTIVE, approved before): the change waits for an administrator.
+    void anEntryOfAPullIsNeverReplacedByWhatTheServerPresentsInItsToolList() throws Exception {
+        // The manifest changes the text of delete_issue (DESTRUCTIVE, approved before): the change waits for an administrator.
         ObjectNode reviewed = edited(m -> describe(m, "delete_issue", "Deletes one issue, reviewed text."));
         assertThat(register(reviewed).statusCode()).isEqualTo(200);
         String reviewedHash = hashOf(reviewed, "delete_issue");
-        assertThat(registryEntry("delete_issue").path("source").asString()).isEqualTo("ci");
+        assertThat(registryEntry("delete_issue").path("source").asString()).isEqualTo("manifest");
 
-        env.gitlab.describeDifferently("delete_issue", "Something the reviewed commit never said.");
-        // The server is read again after the TTL; the entry of the pipeline stays whatever the server says.
+        env.gitlab.describeDifferently("delete_issue", "Something the manifest never said.");
+        // The server is read again after the TTL; the entry of the pull stays whatever the tool list says.
         await().atMost(Duration.ofSeconds(8)).untilAsserted(() -> {
             listedTools();
             assertThat(env.gitlab.requests()).anyMatch(r -> "tools/list".equals(r.rpcMethod()));
@@ -321,7 +328,7 @@ class RegistryTest extends GatewayTestBase {
         listedTools();
 
         JsonNode diff = JSON.readTree(asAdmin("GET", "/admin/v1/registry/servers/mcp-gitlab/tools/delete_issue/pending", null).body());
-        assertThat(diff.path("source").asString()).isEqualTo("ci");
+        assertThat(diff.path("source").asString()).isEqualTo("manifest");
         assertThat(diff.path("pendingHash").asString()).isEqualTo(reviewedHash);
         assertThat(diff.path("pendingEntry").path("definition").path("description").asString()).isEqualTo("Deletes one issue, reviewed text.");
     }
@@ -362,10 +369,10 @@ class RegistryTest extends GatewayTestBase {
         }
     }
 
-    // --- what a registration refuses -------------------------------------------------------------------------
+    // --- what a pull refuses ---------------------------------------------------------------------------------
 
     @Test
-    void aManifestThatLowersTheRiskIsTakenAndOnlyThatToolWaitsForAnAdministratorWhoAcceptsTheLowering(CapturedOutput output) throws Exception {
+    void aManifestThatLowersTheRiskIsTakenAndThatToolWaitsForAnAdministratorWhoAcceptsTheLowering(CapturedOutput output) throws Exception {
         ObjectNode withUpdate = edited(m -> {
             ObjectNode tool = tool(m, "search_issues").deepCopy();
             tool.put("name", "lower_me").put("risk", "UPDATE").put("action", "update");
@@ -387,7 +394,8 @@ class RegistryTest extends GatewayTestBase {
         HttpResponse<String> response = register(lowered);
 
         assertThat(response.statusCode()).as("the manifest is not rejected: " + response.body()).isEqualTo(200);
-        JsonNode view = JSON.readTree(response.body());
+        assertThat(JSON.readTree(response.body()).path("status").asString()).isEqualTo("connected");
+        JsonNode view = registryView();
         assertThat(Contracts.gatewayAdminErrors("RegistryServer", view)).isEmpty();
         for (JsonNode t : view.path("tools")) {
             if ("lower_me".equals(t.path("name").asString())) {
@@ -395,7 +403,8 @@ class RegistryTest extends GatewayTestBase {
                 assertThat(t.path("riskLowered").asBoolean()).isTrue();
                 assertThat(t.path("change").asString()).isEqualTo("changed");
             } else if ("get_issue".equals(t.path("name").asString())) {
-                assertThat(t.path("status").asString()).as("the rest of the manifest goes through").isEqualTo("approved");
+                assertThat(t.path("status").asString()).as("a pulled manifest approves nothing, a changed READ_ONLY tool included")
+                        .isEqualTo("pending_approval");
             }
         }
         JsonNode diff = JSON.readTree(asAdmin("GET", "/admin/v1/registry/servers/mcp-gitlab/tools/lower_me/pending", null).body());
@@ -421,7 +430,7 @@ class RegistryTest extends GatewayTestBase {
     }
 
     @Test
-    void aManifestThatAcceptsAnotherCredentialTypeThanTheGatewayAsksForIsRefused() throws Exception {
+    void aManifestThatAcceptsAnotherCredentialTypeThanTheGatewayAsksForIsNotTaken() throws Exception {
         ObjectNode otherType = edited(m -> {
             ((ObjectNode) m.get("credential")).putArray("acceptedTypes").add("service-account");
             for (JsonNode t : m.path("tools")) {
@@ -429,41 +438,45 @@ class RegistryTest extends GatewayTestBase {
             }
         });
 
-        HttpResponse<String> response = register(otherType);
+        JsonNode server = JSON.readTree(register(otherType).body());
 
-        assertThat(response.statusCode()).isEqualTo(422);
-        JsonNode body = JSON.readTree(response.body());
-        assertThat(Contracts.gatewayAdminErrors("ManifestRejected", body)).isEmpty();
-        assertThat(body.path("reason").asString()).isEqualTo("credential_type_mismatch");
+        assertThat(server.path("status").asString()).isEqualTo("manifest_invalid");
+        assertThat(server.path("lastError").asString()).isEqualTo("manifest_invalid");
+        assertThat(listedTools()).as("nothing changed").contains("gitlab__get_issue");
     }
 
     @Test
-    void aManifestThatBreaksARuleOrTheConfigurationIsRefusedAndNothingChanges() throws Exception {
+    void aManifestThatBreaksARuleOrTheBindingIsNotTakenAndNothingChanges() throws Exception {
+        ObjectNode adapterSource = edited(m -> m.put("source", "adapter"));
         List<ObjectNode> bad = List.of(
                 edited(m -> ((ObjectNode) tool(m, "get_issue").get("definition")).remove("title")),
                 edited(m -> ((ObjectNode) tool(m, "get_issue").get("definition").get("inputSchema")).put("additionalProperties", true)),
                 edited(m -> tool(m, "get_issue").put("definitionHash", "sha256:" + "0".repeat(64))),
                 edited(m -> m.put("system", "jira")),
-                edited(m -> m.put("internalUrl", "https://somewhere-else.internal:8443/mcp")),
-                edited(m -> m.put("internalUrl", "https://mcp-gitlab.internal:9/mcp")));
+                edited(m -> m.put("serverId", "mcp-jira")),
+                adapterSource);
         for (ObjectNode manifest : bad) {
-            HttpResponse<String> response = register(manifest);
-            assertThat(response.statusCode()).as(response.body()).isEqualTo(422);
-            JsonNode body = JSON.readTree(response.body());
-            assertThat(body.path("error").asString()).isEqualTo("manifest_rejected");
-            assertThat(Contracts.gatewayAdminErrors("ManifestRejected", body)).isEmpty();
+            JsonNode server = JSON.readTree(register(manifest).body());
+            assertThat(server.path("status").asString()).as(manifest.toString()).isEqualTo("manifest_invalid");
+            assertThat(server.path("lastError").asString()).isEqualTo("manifest_invalid");
+            assertThat(Contracts.gatewayAdminErrors("ServerConfig", server)).isEmpty();
         }
         assertThat(listedTools()).contains("gitlab__get_issue");
-        ObjectNode wrongId = pristine.deepCopy();
-        wrongId.put("serverId", "mcp-jira");
-        assertThat(register(wrongId).statusCode()).isEqualTo(400);
-        assertThat(admin(env.ciJiraTls, "PUT", "/admin/v1/registry/servers/mcp-jira", null, JSON.writeValueAsString(pristine)).statusCode())
-                .as("mcp-jira takes its tools from the configuration").isEqualTo(400);
+        assertThat(registryEntry("get_issue").path("status").asString()).isEqualTo("approved");
+    }
+
+    @Test
+    void theAddressInTheManifestIsInformationOnly() throws Exception {
+        ObjectNode elsewhere = edited(m -> m.put("internalUrl", "https://somewhere-else.internal:8443/mcp"));
+
+        JsonNode server = JSON.readTree(register(elsewhere).body());
+
+        assertThat(server.path("status").asString()).as("the gateway connects to the address the administrator gave").isEqualTo("connected");
+        assertThat(server.path("internalUrl").asString()).startsWith("https://127.0.0.1:");
     }
 
     @Test
     void aToolTheManifestNoLongerHasIsRemoved(CapturedOutput output) throws Exception {
-        // A read-only tool: the next registration of the build approves it again, a held tool would have to be approved by hand.
         ObjectNode without = edited(m -> {
             tools.jackson.databind.node.ArrayNode tools = (tools.jackson.databind.node.ArrayNode) m.get("tools");
             for (int i = 0; i < tools.size(); i++) {

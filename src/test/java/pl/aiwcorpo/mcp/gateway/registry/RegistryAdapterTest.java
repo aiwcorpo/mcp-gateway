@@ -35,8 +35,8 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * Servers behind an adapter in the registry (CC-193, CC-206, CC-207), on a real PostgreSQL with registries of their own for mcp-regad (a server that no other test uses), once
- * in adapter mode and once as a server on the starter: what a submission stores, how an administrator classifies and approves, what a
+ * Servers behind an adapter in the registry (CC-193, CC-207, CC-249), on a real PostgreSQL with registries of their own for mcp-regad (a server that no other test uses), once
+ * in adapter mode and once as a server on the starter: what a pull stores, how an administrator classifies and approves, what a
  * removal and a changed definition do to the classification. The vectors {@code adapter-registry/} and {@code registry-approval/} run here.
  */
 class RegistryAdapterTest extends GatewayTestBase {
@@ -92,7 +92,8 @@ class RegistryAdapterTest extends GatewayTestBase {
 
     private static ServerConfig adapterConfig(boolean adapter) {
         return new ServerConfig(SERVER, SYSTEM, URI.create("https://mcp-regad.internal:8443/mcp"),
-                new ServerConfig.Credential(true, List.of("user-secret"), "user-secret"), true, adapter);
+                new ServerConfig.Credential(true, List.of("user-secret"), "user-secret"), true, adapter, false, "connected", null, null,
+                new ServerConfig.Connection("ca", null, null, null, List.of(), null, "test", java.time.Instant.parse("2026-11-08T00:00:00Z")), null);
     }
 
     private RegistryService service(ServerRegistry on) {
@@ -100,9 +101,9 @@ class RegistryAdapterTest extends GatewayTestBase {
                 new DefinitionGuard(Clock.systemUTC(), Duration.ofSeconds(30)), new DefinitionCheck(JSON), audit, "mcp-gateway", JSON, policies);
     }
 
-    /** A manifest of a server that is no adapter, registered as the pipeline does; its policies are approved the way an administrator does. */
+    /** A manifest of a server that is no adapter, pulled; its policies are approved the way an administrator does. */
     private Result registerNative(ObjectNode manifest) {
-        Result result = starterService.register(requestId, SERVER, manifest, "ci");
+        Result result = starterService.applyPulled(requestId, SERVER, manifest);
         if (result instanceof Result.Accepted && starterService.policiesOf(SERVER).filter(p -> p.pending()).isPresent()) {
             starterService.approvePolicies(requestId, SERVER, manifest.path("policiesHash").asString(), admin());
         }
@@ -118,7 +119,7 @@ class RegistryAdapterTest extends GatewayTestBase {
     }
 
     private Result.Accepted submit(ObjectNode manifest) {
-        Result result = adapterService.submitAdapter(requestId, SERVER, manifest);
+        Result result = adapterService.applyPulled(requestId, SERVER, manifest);
         assertThat(result).as(result.toString()).isInstanceOf(Result.Accepted.class);
         return (Result.Accepted) result;
     }
@@ -136,7 +137,7 @@ class RegistryAdapterTest extends GatewayTestBase {
     }
 
     @Test
-    void aSubmissionApprovesNothingNotEvenAToolThatLooksLikeARead(CapturedOutput output) {
+    void aPullApprovesNothingNotEvenAToolThatLooksLikeARead(CapturedOutput output) {
         ObjectNode manifest = adapterManifest("0.3.0", Tool.readOnly("get_issue"), Tool.readOnly("update_issue"));
 
         Result.Accepted accepted = submit(manifest);
@@ -388,28 +389,26 @@ class RegistryAdapterTest extends GatewayTestBase {
     // --- the vectors -----------------------------------------------------------------------------------------
 
     @TestFactory
-    List<DynamicTest> theSubmissionsOfTheVectors() {
+    List<DynamicTest> theAdapterVectors() {
         List<Vectors.Vector> vectors = Vectors.of("adapter-registry");
-        assertThat(vectors).hasSize(13);
+        assertThat(vectors).hasSize(9);
         List<DynamicTest> tests = new ArrayList<>();
         for (Vectors.Vector vector : vectors) {
             JsonNode input = vector.document().path("input");
-            // The certificate and the body against the path are answered before the service, in the tests of the channel over HTTP.
-            if (input.has("cn") && !input.path("cn").asString().equals(("adapter".equals(input.path("channel").asString())
-                    ? "mcp-adapter-" : "mcp-registry-ci-") + input.path("serverId").asString())
-                    || input.has("bodyServerId")) {
+            // A server that is not in the registry yet gets its mode from the first manifest: adding is ServerAdmin's, tested over HTTP in AdapterServerTest.
+            if (input.path("serverMode").isNull() || input.path("serverMode").isMissingNode()) {
                 continue;
             }
             tests.add(DynamicTest.dynamicTest(vector.name(), () -> {
                 clean();
-                submission(vector.document());
+                pulled(vector.document());
             }));
         }
-        assertThat(tests).hasSize(9);
+        assertThat(tests).hasSize(7);
         return tests;
     }
 
-    private void submission(JsonNode vector) {
+    private void pulled(JsonNode vector) {
         JsonNode input = vector.path("input");
         JsonNode expected = vector.path("expected");
         boolean adapterMode = "adapter".equals(input.path("serverMode").asString());
@@ -438,39 +437,35 @@ class RegistryAdapterTest extends GatewayTestBase {
         if (!before.isEmpty()) {
             if (adapterMode) {
                 ObjectNode baseline = Manifests.adapter(SERVER, SYSTEM, "0.1.0", before.toArray(new Tool[0]));
-                assertThat(adapterService.submitAdapter(requestId, SERVER, baseline)).isInstanceOf(Result.Accepted.class);
+                assertThat(adapterService.applyPulled(requestId, SERVER, baseline)).isInstanceOf(Result.Accepted.class);
                 for (Tool tool : before) {
-                    if (!"READ_ONLY".equals(tool.risk())) {
-                        continue; // an adapter has no write classification (CC-227): such a tool stays pending
+                    if ("READ_ONLY".equals(tool.risk())) {
+                        assertThat(adapterService.approve(requestId, SERVER, tool.name(), hash(baseline, tool.name()), false,
+                                new Classification("READ_ONLY", "read"), admin())).isInstanceOf(Approval.Approved.class);
                     }
-                    assertThat(adapterService.approve(requestId, SERVER, tool.name(), hash(baseline, tool.name()), false,
-                            new Classification("READ_ONLY", "read"), admin())).isInstanceOf(Approval.Approved.class);
                 }
             } else {
                 ObjectNode baseline = nativeManifest("0.1.0", before.toArray(new Tool[0]));
                 assertThat(registerNative(baseline)).isInstanceOf(Result.Accepted.class);
                 for (Tool tool : before) {
-                    if (!"READ_ONLY".equals(tool.risk())) {
-                        starterService.approve(requestId, SERVER, tool.name(), hash(baseline, tool.name()), false, admin());
-                    }
+                    starterService.approve(requestId, SERVER, tool.name(), hash(baseline, tool.name()), false, admin());
                 }
             }
         }
-        ObjectNode manifest;
         boolean manifestFromAdapter = "adapter".equals(input.path("manifestSource").asString(null));
         Tool[] tools = after.toArray(new Tool[0]);
-        manifest = manifestFromAdapter ? Manifests.adapter(SERVER, SYSTEM, "0.2.0", tools) : nativeManifest("0.2.0", tools);
-        boolean adapterChannel = "adapter".equals(input.path("channel").asString());
-        Result result = adapterChannel ? service.submitAdapter(requestId, SERVER, manifest) : service.register(requestId, SERVER, manifest, "ci");
-        if (expected.path("status").asInt() == 422) {
+        ObjectNode manifest = manifestFromAdapter ? Manifests.adapter(SERVER, SYSTEM, "0.2.0", tools) : nativeManifest("0.2.0", tools);
+        Result result = service.applyPulled(requestId, SERVER, manifest);
+        if (!expected.path("stored").asBoolean()) {
             assertThat(result).isInstanceOf(Result.Rejected.class);
-            assertThat(((Result.Rejected) result).reason()).isEqualTo(expected.path("reason").asString());
+            assertThat(((Result.Rejected) result).reason()).isEqualTo(expected.path("manifestReason").asString());
             assertThat(store.findServer(SERVER).map(s -> s.manifest().path("version").asString())).as("nothing is stored")
                     .isEqualTo(before.isEmpty() ? java.util.Optional.empty() : java.util.Optional.of("0.1.0"));
             return;
         }
         assertThat(result).isInstanceOf(Result.Accepted.class);
-        TreeSet<String> approvedByCall = new TreeSet<>();
+        assertThat(adapterMode).isEqualTo(expected.path("adapter").asBoolean());
+        TreeSet<String> approvedByPull = new TreeSet<>();
         TreeSet<String> pending = new TreeSet<>();
         for (Tool tool : after) {
             RegisteredTool registered = service.registered(SERVER).orElseThrow().tools().get(tool.name());
@@ -479,18 +474,16 @@ class RegistryAdapterTest extends GatewayTestBase {
                 pending.add(tool.name());
                 assertThat(registered.pending().source()).isEqualTo(expected.path("pendingSource").asString());
             } else if (!unchanged) {
-                approvedByCall.add(tool.name());
+                approvedByPull.add(tool.name());
             }
         }
-        assertThat(approvedByCall).isEqualTo(strings(expected.path("approvedByCall")));
+        assertThat(approvedByPull).isEqualTo(strings(expected.path("approvedByPull")));
         assertThat(pending).isEqualTo(strings(expected.path("pending")));
         TreeSet<String> gone = new TreeSet<>();
         removed.stream().filter(name -> service.registered(SERVER).orElseThrow().tools().get(name) == null).forEach(gone::add);
         assertThat(gone).isEqualTo(strings(expected.path("removed")));
         if (expected.has("classificationLost")) {
-            TreeSet<String> lost = new TreeSet<>();
-            removed.stream().filter(name -> service.registered(SERVER).orElseThrow().tools().get(name) == null).forEach(lost::add);
-            assertThat(lost).isEqualTo(strings(expected.path("classificationLost")));
+            assertThat(gone).isEqualTo(strings(expected.path("classificationLost")));
         }
     }
 
@@ -499,7 +492,7 @@ class RegistryAdapterTest extends GatewayTestBase {
         Tool changed = tool.described("Drifted.");
         if (adapterMode) {
             ObjectNode baseline = Manifests.adapter(SERVER, SYSTEM, "0.1.0", tool);
-            adapterService.submitAdapter(requestId, SERVER, baseline);
+            adapterService.applyPulled(requestId, SERVER, baseline);
             adapterService.approve(requestId, SERVER, tool.name(), hash(baseline, tool.name()), false, new Classification("READ_ONLY", "read"), admin());
         } else {
             ObjectNode baseline = nativeManifest("0.1.0", tool);
@@ -523,7 +516,7 @@ class RegistryAdapterTest extends GatewayTestBase {
     @TestFactory
     List<DynamicTest> theApprovalsOfTheVectors() {
         List<Vectors.Vector> vectors = Vectors.of("registry-approval");
-        assertThat(vectors).hasSize(32);
+        assertThat(vectors).hasSize(28);
         List<DynamicTest> tests = new ArrayList<>();
         for (Vectors.Vector vector : vectors) {
             if (vector.document().path("input").has("entry")) {

@@ -123,8 +123,7 @@ class OffboardingTest extends GatewayTestBase {
         String sub = UUID.randomUUID().toString();
         String bffToken = env.idp.token(sub, "x", List.of(), "mcp-gateway-admin", "mcp-portal-bff");
         assertThat(admin(env.bffTls, "POST", purgePath(sub), bffToken, null).statusCode()).as("the BFF").isEqualTo(403);
-        assertThat(admin(env.ciJiraTls, "POST", purgePath(sub), null, null).statusCode()).as("a registry pipeline").isEqualTo(403);
-        assertThat(admin(env.sharedCiTls, "POST", purgePath(sub), null, null).statusCode()).isEqualTo(403);
+        assertThat(admin(env.otherComponentTls, "POST", purgePath(sub), null, null).statusCode()).as("another component").isEqualTo(403);
         assertThat(admin(env.noClientCertificateTls, "POST", purgePath(sub), null, null).statusCode()).as("no certificate").isEqualTo(401);
         assertThat(admin(env.foreignCaTls, "POST", purgePath(sub), null, null).statusCode()).as("a foreign CA").isEqualTo(401);
         assertThat(admin(env.offboardingTls, "GET", purgePath(sub), null, null).statusCode()).as("not a GET").isNotEqualTo(204);
