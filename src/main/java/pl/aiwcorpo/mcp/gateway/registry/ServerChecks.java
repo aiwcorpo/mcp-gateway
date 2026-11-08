@@ -64,6 +64,8 @@ public final class ServerChecks implements DisposableBean {
         }
     }
 
+    private static final Duration RETRY_AFTER_FAILURE = Duration.ofSeconds(5);
+
     private final RegistryStore store;
     private final RegistryService registry;
     private final ServerLinks links;
@@ -95,6 +97,18 @@ public final class ServerChecks implements DisposableBean {
         scheduler.scheduleWithFixedDelay(this::tick, poll.toMillis(), poll.toMillis(), TimeUnit.MILLISECONDS);
     }
 
+    /**
+     * When the loop counts the last look at a server from. A server that could not be reached is looked at again after
+     * {@link #RETRY_AFTER_FAILURE} instead of a whole interval: at startup the first look can come before the gateway serves its own key set,
+     * and a minute without tools for that is longer than the cause lasts.
+     */
+    static Instant lookedAt(Instant now, Duration interval, String status) {
+        if (!ServerConfig.UNREACHABLE.equals(status)) {
+            return now;
+        }
+        return now.minus(interval).plus(interval.compareTo(RETRY_AFTER_FAILURE) < 0 ? interval : RETRY_AFTER_FAILURE);
+    }
+
     /** The loop's look at the timer; public for the tests, which do not wait for it. */
     public void tick() {
         try {
@@ -110,7 +124,8 @@ public final class ServerChecks implements DisposableBean {
                     lastLooked.put(config.serverId(), now);
                     checks.execute(() -> {
                         try {
-                            check(UuidV7.next(), config.serverId());
+                            Optional<ServerConfig> after = check(UuidV7.next(), config.serverId());
+                            after.ifPresent(seen -> lastLooked.put(config.serverId(), lookedAt(clock.instant(), interval, seen.status())));
                         } catch (RuntimeException e) {
                             log.warn("{}: the check failed: {}", config.serverId(), e.getClass().getName());
                         } finally {

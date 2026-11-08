@@ -10,8 +10,9 @@ import java.util.function.Function;
 
 /**
  * Which addresses the gateway may connect to as the address of an MCP server (C5, CC-249). Loopback, link-local (which holds the cloud
- * metadata address), unspecified, multicast and broadcast addresses are refused, and so is the IPv6 form of the cloud metadata address,
- * which lies in a range that is otherwise allowed. An IPv6 address that carries an IPv4 address (mapped, compatible, NAT64) is judged as
+ * metadata address), unspecified, multicast and broadcast addresses are refused, and so are the other well-known metadata addresses that lie
+ * in ranges that are otherwise allowed (fd00:ec2::254 of AWS, 100.100.100.200 of Alibaba, 192.0.0.192 of Oracle) and whatever the deployment
+ * lists as refused ({@code MCP_SERVER_REFUSED_ADDRESSES}). An IPv6 address that carries an IPv4 address (mapped, compatible, NAT64) is judged as
  * that IPv4 address, and a literal in any of the forms of inet_aton ({@code 127.1}, {@code 2130706433}, {@code 0x7f.1}) as the address it
  * denotes. Private ranges are allowed: servers live in them.
  *
@@ -38,8 +39,44 @@ public final class AddressPolicy {
 
     private static final byte[] METADATA_V6 = {(byte) 0xfd, 0, 0x0e, (byte) 0xc2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02, 0x54};
 
+    /** An address or a range the deployment refuses; {@code bits} is the length of the prefix. */
+    private record Range(byte[] base, int bits) {
+        static Range parse(String text) {
+            String[] parts = text.strip().split("/", -1);
+            byte[] base = parseLiteral(parts[0]).orElseThrow(() -> new IllegalArgumentException(text + " is not an IP address or a range"));
+            int bits = base.length * 8;
+            if (parts.length == 2) {
+                try {
+                    bits = Integer.parseInt(parts[1]);
+                } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException(text + " has no prefix length", e);
+                }
+            } else if (parts.length > 2) {
+                throw new IllegalArgumentException(text + " is not an IP address or a range");
+            }
+            if (bits < 0 || bits > base.length * 8) {
+                throw new IllegalArgumentException(text + " has a prefix length out of range");
+            }
+            return new Range(base, bits);
+        }
+
+        boolean contains(byte[] address) {
+            if (address.length != base.length) {
+                return false;
+            }
+            for (int i = 0; i < bits; i++) {
+                int mask = 0x80 >> (i % 8);
+                if ((address[i / 8] & mask) != (base[i / 8] & mask)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
     private final boolean allowLoopback;
     private final Function<String, List<InetAddress>> resolver;
+    private final List<Range> refused;
 
     /** @param allowLoopback the development stack only: the test servers listen on the loopback interface */
     public AddressPolicy(boolean allowLoopback) {
@@ -47,8 +84,52 @@ public final class AddressPolicy {
     }
 
     public AddressPolicy(boolean allowLoopback, Function<String, List<InetAddress>> resolver) {
+        this(allowLoopback, resolver, List.of());
+    }
+
+    /** @param refused more addresses and ranges ({@code 10.9.0.0/16}, {@code 203.0.113.7}, {@code fd12::/16}) that are never connected to */
+    public AddressPolicy(boolean allowLoopback, List<String> refused) {
+        this(allowLoopback, AddressPolicy::resolveWithJvm, refused);
+    }
+
+    public AddressPolicy(boolean allowLoopback, Function<String, List<InetAddress>> resolver, List<String> refused) {
         this.allowLoopback = allowLoopback;
         this.resolver = resolver;
+        this.refused = refused.stream().filter(entry -> !entry.isBlank()).map(Range::parse).toList();
+    }
+
+    /** The entries of a comma-separated setting; blank entries are skipped. */
+    public static List<String> parseList(String setting) {
+        return setting == null ? List.of() : java.util.Arrays.stream(setting.split(",")).map(String::strip).filter(entry -> !entry.isEmpty()).toList();
+    }
+
+    /** What a name resolves to, every address, or why it cannot be connected to. */
+    public sealed interface Resolution {
+        record Addresses(List<InetAddress> all) implements Resolution {
+        }
+
+        record Refused(Refusal refusal) implements Resolution {
+        }
+    }
+
+    /**
+     * Resolves {@code host} once and judges every address. The connection must then go to one of the addresses returned here (the HTTP transport
+     * connects to the {@link InetAddress} itself), so that the address that was judged is the address that is connected to.
+     */
+    public Resolution resolve(String host) {
+        Optional<byte[]> literal = parseLiteral(host);
+        List<InetAddress> addresses = new ArrayList<>();
+        try {
+            if (literal.isPresent()) {
+                addresses.add(InetAddress.getByAddress(host, literal.get()));
+            } else {
+                addresses.addAll(resolver.apply(host));
+            }
+        } catch (UnknownHostException e) {
+            return new Resolution.Refused(new Refusal("host_not_resolved", null, null));
+        }
+        Optional<Refusal> refusal = checkResolved(addresses.stream().map(InetAddress::getAddress).toList());
+        return refusal.<Resolution>map(Resolution.Refused::new).orElseGet(() -> new Resolution.Addresses(List.copyOf(addresses)));
     }
 
     private static List<InetAddress> resolveWithJvm(String host) {
@@ -61,7 +142,7 @@ public final class AddressPolicy {
 
     /**
      * Resolves {@code host} (a literal is not resolved) and judges every address; the first refused one decides. An empty answer is
-     * {@code host_not_resolved}. The JVM keeps the answer for a while, so the connection that follows uses the addresses checked here.
+     * {@code host_not_resolved}. This is a check of the moment (the add of a server); a connection uses {@link #resolve} instead.
      */
     public Optional<Refusal> check(String host) {
         Optional<byte[]> literal = parseLiteral(host);
@@ -94,13 +175,16 @@ public final class AddressPolicy {
     }
 
     public Verdict judge(byte[] address) {
+        if (address.length != 4 && address.length != 16) {
+            return Verdict.refused("not_an_address", null);
+        }
+        byte[] embedded = address.length == 16 ? embeddedV4(address) : null;
+        if (refused.stream().anyMatch(range -> range.contains(address) || (embedded != null && range.contains(embedded)))) {
+            return Verdict.refused("refused_by_configuration", embedded == null ? null : format(embedded));
+        }
         if (address.length == 4) {
             return judgeV4(address, null);
         }
-        if (address.length != 16) {
-            return Verdict.refused("not_an_address", null);
-        }
-        byte[] embedded = embeddedV4(address);
         if (embedded != null) {
             return judgeV4(embedded, format(embedded));
         }
@@ -116,6 +200,10 @@ public final class AddressPolicy {
         }
         if (java.util.Arrays.equals(address, METADATA_V6)) {
             return Verdict.refused("metadata", null);
+        }
+        // 6to4 (2002::/16) carries an IPv4 address that a tunnel would deliver to: only the metadata addresses are refused through it.
+        if ((address[0] & 0xff) == 0x20 && address[1] == 0x02 && isMetadataV4(new byte[] {address[2], address[3], address[4], address[5]})) {
+            return Verdict.refused("metadata", format(new byte[] {address[2], address[3], address[4], address[5]}));
         }
         return Verdict.ALLOWED;
     }
@@ -141,7 +229,18 @@ public final class AddressPolicy {
         if (first == 255 && (a[1] & 0xff) == 255 && (a[2] & 0xff) == 255 && (a[3] & 0xff) == 255) {
             return Verdict.refused("broadcast", judgedAs);
         }
+        if (isMetadataV4(a)) {
+            return Verdict.refused("metadata", judgedAs);
+        }
         return Verdict.ALLOWED;
+    }
+
+    /** Metadata services of other clouds that sit outside link-local: Alibaba 100.100.100.200 and Oracle 192.0.0.192. */
+    private static boolean isMetadataV4(byte[] a) {
+        int first = a[0] & 0xff;
+        return (first == 100 && (a[1] & 0xff) == 100 && (a[2] & 0xff) == 100 && (a[3] & 0xff) == 200)
+                || (first == 192 && a[1] == 0 && a[2] == 0 && (a[3] & 0xff) == 192)
+                || (first == 169 && (a[1] & 0xff) == 254 && (a[2] & 0xff) == 169 && (a[3] & 0xff) == 254);
     }
 
     /** The IPv4 address inside an IPv4-mapped (::ffff:a.b.c.d), IPv4-compatible (::a.b.c.d, above ::1) or NAT64 (64:ff9b::/96) address, else null. */

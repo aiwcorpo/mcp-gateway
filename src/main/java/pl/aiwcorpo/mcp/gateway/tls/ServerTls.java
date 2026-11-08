@@ -2,6 +2,7 @@ package pl.aiwcorpo.mcp.gateway.tls;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.http.HttpClient;
@@ -105,9 +106,17 @@ public final class ServerTls {
 
     /** The client for a server under the approved trust; {@code fingerprint} is used by {@code pinned} only. */
     public HttpClient client(String tlsMode, String fingerprint, Duration connectTimeout) {
+        return client(tlsMode, fingerprint, connectTimeout, null);
+    }
+
+    /** @param proxies decides where the client connects; the gateway passes the checked tunnel so that no address is resolved by the client itself */
+    public HttpClient client(String tlsMode, String fingerprint, Duration connectTimeout, java.net.ProxySelector proxies) {
         HttpClient.Builder builder = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1)
                 .followRedirects(HttpClient.Redirect.NEVER).connectTimeout(connectTimeout)
                 .executor(Executors.newVirtualThreadPerTaskExecutor());
+        if (proxies != null) {
+            builder.proxy(proxies);
+        }
         if (PLAIN.equals(tlsMode)) {
             return builder.build();
         }
@@ -130,14 +139,13 @@ public final class ServerTls {
      * A handshake without a client certificate that accepts any certificate in order to read it. The leaf is returned with the verdict of
      * the {@code ca} trust for {@code host}: the chain, and the name. Nothing is sent over the connection.
      */
-    public Presented probe(String host, int port, Duration timeout) throws IOException {
+    public Presented probe(String host, int port, List<InetAddress> checked, Duration timeout) throws IOException {
         Capturing capture = new Capturing(caTrust);
         try {
             SSLContext context = SSLContext.getInstance("TLS");
             context.init(null, new TrustManager[] {capture}, null);
             int millis = (int) timeout.toMillis();
-            try (Socket socket = new Socket()) {
-                socket.connect(new InetSocketAddress(host, port), millis);
+            try (Socket socket = connectToOne(checked, port, millis)) {
                 socket.setSoTimeout(millis);
                 try (SSLSocket ssl = (SSLSocket) context.getSocketFactory().createSocket(socket, host, port, true)) {
                     SSLParameters parameters = ssl.getSSLParameters();
@@ -158,6 +166,22 @@ public final class ServerTls {
             throw new IOException("the server presented no certificate");
         }
         return new Presented(ServerCertificate.of(chain[0]), capture.validates);
+    }
+
+    /** Connects to one of the addresses that were checked; the name of the server is never resolved here. */
+    private static Socket connectToOne(List<InetAddress> checked, int port, int millis) throws IOException {
+        IOException last = new IOException("no address to connect to");
+        for (InetAddress address : checked) {
+            Socket socket = new Socket();
+            try {
+                socket.connect(new InetSocketAddress(address, port), millis);
+                return socket;
+            } catch (IOException e) {
+                socket.close();
+                last = e;
+            }
+        }
+        throw last;
     }
 
     /** The leaf certificate of a response, from its TLS session. */

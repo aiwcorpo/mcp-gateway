@@ -100,6 +100,8 @@ gateway:
   servers:
     # PEM file with CA certificates that the ca trust accepts besides the default trust store of the JVM.
     trusted-cas: ${MCP_SERVER_TRUSTED_CAS:}
+    # More addresses and ranges that are never connected to (comma-separated, for example 10.9.0.0/16,203.0.113.7).
+    refused-addresses: ${MCP_SERVER_REFUSED_ADDRESSES:}
     # Development stack only (DevstackGuard): test servers listen on the loopback interface, which the address check refuses.
     allow-loopback: ${MCP_SERVERS_ALLOW_LOOPBACK:false}
     # The manifest of every server is pulled and the policy data pushed at least this often (C5, C14: at most 60 s).

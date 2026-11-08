@@ -241,6 +241,11 @@ public record GatewayProperties(
              * (MCP_SERVER_TRUSTED_CAS); empty adds nothing.
              */
             String trustedCas,
+            /*
+             * Addresses and ranges (comma-separated, 10.9.0.0/16 or fd12::/16) that are never connected to, in addition to the built-in refusals
+             * (MCP_SERVER_REFUSED_ADDRESSES); for the addresses of a deployment that a server must not be at, such as an internal metadata proxy.
+             */
+            @DefaultValue("") String refusedAddresses,
             /* Development only: the test servers listen on the loopback interface, which the address check refuses in production. */
             @DefaultValue("false") boolean allowLoopback,
             /* At most this long between two pulls of the manifest of a server by the runtime loop (C5: at most 60 s). */

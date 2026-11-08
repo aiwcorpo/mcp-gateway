@@ -176,6 +176,7 @@ public final class GatewaySetup {
         InternalTls tls = tls();
         checkAllowedClients();
         checkServerCas();
+        checkRefusedAddresses();
         HttpClient jvmTrust = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).followRedirects(HttpClient.Redirect.NEVER).build();
         checkJwks(jvmTrust);
         if (tls == null) {
@@ -205,6 +206,21 @@ public final class GatewaySetup {
             fail("cannot open " + keystore + " or " + truststore + ": "
                     + (wrongPassword ? "wrong MCP_TLS_STORE_PASSWORD (both files use it)" : rootMessage(e)));
             return null;
+        }
+    }
+
+    /** Extra refused addresses are optional; every entry must be an IP address or a range. */
+    private void checkRefusedAddresses() {
+        String configured = env.get("MCP_SERVER_REFUSED_ADDRESSES");
+        if (blank(configured)) {
+            ok("refused server addresses: the built-in ones (MCP_SERVER_REFUSED_ADDRESSES not set)");
+            return;
+        }
+        try {
+            new pl.aiwcorpo.mcp.gateway.net.AddressPolicy(false, pl.aiwcorpo.mcp.gateway.net.AddressPolicy.parseList(configured));
+            ok("refused server addresses: the built-in ones and " + configured);
+        } catch (IllegalArgumentException e) {
+            fail("MCP_SERVER_REFUSED_ADDRESSES: " + e.getMessage());
         }
     }
 

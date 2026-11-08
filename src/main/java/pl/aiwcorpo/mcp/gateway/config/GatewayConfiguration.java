@@ -369,7 +369,7 @@ public class GatewayConfiguration {
     @Bean
     @DependsOn("devstackGuard")
     AddressPolicy addressPolicy(GatewayProperties properties) {
-        return new AddressPolicy(properties.servers().allowLoopback());
+        return new AddressPolicy(properties.servers().allowLoopback(), AddressPolicy.parseList(properties.servers().refusedAddresses()));
     }
 
     @Bean
@@ -397,7 +397,7 @@ public class GatewayConfiguration {
         GatewayProperties.Upstream upstream = properties.upstream();
         return new UpstreamSessions(server -> new StreamableHttpClient(server.internalUrl(),
                 links.client(server.connection().tlsMode(), server.connection().fingerprint()), gatewayJson, upstream.timeout(),
-                upstream.maxResponseBytes(), () -> links.checkAddress(server.internalUrl()).map(refusal -> refusal.message())),
+                upstream.maxResponseBytes(), links::target),
                 policyData::push, tokens, gatewayJson, properties.sessions().upstreamIdleTimeout(), clock, properties.componentId(),
                 properties.version());
     }
