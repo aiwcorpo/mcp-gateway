@@ -34,7 +34,10 @@ platform, and removed again, without restarting anything and without a policy re
   for it; after every change of the revision and at least every 60 s. A tool call answered `409 policy_data_stale` gets a push and one
   repetition with a new token.
 - **A server is added by its address** (`createServer`, CC-249, contracts 7.0.0): the gateway checks the address (loopback, link-local,
-  unspecified, multicast and broadcast refused for every resolved address and again at every connection), reads the certificate with a handshake
+  unspecified, multicast and broadcast refused for every resolved address and again at every connection; the metadata addresses 169.254.169.254,
+  fd00:ec2::254, 100.100.100.200 and 192.0.0.192 too, in their embedded IPv6 forms as well, and whatever `MCP_SERVER_REFUSED_ADDRESSES` lists;
+  the name is resolved once per connection and the connection goes to the address that was judged, through a tunnel inside the gateway for
+  TLS and by the address itself for `http`, so a rebinding DNS cannot redirect a connection), reads the certificate with a handshake
   that sends no client certificate, pulls `GET /.well-known/mcp-manifest` and takes `serverId` = `mcp-<system>` from it. The server starts
   `pending_approval` with everything pending, the `READ_ONLY` tools included; a pulled manifest approves nothing. The trust is chosen per server by
   `POST /admin/v1/servers/{serverId}/connection/approve` (fresh MFA): `ca` (default JVM trust store plus `MCP_SERVER_TRUSTED_CAS`, standard
