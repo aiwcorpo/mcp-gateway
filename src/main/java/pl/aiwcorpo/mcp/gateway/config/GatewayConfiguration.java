@@ -397,7 +397,7 @@ public class GatewayConfiguration {
         GatewayProperties.Upstream upstream = properties.upstream();
         return new UpstreamSessions(server -> new StreamableHttpClient(server.internalUrl(),
                 links.client(server.connection().tlsMode(), server.connection().fingerprint()), gatewayJson, upstream.timeout(),
-                upstream.maxResponseBytes(), links::target),
+                upstream.maxResponseBytes(), () -> links.checkAddress(server.internalUrl()).map(refusal -> refusal.message())),
                 policyData::push, tokens, gatewayJson, properties.sessions().upstreamIdleTimeout(), clock, properties.componentId(),
                 properties.version());
     }

@@ -103,39 +103,10 @@ public final class AddressPolicy {
         return setting == null ? List.of() : java.util.Arrays.stream(setting.split(",")).map(String::strip).filter(entry -> !entry.isEmpty()).toList();
     }
 
-    /** What a name resolves to, every address, or why it cannot be connected to. */
-    public sealed interface Resolution {
-        record Addresses(List<InetAddress> all) implements Resolution {
-        }
-
-        record Refused(Refusal refusal) implements Resolution {
-        }
-    }
-
-    /**
-     * Resolves {@code host} once and judges every address. The connection must then go to one of the addresses returned here (the HTTP transport
-     * connects to the {@link InetAddress} itself), so that the address that was judged is the address that is connected to.
-     */
-    public Resolution resolve(String host) {
-        Optional<byte[]> literal = parseLiteral(host);
-        List<InetAddress> addresses = new ArrayList<>();
-        try {
-            if (literal.isPresent()) {
-                addresses.add(InetAddress.getByAddress(host, literal.get()));
-            } else {
-                addresses.addAll(resolver.apply(host));
-            }
-        } catch (UnknownHostException e) {
-            return new Resolution.Refused(new Refusal("host_not_resolved", null, null));
-        }
-        Optional<Refusal> refusal = checkResolved(addresses.stream().map(InetAddress::getAddress).toList());
-        return refusal.<Resolution>map(Resolution.Refused::new).orElseGet(() -> new Resolution.Addresses(List.copyOf(addresses)));
-    }
-
     private static List<InetAddress> resolveWithJvm(String host) {
         try {
             return List.of(InetAddress.getAllByName(host));
-        } catch (UnknownHostException e) {
+        } catch (java.net.UnknownHostException e) {
             return List.of();
         }
     }
@@ -202,8 +173,12 @@ public final class AddressPolicy {
             return Verdict.refused("metadata", null);
         }
         // 6to4 (2002::/16) carries an IPv4 address that a tunnel would deliver to: only the metadata addresses are refused through it.
-        if ((address[0] & 0xff) == 0x20 && address[1] == 0x02 && isMetadataV4(new byte[] {address[2], address[3], address[4], address[5]})) {
-            return Verdict.refused("metadata", format(new byte[] {address[2], address[3], address[4], address[5]}));
+        if ((address[0] & 0xff) == 0x20 && address[1] == 0x02) {
+            byte[] inner = {address[2], address[3], address[4], address[5]};
+            if (isMetadataV4(inner) || (inner[0] & 0xff) == 169 && (inner[1] & 0xff) == 254 && (inner[2] & 0xff) == 169 && (inner[3] & 0xff) == 254) {
+                Verdict inside = judgeV4(inner, format(inner));
+                return inside.allowed() ? Verdict.refused("metadata", format(inner)) : inside;
+            }
         }
         return Verdict.ALLOWED;
     }
@@ -239,8 +214,7 @@ public final class AddressPolicy {
     private static boolean isMetadataV4(byte[] a) {
         int first = a[0] & 0xff;
         return (first == 100 && (a[1] & 0xff) == 100 && (a[2] & 0xff) == 100 && (a[3] & 0xff) == 200)
-                || (first == 192 && a[1] == 0 && a[2] == 0 && (a[3] & 0xff) == 192)
-                || (first == 169 && (a[1] & 0xff) == 254 && (a[2] & 0xff) == 169 && (a[3] & 0xff) == 254);
+                || (first == 192 && a[1] == 0 && a[2] == 0 && (a[3] & 0xff) == 192);
     }
 
     /** The IPv4 address inside an IPv4-mapped (::ffff:a.b.c.d), IPv4-compatible (::a.b.c.d, above ::1) or NAT64 (64:ff9b::/96) address, else null. */

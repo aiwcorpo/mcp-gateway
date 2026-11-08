@@ -71,8 +71,10 @@ The shortest set that is needed to start outside the dev profile:
 - `MCP_SERVER_REFUSED_ADDRESSES` (optional): comma-separated IP addresses or CIDR ranges (`10.9.0.0/16,203.0.113.7`) that no server may be at, on
   top of the built-in refusals: loopback, link-local, unspecified, multicast and broadcast addresses and the metadata addresses of the clouds
   (`169.254.169.254`, `fd00:ec2::254`, `100.100.100.200`, `192.0.0.192`, also in their IPv4-mapped and other embedded IPv6 forms). Every
-  address a name resolves to is judged, at add time and at every connection: the gateway resolves the name once per connection and connects
-  to the address it judged, so a DNS answer that changes in between cannot lead to a refused address.
+  address a name resolves to is judged, at add time and again right before every connection (probe, manifest pull, policy-data push, tool
+  call): one refused address refuses the connection. The HTTP client resolves the name itself when it connects, so a DNS answer that changes
+  between the check and the connection is not caught by the check; for `ca` and `pinned` the TLS handshake stops such a name from being
+  trusted, and `plain` accepts that window (it is meant for servers in the Docker network of the gateway).
 
 With two or more instances, share Redis, PostgreSQL, the C2 key file and the cursor keys. Changes of servers, approvals, the scope mapping,
 overrides and kill switches reach the other instances within a second (`MCP_CHANGE_POLL_INTERVAL`).
@@ -135,9 +137,7 @@ Invariants of this component. The platform-wide list is in `docs/security/invari
 - A tool definition is pinned by hash. If the server serves a different one, the tool is hidden (`definition_changed`).
 - A server is reached only at an address that is not loopback, link-local, unspecified or multicast, judged again at every connection, and
   only under the trust an administrator approved for it (`ca`, `pinned` or `plain`); another certificate than a pinned one is never talked to.
-  TLS connections go through a tunnel inside the gateway that resolves the name once, judges every address and connects to a judged address
-  (the name stays the SNI and the name the certificate is checked against). For `plain` http the request goes to the judged address itself, so
-  the `Host` header of such a request is that address.
+  TLS (`ca`, `pinned`) protects against DNS rebinding: a rebinding name cannot present a certificate that the approved trust accepts.
 - `DESTRUCTIVE` actions need a one-time TOTP confirmation bound to user, tool and arguments.
 - Secret values do not reach logs or audit events; audit records only `argsLength`, not argument values.
 - A server evaluates only policies that an administrator approved (`approvedPoliciesHash`), and a running server that presents others is

@@ -39,34 +39,28 @@ public class StreamableHttpClient {
     private final JsonMapper json;
     private final Duration timeout;
     private final int maxBytes;
-    private final Target target;
-
-    /** Where a request goes: the endpoint, or the address that was judged for it; an address that is refused is an {@link IOException}. */
-    @FunctionalInterface
-    public interface Target {
-        URI of(URI endpoint) throws IOException;
-    }
+    private final java.util.function.Supplier<Optional<String>> addressRefusal;
 
     public StreamableHttpClient(URI endpoint, HttpClient http, JsonMapper json, Duration timeout, int maxBytes) {
-        this(endpoint, http, json, timeout, maxBytes, url -> url);
+        this(endpoint, http, json, timeout, maxBytes, Optional::empty);
     }
 
     /**
-     * @param target asked before every request for the URL to send it to: for plain http the address that was judged (a name that
-     *               resolves to a refused address since the server was added is refused here); https connects through the checked
-     *               tunnel of the client
+     * @param addressRefusal asked before every request: why the address may not be connected to now (a name that resolves to a refused
+     *                       address since the server was added), or empty
      */
-    public StreamableHttpClient(URI endpoint, HttpClient http, JsonMapper json, Duration timeout, int maxBytes, Target target) {
+    public StreamableHttpClient(URI endpoint, HttpClient http, JsonMapper json, Duration timeout, int maxBytes,
+                                java.util.function.Supplier<Optional<String>> addressRefusal) {
         this.endpoint = endpoint;
         this.http = http;
         this.json = json;
         this.timeout = timeout;
         this.maxBytes = maxBytes;
-        this.target = target;
+        this.addressRefusal = addressRefusal;
     }
 
     public UpstreamResponse post(UpstreamRequest request, JsonNode expectedId) throws UpstreamException {
-        HttpRequest.Builder builder = HttpRequest.newBuilder(destination())
+        HttpRequest.Builder builder = HttpRequest.newBuilder(endpoint)
                 .timeout(timeout)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json, text/event-stream")
@@ -134,13 +128,10 @@ public class StreamableHttpClient {
 
     /** Ends the server's session (legacy DELETE); failures are irrelevant to the caller. */
     public void delete(UpstreamRequest request) {
-        URI destination;
-        try {
-            destination = target.of(endpoint);
-        } catch (IOException e) {
+        if (addressRefusal.get().isPresent()) {
             return;
         }
-        HttpRequest.Builder builder = HttpRequest.newBuilder(destination).timeout(timeout).DELETE();
+        HttpRequest.Builder builder = HttpRequest.newBuilder(endpoint).timeout(timeout).DELETE();
         headers(builder, request);
         try {
             http.send(builder.build(), HttpResponse.BodyHandlers.discarding());
@@ -166,20 +157,15 @@ public class StreamableHttpClient {
         }
     }
 
-    private URI destination() throws UpstreamException {
-        try {
-            return target.of(endpoint);
-        } catch (IOException e) {
-            throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE, "address_refused: " + e.getMessage());
-        }
-    }
-
     private HttpResponse<InputStream> send(HttpRequest request) throws UpstreamException {
+        Optional<String> refused = addressRefusal.get();
+        if (refused.isPresent()) {
+            throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE, "address_refused: " + refused.get());
+        }
         try {
             return http.send(request, HttpResponse.BodyHandlers.ofInputStream());
         } catch (IOException e) {
-            throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE,
-                    pl.aiwcorpo.mcp.gateway.net.CheckedTunnel.refused(e) ? "address_refused" : e.getClass().getSimpleName());
+            throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE, e.getClass().getSimpleName());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE, "interrupted");

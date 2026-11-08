@@ -98,6 +98,7 @@ public final class InternalJwtVerifier {
     private final Clock clock;
     private final Map<String, Long> seenJtis = new ConcurrentHashMap<>();
     private volatile boolean adapterReceiver;
+    private volatile boolean holdsPolicyData;
 
     public InternalJwtVerifier(String issuer, String audience, boolean allowTestKeys, KeySource keys, Clock clock) {
         this(issuer, audience, allowTestKeys, false, keys, clock);
@@ -120,6 +121,15 @@ public final class InternalJwtVerifier {
      */
     public InternalJwtVerifier asAdapterReceiver(boolean adapter) {
         this.adapterReceiver = adapter;
+        return this;
+    }
+
+    /**
+     * Once a server holds policy data it was connected, so every purpose needs {@code aud} equal to its serverId: the placeholder audience of
+     * the add operation is refused from then on.
+     */
+    public InternalJwtVerifier holdingPolicyData(boolean holds) {
+        this.holdsPolicyData = holds;
         return this;
     }
 
@@ -196,7 +206,8 @@ public final class InternalJwtVerifier {
             return Result.reject("wrong_issuer");
         }
         if (!audience.equals(claims.path("aud").asString())
-                && !(rule.placeholderAudience() && RequestRule.PLACEHOLDER_AUDIENCE.equals(claims.path("aud").asString()))) {
+                && !(rule.placeholderAudience() && !holdsPolicyData && "manifest".equals(claims.path("use").asString())
+                        && RequestRule.PLACEHOLDER_AUDIENCE.equals(claims.path("aud").asString()))) {
             return Result.reject("wrong_audience");
         }
         long now = Instant.now(clock).getEpochSecond();

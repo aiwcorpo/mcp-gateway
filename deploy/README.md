@@ -68,7 +68,7 @@ certificate that the template generates at its first start, or over plain `http`
 nothing else: no certificate from the internal CA is made for a server, the gateway presents no client certificate to it, and nobody creates a token.
 
 1. In the portal (Administration, Servers), or with the admin API, add the server by its URL. The gateway checks the address (loopback,
-   link-local, unspecified and multicast addresses are refused, whatever way they are written and whatever a name resolves to), reads the
+   link-local, unspecified and multicast addresses are refused, whatever way they are written and whatever a name resolves to, checked again before every connection), reads the
    certificate, pulls the manifest from `/.well-known/mcp-manifest` and takes the `serverId` (`mcp-<system>`) from it. For `http` set
    `allowPlainHttp`. Adding, changing (except switching off), removing and every approval need a token of a fresh MFA login (`auth_time` within
    5 minutes and an `amr` of `mfa`, `otp`, `hwk` or `totp`, or an `acr` listed in `MCP_ADMIN_MFA_ACR_VALUES`).
@@ -83,7 +83,7 @@ nothing else: no certificate from the internal CA is made for a server, the gate
 2. Approve the connection with the fingerprint you checked with the author of the server: `ca` when the certificate is signed by a CA that the
    gateway trusts and names the host of the address (the default trust store of the JVM, plus the PEM bundle in `MCP_SERVER_TRUSTED_CAS` for a
    company CA: put the file next to the other certificates and set it in `gateway.env`), `pinned` for a self-signed certificate (or instead of
-   `ca`, to be stricter), `plain` for `http`. A pinned server that later presents another certificate is `certificate_changed`, unreachable, and
+   `ca`, to be stricter), `plain` for `http` (only for servers in the Docker network of the gateway: TLS is what protects `ca` and `pinned` against a DNS answer that changes after the address check, `plain` accepts that window). A pinned server that later presents another certificate is `certificate_changed`, unreachable, and
    shows the new fingerprint for your approval; a `ca` server that renews its certificate needs nothing.
 3. Approve the policies and the tools. Every tool waits, the ones that only read included, and a tool is listed and callable only when the
    connection, the policies and the tool are approved.

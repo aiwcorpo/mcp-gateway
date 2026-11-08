@@ -146,6 +146,12 @@ public final class TestMcpServer implements AutoCloseable {
         return List.copyOf(policyPushes);
     }
 
+    /** A restart of the server: it holds no policy data and takes the placeholder audience of the add operation again. */
+    public void restart() {
+        heldPolicyData = null;
+        verifier.holdingPolicyData(false);
+    }
+
     /** The revision of the policy data the server holds, or -1 when it holds none (as after a restart). */
     public long heldRevision() {
         return heldPolicyData == null ? -1 : heldPolicyData.revision();
@@ -385,6 +391,7 @@ public final class TestMcpServer implements AutoCloseable {
         boolean accepted = pl.aiwcorpo.mcp.manifest.PolicyDataGate.acceptRevision(
                 held == null ? java.util.OptionalLong.empty() : java.util.OptionalLong.of(held.revision()), offered);
         if (accepted) {
+            verifier.holdingPolicyData(true);
             heldPolicyData = new pl.aiwcorpo.mcp.manifest.PolicyDataGate.Data(offered,
                     java.util.Optional.ofNullable(data.path("approvedPoliciesHash").asString(null)), true);
         }

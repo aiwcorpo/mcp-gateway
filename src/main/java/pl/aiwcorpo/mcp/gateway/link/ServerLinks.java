@@ -17,7 +17,6 @@ import org.slf4j.LoggerFactory;
 import pl.aiwcorpo.mcp.gateway.jwt.InternalTokenIssuer;
 import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
 import pl.aiwcorpo.mcp.gateway.net.AddressPolicy;
-import pl.aiwcorpo.mcp.gateway.net.CheckedTunnel;
 import pl.aiwcorpo.mcp.gateway.tls.ServerCertificate;
 import pl.aiwcorpo.mcp.gateway.tls.ServerTls;
 import pl.aiwcorpo.mcp.gateway.upstream.BoundedInputStream;
@@ -28,12 +27,12 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * Everything the gateway does to reach a server outside its MCP endpoint (C14, CC-249): the address check, the TLS probe, the pull of
  * {@code /.well-known/mcp-manifest} and the push of {@code /.well-known/mcp-policy-data}. The well-known paths are at the origin of the
- * {@code internalUrl}, not under its path. The address is judged at the moment of the connection and the connection goes to the address
- * that was judged ({@link CheckedTunnel}: a name is resolved once, by the gateway, never again by the HTTP client), so a name that
- * resolves to an allowed address for the check and to another one afterwards (DNS rebinding) cannot reach a refused address. Every
- * request carries a new token of the right purpose and no client certificate.
+ * {@code internalUrl}, not under its path. The name is resolved and every address judged right before each connection, so a name that
+ * now resolves to a refused address is not connected to. The HTTP client resolves the name again when it connects (a window that is
+ * not closed): for {@code ca} and {@code pinned} the TLS handshake stops a rebinding name from being trusted, {@code plain} accepts the
+ * window. Every request carries a new token of the right purpose and no client certificate.
  */
-public final class ServerLinks implements java.io.Closeable {
+public final class ServerLinks {
 
     private static final Logger log = LoggerFactory.getLogger(ServerLinks.class);
     private static final int MAX_MANIFEST_BYTES = 1024 * 1024;
@@ -63,28 +62,13 @@ public final class ServerLinks implements java.io.Closeable {
     private final ServerTls tls;
     private final InternalTokenIssuer tokens;
     private final JsonMapper json;
-    private final CheckedTunnel tunnel;
     private final Map<String, HttpClient> clients = new ConcurrentHashMap<>();
 
     public ServerLinks(AddressPolicy addresses, ServerTls tls, InternalTokenIssuer tokens, JsonMapper json) {
-        this(addresses, tls, tokens, json, CONNECT_TIMEOUT);
-    }
-
-    public ServerLinks(AddressPolicy addresses, ServerTls tls, InternalTokenIssuer tokens, JsonMapper json, Duration connectTimeout) {
         this.addresses = addresses;
         this.tls = tls;
         this.tokens = tokens;
         this.json = json;
-        try {
-            this.tunnel = new CheckedTunnel(addresses, connectTimeout);
-        } catch (IOException e) {
-            throw new java.io.UncheckedIOException("cannot open the tunnel to the servers", e);
-        }
-    }
-
-    @Override
-    public void close() throws IOException {
-        tunnel.close();
     }
 
     public AddressPolicy addresses() {
@@ -105,30 +89,16 @@ public final class ServerLinks implements java.io.Closeable {
         return url.getPort() != -1 ? url.getPort() : "https".equals(url.getScheme()) ? 443 : 80;
     }
 
-    /**
-     * Empty when the host of the address may be connected to now. A look at the moment (the answer the user of the API gets); the
-     * connections themselves do not rely on it, they are judged where they are made.
-     */
+    /** Empty when the host of the address may be connected to now: it is resolved and every address judged, right before a connection. */
     public Optional<AddressPolicy.Refusal> checkAddress(URI url) {
         return addresses.check(hostOf(url));
     }
 
     /** The HTTP client for a trust; one per mode and pinned certificate, shared by the servers that use it. */
     public HttpClient client(String tlsMode, String fingerprint) {
-        return clients.computeIfAbsent(tlsMode + "|" + fingerprint, key -> tls.client(tlsMode, fingerprint, CONNECT_TIMEOUT, tunnel.selector()));
+        return clients.computeIfAbsent(tlsMode + "|" + fingerprint, key -> tls.client(tlsMode, fingerprint, CONNECT_TIMEOUT));
     }
 
-    /**
-     * The URL a request is sent to: an {@code https} URL as it is (the client connects through the tunnel, which judges the address), a
-     * plain {@code http} URL with the address that was judged as its host.
-     */
-    public URI target(URI url) throws IOException {
-        try {
-            return "https".equalsIgnoreCase(url.getScheme()) ? url : tunnel.pin(url);
-        } catch (CheckedTunnel.AddressRefusedException e) {
-            throw new AddressRefused(e.refusal());
-        }
-    }
 
     /** The address check that refused a connection. */
     public static final class AddressRefused extends IOException {
@@ -146,11 +116,11 @@ public final class ServerLinks implements java.io.Closeable {
 
     /** A handshake that reads the certificate of an {@code https} address; the address is checked first ({@link AddressRefused}). */
     public ServerTls.Presented probe(URI url) throws IOException {
-        AddressPolicy.Resolution resolution = addresses.resolve(hostOf(url));
-        if (resolution instanceof AddressPolicy.Resolution.Refused refused) {
-            throw new AddressRefused(refused.refusal());
+        Optional<AddressPolicy.Refusal> refusal = checkAddress(url);
+        if (refusal.isPresent()) {
+            throw new AddressRefused(refusal.get());
         }
-        return tls.probe(hostOf(url), portOf(url), ((AddressPolicy.Resolution.Addresses) resolution).all(), CONNECT_TIMEOUT);
+        return tls.probe(hostOf(url), portOf(url), CONNECT_TIMEOUT);
     }
 
     private static URI wellKnown(URI internalUrl, String name) {
@@ -162,16 +132,12 @@ public final class ServerLinks implements java.io.Closeable {
      * added yet has none (the id comes from its manifest), so the caller then gives a placeholder (see {@code ServerAdmin}).
      */
     public Pull pullManifest(URI internalUrl, String audience, String tlsMode, String fingerprint) {
-        URI target;
-        try {
-            target = target(wellKnown(internalUrl, "mcp-manifest"));
-        } catch (AddressRefused e) {
-            return Pull.failed(Failure.ADDRESS_REFUSED, e.getMessage());
-        } catch (IOException e) {
-            return Pull.failed(Failure.UNREACHABLE, "the server could not be reached");
+        Optional<AddressPolicy.Refusal> refusal = checkAddress(internalUrl);
+        if (refusal.isPresent()) {
+            return Pull.failed(Failure.ADDRESS_REFUSED, refusal.get().message());
         }
         String requestId = UuidV7.next();
-        HttpRequest request = HttpRequest.newBuilder(target).timeout(REQUEST_TIMEOUT)
+        HttpRequest request = HttpRequest.newBuilder(wellKnown(internalUrl, "mcp-manifest")).timeout(REQUEST_TIMEOUT)
                 .header("Authorization", "Bearer " + tokens.forManifest(audience, requestId)).header("X-Request-Id", requestId)
                 .header("Accept", "application/json").GET().build();
         try {
@@ -186,9 +152,6 @@ public final class ServerLinks implements java.io.Closeable {
         } catch (JacksonException | BoundedInputStream.LimitExceededException e) {
             return Pull.failed(Failure.INVALID, "the manifest is not a JSON document of a size the gateway takes");
         } catch (IOException e) {
-            if (CheckedTunnel.refused(e)) {
-                return Pull.failed(Failure.ADDRESS_REFUSED, "the address of the server is refused");
-            }
             log.warn("manifest of {} not fetched: {}", hostOf(internalUrl), describe(e));
             return Pull.failed(tlsFailure(e) ? Failure.TLS_HANDSHAKE_FAILED : Failure.UNREACHABLE,
                     tlsFailure(e) ? "the TLS handshake with the server failed" : "the server could not be reached");
@@ -200,16 +163,11 @@ public final class ServerLinks implements java.io.Closeable {
 
     /** {@code POST /.well-known/mcp-policy-data} under the approved trust; {@code revision} is the revision of {@code body} and of the token. */
     public Push pushPolicyData(URI internalUrl, String serverId, String tlsMode, String fingerprint, long revision, JsonNode body) {
-        URI target;
-        try {
-            target = target(wellKnown(internalUrl, "mcp-policy-data"));
-        } catch (AddressRefused e) {
+        if (checkAddress(internalUrl).isPresent()) {
             return new Push(false, 0, null, Failure.ADDRESS_REFUSED);
-        } catch (IOException e) {
-            return new Push(false, 0, null, Failure.UNREACHABLE);
         }
         String requestId = UuidV7.next();
-        HttpRequest request = HttpRequest.newBuilder(target).timeout(REQUEST_TIMEOUT)
+        HttpRequest request = HttpRequest.newBuilder(wellKnown(internalUrl, "mcp-policy-data")).timeout(REQUEST_TIMEOUT)
                 .header("Authorization", "Bearer " + tokens.forPolicyData(serverId, requestId, revision)).header("X-Request-Id", requestId)
                 .header("Content-Type", "application/json").header("Accept", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body))).build();
@@ -227,9 +185,6 @@ public final class ServerLinks implements java.io.Closeable {
         } catch (JacksonException | BoundedInputStream.LimitExceededException e) {
             return new Push(false, 200, null, Failure.INVALID);
         } catch (IOException e) {
-            if (CheckedTunnel.refused(e)) {
-                return new Push(false, 0, null, Failure.ADDRESS_REFUSED);
-            }
             log.warn("policy data of {} not pushed: {}", serverId, describe(e));
             return new Push(false, 0, null, tlsFailure(e) ? Failure.TLS_HANDSHAKE_FAILED : Failure.UNREACHABLE);
         } catch (InterruptedException e) {

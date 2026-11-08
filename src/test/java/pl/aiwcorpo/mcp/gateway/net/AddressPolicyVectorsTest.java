@@ -19,13 +19,20 @@ class AddressPolicyVectorsTest {
 
     private final AddressPolicy policy = new AddressPolicy(false);
 
+    private static AddressPolicy policyFor(JsonNode input) {
+        List<String> refused = new ArrayList<>();
+        input.path("refusedAddresses").forEach(entry -> refused.add(entry.asString()));
+        return new AddressPolicy(false, refused);
+    }
+
     @TestFactory
     List<DynamicTest> theVectors() {
         List<DynamicTest> tests = new ArrayList<>();
         for (Vectors.Vector vector : Vectors.of("address-refusal")) {
             tests.add(DynamicTest.dynamicTest(vector.name(), () -> run(vector.document())));
         }
-        assertThat(tests).hasSize(46);
+        assertThat(tests).hasSize(Vectors.of("address-refusal").size());
+        assertThat(tests).hasSizeGreaterThanOrEqualTo(70);
         return tests;
     }
 
@@ -33,6 +40,7 @@ class AddressPolicyVectorsTest {
         JsonNode input = vector.path("input");
         JsonNode expected = vector.path("expected");
         String why = vector.path("description").asString();
+        AddressPolicy policy = policyFor(input);
         if (input.has("address")) {
             AddressPolicy.Verdict verdict = policy.judge(input.path("address").asString());
             assertThat(verdict.allowed()).as(why).isEqualTo(expected.path("allowed").asBoolean());
@@ -44,8 +52,6 @@ class AddressPolicyVectorsTest {
             List<byte[]> addresses = new ArrayList<>();
             input.path("resolved").forEach(address -> addresses.add(AddressPolicy.parseLiteral(address.asString()).orElseThrow()));
             assertRefusal(policy.checkResolved(addresses), expected, why);
-        } else if (input.has("connectedTo")) {
-            assertRefusal(policy.checkResolved(List.of(AddressPolicy.parseLiteral(input.path("connectedTo").asString()).orElseThrow())), expected, why);
         } else {
             Optional<ServerUrl> url = ServerUrl.parse(input.path("url").asString());
             assertThat(url).as(why).isPresent();
