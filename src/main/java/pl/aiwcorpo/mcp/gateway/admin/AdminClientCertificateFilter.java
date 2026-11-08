@@ -38,8 +38,8 @@ public final class AdminClientCertificateFilter extends OncePerRequestFilter {
 
     /**
      * One operation (or all methods when {@code method} is null) and the certificate names allowed to call it. A name may carry a
-     * path variable of the pattern in braces ({@code mcp-registry-ci-{serverId}}, CC-161): the certificate then names exactly the
-     * value the request path has there, and no other.
+     * path variable of the pattern in braces ({@code prefix-{serverId}}): the certificate then names exactly the value the request path
+     * has there, and no other.
      */
     public record Rule(String method, PathPattern pattern, Set<String> names) {
         private static final PathPatternParser PARSER = new PathPatternParser();

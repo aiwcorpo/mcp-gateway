@@ -10,8 +10,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 
 /**
- * Every {@code retry}: takes approvals that another instance stored, looks again at servers that were pinned back for the policies they
- * presented and, when bootstrap is enabled (development), asks servers without any stored approval for the manifest they serve.
+ * Every {@code retry}: takes approvals that another instance stored, looks again at servers whose policies wait for approval (one that went
+ * back to the approved ones is freed without a user) and, when bootstrap is enabled (development), approves what a server that was just
+ * added brought ({@link DevBootstrap}).
  */
 public final class RegistryBootstrap implements DisposableBean {
 
@@ -23,13 +24,13 @@ public final class RegistryBootstrap implements DisposableBean {
         return thread;
     });
 
-    public RegistryBootstrap(RegistryService registry, boolean enabled, Duration retry) {
+    public RegistryBootstrap(RegistryService registry, Runnable development, Duration retry) {
         scheduler.scheduleWithFixedDelay(() -> {
             try {
                 registry.reloadChanged();
-                registry.recheckServerPolicies();
-                if (enabled) {
-                    registry.bootstrapMissing();
+                registry.recheckPendingPolicies();
+                if (development != null) {
+                    development.run();
                 }
             } catch (RuntimeException e) {
                 log.warn("registry refresh failed: {}", e.getClass().getName());

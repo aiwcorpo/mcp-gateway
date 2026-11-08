@@ -51,11 +51,16 @@ import pl.aiwcorpo.mcp.gateway.auth.ResourceMetadata;
 import pl.aiwcorpo.mcp.gateway.authz.CedarToolAuthorizer;
 import pl.aiwcorpo.mcp.gateway.admin.FreshMfa;
 import pl.aiwcorpo.mcp.gateway.admin.PolicyController;
-import pl.aiwcorpo.mcp.gateway.admin.PolicyDataController;
 import pl.aiwcorpo.mcp.gateway.admin.ServerController;
 import pl.aiwcorpo.mcp.gateway.policy.PolicyDataStore;
 import pl.aiwcorpo.mcp.gateway.policy.PolicyService;
+import pl.aiwcorpo.mcp.gateway.registry.DevBootstrap;
 import pl.aiwcorpo.mcp.gateway.registry.ServerAdmin;
+import pl.aiwcorpo.mcp.gateway.registry.ServerChecks;
+import pl.aiwcorpo.mcp.gateway.link.PolicyDataPusher;
+import pl.aiwcorpo.mcp.gateway.link.ServerLinks;
+import pl.aiwcorpo.mcp.gateway.net.AddressPolicy;
+import pl.aiwcorpo.mcp.gateway.tls.ServerTls;
 import pl.aiwcorpo.mcp.gateway.authz.ToolAccess;
 import pl.aiwcorpo.mcp.gateway.authz.ToolAuthorizer;
 import pl.aiwcorpo.mcp.gateway.broker.BrokerClient;
@@ -362,13 +367,39 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    UpstreamSessions upstreamSessions(GatewayProperties properties, ServerRegistry servers, InternalTls tls,
+    @DependsOn("devstackGuard")
+    AddressPolicy addressPolicy(GatewayProperties properties) {
+        return new AddressPolicy(properties.servers().allowLoopback());
+    }
+
+    @Bean
+    @DependsOn("devstackGuard")
+    ServerTls serverTls(GatewayProperties properties) {
+        String bundle = properties.servers().trustedCas();
+        return new ServerTls(bundle == null || bundle.isBlank() ? null : Path.of(bundle));
+    }
+
+    @Bean
+    ServerLinks serverLinks(AddressPolicy addresses, ServerTls serverTls, InternalTokenIssuer tokens, JsonMapper gatewayJson) {
+        return new ServerLinks(addresses, serverTls, tokens, gatewayJson);
+    }
+
+    @Bean
+    PolicyDataPusher policyDataPusher(PolicyService policies, ServerRegistry servers, ServerLinks links, JsonMapper gatewayJson,
+                                      GatewayProperties properties) {
+        return new PolicyDataPusher(policies, servers, links, gatewayJson, properties.servers().loopPoll(),
+                properties.servers().policyDataPushInterval(), java.time.Duration.ofSeconds(10), System::nanoTime);
+    }
+
+    @Bean
+    UpstreamSessions upstreamSessions(GatewayProperties properties, ServerLinks links, PolicyDataPusher policyData,
                                       InternalTokenIssuer tokens, JsonMapper gatewayJson, Clock clock) {
         GatewayProperties.Upstream upstream = properties.upstream();
         return new UpstreamSessions(server -> new StreamableHttpClient(server.internalUrl(),
-                tls.clientForServer(server.serverId(), java.time.Duration.ofSeconds(5)), gatewayJson, upstream.timeout(),
-                upstream.maxResponseBytes()), tokens, gatewayJson, properties.sessions().upstreamIdleTimeout(), clock,
-                properties.componentId(), properties.version());
+                links.client(server.connection().tlsMode(), server.connection().fingerprint()), gatewayJson, upstream.timeout(),
+                upstream.maxResponseBytes(), () -> links.checkAddress(server.internalUrl()).map(refusal -> refusal.message())),
+                policyData::push, tokens, gatewayJson, properties.sessions().upstreamIdleTimeout(), clock, properties.componentId(),
+                properties.version());
     }
 
     @Bean
@@ -538,16 +569,20 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    ManifestFetcher manifestFetcher(InternalTls tls, InternalTokenIssuer tokens, JsonMapper gatewayJson) {
-        return new ManifestFetcher(tls, tokens, gatewayJson);
+    ManifestFetcher manifestFetcher(ServerLinks links) {
+        return new ManifestFetcher(links);
     }
 
     @Bean
-    RegistryService registryService(ServerRegistry servers, RegistryStore store, ManifestFetcher fetcher, DefinitionGuard guard,
-                                    DefinitionCheck definitionCheck, AuditLog audit, GatewayProperties properties, JsonMapper gatewayJson,
-                                    org.springframework.core.env.Environment environment, PolicyService policies) {
-        RegistryService registry = new RegistryService(servers, store,
-                new ManifestValidator(gatewayJson, DevstackGuard.devstackActive(environment)), fetcher, guard, definitionCheck, audit,
+    ManifestValidator manifestValidator(JsonMapper gatewayJson, org.springframework.core.env.Environment environment) {
+        return new ManifestValidator(gatewayJson, DevstackGuard.devstackActive(environment));
+    }
+
+    @Bean
+    RegistryService registryService(ServerRegistry servers, RegistryStore store, ManifestFetcher fetcher, ManifestValidator validator,
+                                    DefinitionGuard guard, DefinitionCheck definitionCheck, AuditLog audit, GatewayProperties properties,
+                                    JsonMapper gatewayJson, PolicyService policies) {
+        RegistryService registry = new RegistryService(servers, store, validator, fetcher, guard, definitionCheck, audit,
                 properties.componentId(), gatewayJson, policies, properties.registry().policyCheckFailures(),
                 properties.registry().policyCheckMaxAge(), Clock.systemUTC());
         registry.load();
@@ -555,9 +590,18 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    ServerAdmin serverAdmin(RegistryStore store, RegistryService registry, PolicyService policies, AuditLog audit, GatewayProperties properties,
-                            JsonMapper gatewayJson, UpstreamSessions upstream) {
-        return new ServerAdmin(store, registry, policies, audit, properties.componentId(), gatewayJson, upstream::forgetServer);
+    ServerChecks serverChecks(RegistryStore store, RegistryService registry, ServerLinks links, AuditLog audit, GatewayProperties properties,
+                              Clock clock) {
+        return new ServerChecks(store, registry, links, audit, properties.componentId(), clock, properties.servers().manifestPullInterval(),
+                properties.servers().loopPoll());
+    }
+
+    @Bean
+    ServerAdmin serverAdmin(RegistryStore store, RegistryService registry, ServerChecks checks, ManifestValidator validator,
+                            AddressPolicy addresses, PolicyService policies, AuditLog audit, GatewayProperties properties,
+                            JsonMapper gatewayJson, Clock clock, UpstreamSessions upstream) {
+        return new ServerAdmin(store, registry, checks, validator, addresses, policies, audit, properties.componentId(), gatewayJson, clock,
+                properties.servers().refreshInterval(), upstream::forgetServer);
     }
 
     @Bean
@@ -575,21 +619,13 @@ public class GatewayConfiguration {
         return new PolicyController(policies, gatewayJson, mfa);
     }
 
-    @Bean
-    PolicyDataController policyDataController(PolicyService policies, ServerRegistry servers, JsonMapper gatewayJson) {
-        return new PolicyDataController(policies, servers, gatewayJson);
-    }
-
-    /** Servers that wait for a manifest get the one they serve, retried until it works. */
+    /** Takes what other instances stored; in development it also approves what a server that was just added brought. */
     @Bean
     @DependsOn("devstackGuard")
-    RegistryBootstrap registryBootstrap(RegistryService registry, GatewayProperties properties) {
-        return new RegistryBootstrap(registry, properties.registry().bootstrapFromServer(), properties.registry().bootstrapRetry());
-    }
-
-    @Bean
-    pl.aiwcorpo.mcp.gateway.admin.AdapterRegistryController adapterRegistryController(RegistryService registry, JsonMapper gatewayJson) {
-        return new pl.aiwcorpo.mcp.gateway.admin.AdapterRegistryController(registry, gatewayJson);
+    RegistryBootstrap registryBootstrap(RegistryService registry, ServerRegistry servers, ServerAdmin admin, RegistryStore store,
+                                        JsonMapper gatewayJson, GatewayProperties properties) {
+        Runnable development = properties.registry().bootstrapFromServer() ? new DevBootstrap(servers, registry, admin, store, gatewayJson) : null;
+        return new RegistryBootstrap(registry, development, properties.registry().bootstrapRetry());
     }
 
     @Bean

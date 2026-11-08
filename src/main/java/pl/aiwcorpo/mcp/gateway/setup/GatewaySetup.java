@@ -175,6 +175,7 @@ public final class GatewaySetup {
         }
         InternalTls tls = tls();
         checkAllowedClients();
+        checkServerCas();
         HttpClient jvmTrust = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).followRedirects(HttpClient.Redirect.NEVER).build();
         checkJwks(jvmTrust);
         if (tls == null) {
@@ -204,6 +205,26 @@ public final class GatewaySetup {
             fail("cannot open " + keystore + " or " + truststore + ": "
                     + (wrongPassword ? "wrong MCP_TLS_STORE_PASSWORD (both files use it)" : rootMessage(e)));
             return null;
+        }
+    }
+
+    /** The CA bundle for the {@code ca} trust of the MCP servers is optional; one that is named must be a PEM file with certificates. */
+    private void checkServerCas() {
+        String configured = env.get("MCP_SERVER_TRUSTED_CAS");
+        if (blank(configured)) {
+            ok("MCP server trust: the default trust store of the JVM (MCP_SERVER_TRUSTED_CAS not set)");
+            return;
+        }
+        Path bundle = Path.of(configured);
+        if (!Files.isReadable(bundle)) {
+            fail("MCP_SERVER_TRUSTED_CAS " + configured + " does not exist or cannot be read");
+            return;
+        }
+        try {
+            new pl.aiwcorpo.mcp.gateway.tls.ServerTls(bundle);
+            ok("MCP server trust: the default trust store of the JVM and the CAs in " + configured);
+        } catch (IllegalStateException e) {
+            fail("MCP_SERVER_TRUSTED_CAS " + configured + " holds no CA certificate in PEM form: " + rootMessage(e));
         }
     }
 

@@ -29,9 +29,9 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ArrayNode;
 
 /**
- * C5 registry of servers: {@code GET}, {@code POST /admin/v1/servers} and {@code GET}, {@code PATCH}, {@code DELETE
- * /admin/v1/servers/{serverId}}. Group {@code mcp-platform-admin}; the document has an {@code ETag} that {@code PATCH} sends back in
- * {@code If-Match}.
+ * C5 registry of servers: {@code GET}, {@code POST /admin/v1/servers} (add by address), {@code GET}, {@code PATCH}, {@code DELETE
+ * /admin/v1/servers/{serverId}} and {@code POST .../connection/approve} and {@code POST .../refresh} (CC-249). Group
+ * {@code mcp-platform-admin}; the document has an {@code ETag} that {@code PATCH} sends back in {@code If-Match}.
  */
 @RestController
 @RequestMapping("/admin/v1/servers")
@@ -125,6 +125,43 @@ public class ServerController {
         return failure(outcome, requestId);
     }
 
+    @PostMapping("/{serverId}/connection/approve")
+    public ResponseEntity<String> approveConnection(@PathVariable String serverId, @AuthenticationPrincipal Jwt token,
+                                                    HttpServletRequest request) throws IOException {
+        String requestId = AdminResponses.requestId(request);
+        if (!RegistryController.administrator(token)) {
+            return responses.error(HttpStatus.FORBIDDEN, requestId, "access_denied", null, null);
+        }
+        if (!mfa.fresh(token)) {
+            mfa.refused(token, requestId, "approveServerConnection");
+            return responses.error(HttpStatus.UNAUTHORIZED, requestId, "step_up_required", null, null);
+        }
+        if (!SERVER_ID.matcher(serverId).matches()) {
+            return responses.error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
+        }
+        Outcome<ServerAdmin.Item> outcome = servers.approveConnection(requestId, serverId, body(request), GatewayUser.from(token));
+        if (outcome.status() == Outcome.Status.OK) {
+            return withEtag(HttpStatus.OK, requestId, outcome.value()).body(json.writeValueAsString(servers.view(outcome.value().config())));
+        }
+        return failure(outcome, requestId);
+    }
+
+    @PostMapping("/{serverId}/refresh")
+    public ResponseEntity<String> refresh(@PathVariable String serverId, @AuthenticationPrincipal Jwt token, HttpServletRequest request) {
+        String requestId = AdminResponses.requestId(request);
+        if (!RegistryController.administrator(token)) {
+            return responses.error(HttpStatus.FORBIDDEN, requestId, "access_denied", null, null);
+        }
+        if (!SERVER_ID.matcher(serverId).matches()) {
+            return responses.error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
+        }
+        Outcome<ServerAdmin.Item> outcome = servers.refresh(requestId, serverId);
+        if (outcome.status() == Outcome.Status.OK) {
+            return withEtag(HttpStatus.OK, requestId, outcome.value()).body(json.writeValueAsString(servers.view(outcome.value().config())));
+        }
+        return failure(outcome, requestId);
+    }
+
     @DeleteMapping("/{serverId}")
     public ResponseEntity<String> delete(@PathVariable String serverId, @AuthenticationPrincipal Jwt token, HttpServletRequest request) {
         String requestId = AdminResponses.requestId(request);
@@ -153,11 +190,20 @@ public class ServerController {
             case EXISTS -> responses.error(HttpStatus.CONFLICT, requestId, "server_exists", null, null);
             case PRECONDITION_FAILED -> responses.error(HttpStatus.PRECONDITION_FAILED, requestId, "precondition_failed", null, null);
             case PRECONDITION_REQUIRED -> responses.error(HttpStatus.PRECONDITION_REQUIRED, requestId, "precondition_required", null, null);
+            case CONFLICT -> responses.error(HttpStatus.CONFLICT, requestId, outcome.reason(), null, null);
+            case TOO_MANY_REQUESTS -> tooFrequent(requestId, outcome.message());
             case REJECTED -> "invalid_request".equals(outcome.reason())
                     ? responses.error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null)
-                    : responses.error(HttpStatus.UNPROCESSABLE_ENTITY, requestId, "server_rejected", outcome.reason(), outcome.message());
+                    : responses.error(HttpStatus.UNPROCESSABLE_ENTITY, requestId, "server_rejected", outcome.reason(), outcome.manifestReason(),
+                            outcome.message());
             default -> responses.error(HttpStatus.INTERNAL_SERVER_ERROR, requestId, "internal_error", null, null);
         };
+    }
+
+    private ResponseEntity<String> tooFrequent(String requestId, String seconds) {
+        ResponseEntity<String> answer = responses.error(HttpStatus.TOO_MANY_REQUESTS, requestId, "refresh_too_frequent", null, null);
+        return ResponseEntity.status(answer.getStatusCode()).headers(answer.getHeaders()).header(HttpHeaders.RETRY_AFTER, seconds)
+                .body(answer.getBody());
     }
 
     /** The JSON body, or null when it is too large or not JSON: the operation answers 400. */

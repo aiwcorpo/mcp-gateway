@@ -8,20 +8,15 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 
-import javax.naming.InvalidNameException;
-import javax.naming.ldap.LdapName;
-import javax.naming.ldap.Rdn;
-
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.X509ExtendedTrustManager;
 import javax.net.ssl.X509TrustManager;
 
 /**
- * Server certificate check for internal calls: PKIX against the internal CA, then the certificate must carry
- * {@code expectedName} as a DNS SAN, whatever address the connection went to (C5: SAN == {@code <serverId>.internal};
- * CC-035: the broker name is configuration). Being an {@link X509ExtendedTrustManager}, it replaces JSSE's
- * hostname check instead of adding to it. For an MCP server ({@link #forServer}) the leaf must also have exactly one CN, equal to the
- * {@code serverId}: a certificate that the internal CA issued to another server, or to a component, is not the identity of this one.
+ * Server certificate check for the calls to the credential broker: PKIX against the internal CA, then the certificate must carry
+ * {@code expectedName} as a DNS SAN, whatever address the connection went to (CC-035: the broker name is configuration). Being an
+ * {@link X509ExtendedTrustManager}, it replaces JSSE's hostname check instead of adding to it. MCP servers are not checked this way
+ * since CC-249: their trust is chosen per server ({@link ServerTls}).
  */
 public final class PinnedNameTrustManager extends X509ExtendedTrustManager {
 
@@ -29,21 +24,10 @@ public final class PinnedNameTrustManager extends X509ExtendedTrustManager {
 
     private final X509TrustManager pkix;
     private final String expectedName;
-    private final String expectedCn;
 
     public PinnedNameTrustManager(X509TrustManager pkix, String expectedName) {
-        this(pkix, expectedName, null);
-    }
-
-    private PinnedNameTrustManager(X509TrustManager pkix, String expectedName, String expectedCn) {
         this.pkix = pkix;
         this.expectedName = expectedName.toLowerCase(Locale.ROOT);
-        this.expectedCn = expectedCn;
-    }
-
-    /** The identity of a server: SAN {@code <serverId>.internal} and CN {@code serverId} (C5, CC-240). */
-    public static PinnedNameTrustManager forServer(X509TrustManager pkix, String serverId) {
-        return new PinnedNameTrustManager(pkix, serverId + ".internal", serverId);
     }
 
     @Override
@@ -85,30 +69,6 @@ public final class PinnedNameTrustManager extends X509ExtendedTrustManager {
     private void checkName(X509Certificate leaf) throws CertificateException {
         if (!dnsNames(leaf).contains(expectedName)) {
             throw new CertificateException("server certificate has no DNS SAN " + expectedName);
-        }
-        if (expectedCn != null && !expectedCn.equals(commonName(leaf))) {
-            throw new CertificateException("server certificate has not the CN " + expectedCn);
-        }
-    }
-
-    /** The one CN of the subject, or null when there is none, more than one, or a multi-valued RDN. */
-    static String commonName(X509Certificate certificate) {
-        try {
-            String found = null;
-            for (Rdn rdn : new LdapName(certificate.getSubjectX500Principal().getName()).getRdns()) {
-                if (rdn.size() > 1) {
-                    return null;
-                }
-                if ("CN".equals(rdn.getType().toUpperCase(Locale.ROOT))) {
-                    if (found != null) {
-                        return null;
-                    }
-                    found = rdn.getValue().toString();
-                }
-            }
-            return found;
-        } catch (InvalidNameException e) {
-            return null;
         }
     }
 

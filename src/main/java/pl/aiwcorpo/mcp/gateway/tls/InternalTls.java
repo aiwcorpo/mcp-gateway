@@ -18,8 +18,8 @@ import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509TrustManager;
 
 /**
- * mTLS material of the gateway (certificate CN=mcp-gateway, internal CA) and HTTP clients for internal calls,
- * one per expected server name.
+ * mTLS material of the gateway (certificate CN=mcp-gateway, internal CA) and the HTTP client for the calls to the credential broker, which
+ * must present a certificate of the internal CA with the configured name. MCP servers are reached without a client certificate ({@link ServerTls}).
  */
 public final class InternalTls {
 
@@ -44,11 +44,6 @@ public final class InternalTls {
     /** Client that presents the gateway certificate and accepts only a server certificate naming {@code tlsName} (the broker). */
     public HttpClient clientFor(String tlsName, Duration connectTimeout) {
         return client(new PinnedNameTrustManager(pkix, tlsName), tlsName, connectTimeout);
-    }
-
-    /** Client for an MCP server: its certificate must have the SAN {@code <serverId>.internal} and the CN {@code serverId}. */
-    public HttpClient clientForServer(String serverId, Duration connectTimeout) {
-        return client(PinnedNameTrustManager.forServer(pkix, serverId), serverId, connectTimeout);
     }
 
     private HttpClient client(PinnedNameTrustManager trust, String tlsName, Duration connectTimeout) {

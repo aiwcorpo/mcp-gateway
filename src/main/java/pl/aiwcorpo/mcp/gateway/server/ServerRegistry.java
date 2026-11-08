@@ -17,8 +17,8 @@ import tools.jackson.databind.node.ObjectNode;
 /**
  * The servers behind the gateway as this instance holds them. The list of servers is data of the database ({@code servers}, changed
  * through the admin API and read again by every instance when the change counter moves); the tools of a server come from its approved
- * manifest (C6). Until a manifest is approved, and while the policies of the server wait for approval, a server has no tools: they are
- * known, answered with tool_disabled, and listed nowhere (CC-178).
+ * manifest (C6). Until a manifest is approved, and while the connection or the policies of the server wait for approval, a server has no
+ * tools: they are known, answered with tool_disabled, and listed nowhere (CC-178).
  */
 public final class ServerRegistry {
 
@@ -97,7 +97,7 @@ public final class ServerRegistry {
             waitingByServer.put(config.serverId(), Map.copyOf(waiting));
             built.put(config.serverId(), new McpServer(config.serverId(), config.system(), config.internalUrl(),
                     state == null ? "0.0.0" : state.version(), config.enabled() && (state == null || state.manifestAccepted()),
-                    credential(config), Map.copyOf(tools), config.adapter()));
+                    credential(config), Map.copyOf(tools), config.adapter(), config.connection()));
         });
         this.servers = Map.copyOf(built);
         this.unapproved = Map.copyOf(waitingByServer);
@@ -113,7 +113,8 @@ public final class ServerRegistry {
                 return;
             }
             JsonNode entry = approved.entry();
-            if (!state.policiesApproved()) {
+            if (!state.policiesApproved() || !config.connectionApproved()) {
+                // Tools are listed and callable only when the connection, the policies and the tool are approved (CC-249).
                 waiting.put(name, waitingTool(name, entry));
                 return;
             }

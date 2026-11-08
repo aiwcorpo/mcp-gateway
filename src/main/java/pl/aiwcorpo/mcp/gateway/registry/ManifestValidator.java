@@ -1,6 +1,5 @@
 package pl.aiwcorpo.mcp.gateway.registry;
 
-import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -19,11 +18,11 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * What the gateway checks before it takes a manifest (C5 registerServer, C6): the JSON Schema (a title in every definition, a
+ * What the gateway checks before it takes a manifest it pulled (C5 createServer and refreshServer, C6): the JSON Schema (a title in every definition, a
  * closed and bounded inputSchema), the semantic rules of {@code mcp-manifest} (names, resource references, the hash recomputed
  * from the definition, the resource type declarations and the hash of the policies), the policy fragment of the server composed with
- * the base schema (PolicyFragments), the binding of the server to its entry in the registry of servers (serverId, system, address),
- * the environment the server was built for (CC-138) and the credential types the gateway asks the broker for (CC-159).
+ * the base schema (PolicyFragments), the binding of the server to its entry in the registry of servers (serverId and system; the
+ * {@code internalUrl} of a manifest is information only, the gateway connects to the address the administrator gave), the environment the server was built for (CC-138) and the credential types the gateway asks the broker for (CC-159).
  */
 public final class ManifestValidator {
 
@@ -35,6 +34,7 @@ public final class ManifestValidator {
     public static final String POLICIES_INVALID = "policies_invalid";
     public static final String RESOURCE_TYPES_INVALID = "resource_types_invalid";
     public static final String NAMESPACE_CONFLICT = "namespace_conflict";
+    public static final String ADAPTER_SOURCE_MISMATCH = "adapter_source_mismatch";
 
     /** A refusal; {@code reason} is a value of {@code ManifestRejected.reason} or null for the older kinds (schema, rule, binding). */
     public record Rejection(String reason, String message) {
@@ -65,9 +65,6 @@ public final class ManifestValidator {
         }
         if (!configured.system().equals(manifest.path("system").asString())) {
             out.add(new Rejection(null, "system does not match the registry of servers"));
-        }
-        if (!addressMatches(manifest.path("internalUrl").asString(), configured)) {
-            out.add(new Rejection(null, "internalUrl does not match the registry of servers"));
         }
         if ("dev".equals(manifest.path("environment").asString("production")) && !devMode) {
             out.add(new Rejection(ENVIRONMENT_MISMATCH, "the manifest of " + configured.serverId() + " declares environment dev"));
@@ -142,23 +139,6 @@ public final class ManifestValidator {
         }
         return Optional.of(new Rejection(CREDENTIAL_TYPE_MISMATCH, "the gateway allows " + String.join(", ", asked) + " for "
                 + configured.system() + ", the manifest accepts " + (accepted.isEmpty() ? "none" : String.join(", ", accepted))));
-    }
-
-    /** The manifest names the server by the configured address or by the TLS name the gateway checks, on the configured port. */
-    static boolean addressMatches(String manifestUrl, McpServer configured) {
-        try {
-            URI declared = URI.create(manifestUrl);
-            URI actual = configured.internalUrl();
-            boolean hostOk = declared.getHost() != null
-                    && (declared.getHost().equalsIgnoreCase(actual.getHost()) || declared.getHost().equalsIgnoreCase(configured.serverId() + ".internal"));
-            return hostOk && port(declared) == port(actual);
-        } catch (IllegalArgumentException e) {
-            return false;
-        }
-    }
-
-    private static int port(URI uri) {
-        return uri.getPort() == -1 ? 443 : uri.getPort();
     }
 
     /** The credential object of a manifest as it enters every hash of its tools; an absent object is JSON null. */

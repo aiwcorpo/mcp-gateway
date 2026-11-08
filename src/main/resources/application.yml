@@ -96,10 +96,21 @@ gateway:
   # AI clients (azp of the IdP token) that may call tools: checked in code before Cedar, served to the servers in their policy data.
   # A change raises the revision of the policy data; every instance needs the same value.
   allowed-clients: ${MCP_ALLOWED_CLIENTS:claude-code,claude-ai}
+  # How the gateway reaches the MCP servers it connects to by address (CC-249); no client certificate on either side.
+  servers:
+    # PEM file with CA certificates that the ca trust accepts besides the default trust store of the JVM.
+    trusted-cas: ${MCP_SERVER_TRUSTED_CAS:}
+    # Development stack only (DevstackGuard): test servers listen on the loopback interface, which the address check refuses.
+    allow-loopback: ${MCP_SERVERS_ALLOW_LOOPBACK:false}
+    # The manifest of every server is pulled and the policy data pushed at least this often (C5, C14: at most 60 s).
+    manifest-pull-interval: ${MCP_SERVER_MANIFEST_PULL_INTERVAL:60s}
+    policy-data-push-interval: ${MCP_SERVER_POLICY_DATA_PUSH_INTERVAL:60s}
+    loop-poll: ${MCP_SERVER_LOOP_POLL:1s}
+    refresh-interval: ${MCP_SERVER_REFRESH_INTERVAL:5s}
   registry:
     bootstrap-from-server: ${MCP_REGISTRY_BOOTSTRAP:false}
     definition-check-ttl: ${MCP_REGISTRY_DEFINITION_CHECK_TTL:30s}
-    # Blocks the tools of a running server whose /mcp-manifest could not be verified for this many checks in a row, or for this long.
+    # Blocks the tools of a running server whose manifest could not be verified for this many checks in a row, or for this long.
     policy-check-failures: ${MCP_REGISTRY_POLICY_CHECK_FAILURES:3}
     policy-check-max-age: ${MCP_REGISTRY_POLICY_CHECK_MAX_AGE:5m}
   activity:

@@ -73,15 +73,32 @@ public class RegistryStore {
             wrote = true;
             String credential = json.writeValueAsString(credentialJson(config.credential()));
             if (create) {
-                jdbc.sql("INSERT INTO servers (server_id, system, internal_url, credential, enabled, adapter) "
-                                + "VALUES (?, ?, ?, ?::jsonb, ?, ?)")
-                        .params(config.serverId(), config.system(), config.internalUrl().toString(), credential,
-                                config.enabled(), config.adapter()).update();
+                jdbc.sql("INSERT INTO servers (server_id, system, internal_url, credential, enabled, adapter, allow_plain_http, status, "
+                                + "last_checked_at, last_error, connection, pending_connection) "
+                                + "VALUES (?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb)")
+                        .params(config.serverId(), config.system(), config.internalUrl().toString(), credential, config.enabled(),
+                                config.adapter(), config.allowPlainHttp(), config.status(), timestamp(config.lastCheckedAt()),
+                                config.lastError(), connectionText(config.connection()), pendingText(config.pendingConnection())).update();
             } else {
-                // adapter is not updated: it is set when the server is added and never changes.
-                jdbc.sql("UPDATE servers SET internal_url = ?, credential = ?::jsonb, enabled = ?, updated_at = now() WHERE server_id = ?")
-                        .params(config.internalUrl().toString(), credential, config.enabled(), config.serverId()).update();
+                // Only the credential and the switch change by hand: the address, the plain-http flag and the adapter mode are set when
+                // the server is added, the rest is what the gateway saw (saveState).
+                jdbc.sql("UPDATE servers SET credential = ?::jsonb, enabled = ?, updated_at = now() WHERE server_id = ?")
+                        .params(credential, config.enabled(), config.serverId()).update();
             }
+        }
+
+        /** What a check or an approval found: the status, the connection and the connection that waits. Moves the change counter. */
+        public void saveState(ServerConfig config) {
+            wrote = true;
+            jdbc.sql("UPDATE servers SET status = ?, last_checked_at = ?, last_error = ?, connection = ?::jsonb, "
+                            + "pending_connection = ?::jsonb, updated_at = now() WHERE server_id = ?")
+                    .params(config.status(), timestamp(config.lastCheckedAt()), config.lastError(), connectionText(config.connection()),
+                            pendingText(config.pendingConnection()), config.serverId()).update();
+        }
+
+        /** The time of a check that found nothing new: the instances need not read the registry again for it. */
+        public void touchChecked(java.time.Instant at) {
+            jdbc.sql("UPDATE servers SET last_checked_at = ? WHERE server_id = ?").params(timestamp(at), serverId).update();
         }
 
         public StoredPolicies policies() {
@@ -368,15 +385,17 @@ public class RegistryStore {
         return read.execute(status -> work.get());
     }
 
+    private static final String CONFIG_SELECT = "SELECT server_id, system, internal_url, credential::text AS credential, enabled, adapter, "
+            + "allow_plain_http, status, last_checked_at, last_error, connection::text AS connection, "
+            + "pending_connection::text AS pending_connection FROM servers";
+
     /** Every server of the registry, in serverId order. */
     public List<ServerConfig> configs() {
-        return jdbc.sql("SELECT server_id, system, internal_url, credential::text AS credential, enabled, adapter FROM servers "
-                + "ORDER BY server_id").query(this::mapConfig).list();
+        return jdbc.sql(CONFIG_SELECT + " ORDER BY server_id").query(this::mapConfig).list();
     }
 
     public Optional<ServerConfig> config(String serverId) {
-        return jdbc.sql("SELECT server_id, system, internal_url, credential::text AS credential, enabled, adapter FROM servers "
-                + "WHERE server_id = ?").param(serverId).query(this::mapConfig).optional();
+        return jdbc.sql(CONFIG_SELECT + " WHERE server_id = ?").param(serverId).query(this::mapConfig).optional();
     }
 
     public StoredPolicies policiesOf(String serverId) {
@@ -415,9 +434,81 @@ public class RegistryStore {
         JsonNode credential = json.readTree(rs.getString("credential"));
         List<String> accepted = new java.util.ArrayList<>();
         credential.path("acceptedTypes").forEach(type -> accepted.add(type.asString()));
+        java.sql.Timestamp checked = rs.getTimestamp("last_checked_at");
         return new ServerConfig(rs.getString("server_id"), rs.getString("system"), java.net.URI.create(rs.getString("internal_url")),
                 new ServerConfig.Credential(credential.path("required").asBoolean(true), accepted,
-                        credential.path("type").asString(null)), rs.getBoolean("enabled"), rs.getBoolean("adapter"));
+                        credential.path("type").asString(null)), rs.getBoolean("enabled"), rs.getBoolean("adapter"),
+                rs.getBoolean("allow_plain_http"), rs.getString("status"), checked == null ? null : checked.toInstant(),
+                rs.getString("last_error"), connection(rs.getString("connection")), pending(rs.getString("pending_connection")));
+    }
+
+    private static java.sql.Timestamp timestamp(java.time.Instant at) {
+        return at == null ? null : java.sql.Timestamp.from(at);
+    }
+
+    private String connectionText(ServerConfig.Connection connection) {
+        if (connection == null) {
+            return null;
+        }
+        ObjectNode node = json.createObjectNode();
+        node.put("tlsMode", connection.tlsMode());
+        certificateFields(node, connection.fingerprint(), connection.subject(), connection.issuer(), connection.sans(), connection.notAfter());
+        node.put("approvedBy", connection.approvedBy());
+        node.put("approvedAt", connection.approvedAt().toString());
+        return json.writeValueAsString(node);
+    }
+
+    private String pendingText(ServerConfig.PendingConnection pending) {
+        if (pending == null) {
+            return null;
+        }
+        ObjectNode node = json.createObjectNode();
+        node.put("tlsMode", pending.tlsMode());
+        certificateFields(node, pending.fingerprint(), pending.subject(), pending.issuer(), pending.sans(), pending.notAfter());
+        node.put("validatesAsCa", pending.validatesAsCa());
+        node.put("reason", pending.reason());
+        node.put("detectedAt", pending.detectedAt().toString());
+        return json.writeValueAsString(node);
+    }
+
+    private static void certificateFields(ObjectNode node, String fingerprint, String subject, String issuer, List<String> sans,
+                                          java.time.Instant notAfter) {
+        node.put("fingerprint", fingerprint);
+        node.put("subject", subject);
+        node.put("issuer", issuer);
+        tools.jackson.databind.node.ArrayNode names = node.putArray("sans");
+        sans.forEach(names::add);
+        node.put("notAfter", notAfter == null ? null : notAfter.toString());
+    }
+
+    private ServerConfig.Connection connection(String text) {
+        if (text == null) {
+            return null;
+        }
+        JsonNode node = json.readTree(text);
+        return new ServerConfig.Connection(node.path("tlsMode").asString(), node.path("fingerprint").asString(null),
+                node.path("subject").asString(null), node.path("issuer").asString(null), sansOf(node), instant(node.path("notAfter")),
+                node.path("approvedBy").asString(null), instant(node.path("approvedAt")));
+    }
+
+    private ServerConfig.PendingConnection pending(String text) {
+        if (text == null) {
+            return null;
+        }
+        JsonNode node = json.readTree(text);
+        return new ServerConfig.PendingConnection(node.path("tlsMode").asString(), node.path("fingerprint").asString(null),
+                node.path("subject").asString(null), node.path("issuer").asString(null), sansOf(node), instant(node.path("notAfter")),
+                node.path("validatesAsCa").asBoolean(false), node.path("reason").asString(), instant(node.path("detectedAt")));
+    }
+
+    private static List<String> sansOf(JsonNode node) {
+        List<String> sans = new java.util.ArrayList<>();
+        node.path("sans").forEach(san -> sans.add(san.asString()));
+        return sans;
+    }
+
+    private static java.time.Instant instant(JsonNode node) {
+        return node.isString() ? java.time.Instant.parse(node.asString()) : null;
     }
 
     private ObjectNode credentialJson(ServerConfig.Credential credential) {

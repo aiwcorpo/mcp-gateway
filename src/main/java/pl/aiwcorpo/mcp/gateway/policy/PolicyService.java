@@ -79,7 +79,7 @@ public final class PolicyService implements PolicySource {
         }
     }
 
-    /** What a server gets from {@code GET /internal/v1/policy-data}. */
+    /** What a server gets pushed with {@code POST /.well-known/mcp-policy-data} (C14). */
     public record ServerData(long revision, String approvedPoliciesHash, ScopeMapping scopeMapping, List<String> allowedClients,
                              List<PolicyOverride> overrides) {
     }

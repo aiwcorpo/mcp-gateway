@@ -32,12 +32,18 @@ public class UpstreamSessions {
     private record Session(String sub, String sessionId, String protocolVersion, Instant lastUsed) {
     }
 
-    /** The client of a server and what it was made for: a change of its address makes another client. */
-    private record Connection(java.net.URI url, StreamableHttpClient client) {
+    /** The client of a server and what it was made for: a change of its address or of the approved trust makes another client. */
+    private record Connection(java.net.URI url, String tlsMode, String fingerprint, StreamableHttpClient client) {
+        boolean matches(McpServer server) {
+            // A ca server renews its certificate without a new approval: only a pinned certificate is part of what the client was made for.
+            return url.equals(server.internalUrl()) && java.util.Objects.equals(tlsMode, server.connection().tlsMode())
+                    && (!"pinned".equals(tlsMode) || java.util.Objects.equals(fingerprint, server.connection().fingerprint()));
+        }
     }
 
     private final Map<String, Connection> clients = new ConcurrentHashMap<>();
     private final java.util.function.Function<McpServer, StreamableHttpClient> clientFactory;
+    private final java.util.function.Predicate<McpServer> policyDataPush;
     private final InternalTokenIssuer tokens;
     private final JsonMapper json;
     private final Duration idleTimeout;
@@ -50,12 +56,16 @@ public class UpstreamSessions {
     private volatile Instant lastSweep = Instant.EPOCH;
 
     /**
-     * @param clientFactory makes the HTTP client for a server from its address and identity; called again when the address changes, because the
-     *                      servers are data of the registry and not fixed at start
+     * @param clientFactory  makes the HTTP client for a server from its address and approved trust; called again when either changes, because
+     *                       the servers are data of the registry and not fixed at start
+     * @param policyDataPush pushes the current policy data to a server and says whether it was delivered: asked when a server answers
+     *                       {@code 409 policy_data_stale} to a tool call
      */
-    public UpstreamSessions(java.util.function.Function<McpServer, StreamableHttpClient> clientFactory, InternalTokenIssuer tokens,
+    public UpstreamSessions(java.util.function.Function<McpServer, StreamableHttpClient> clientFactory,
+                            java.util.function.Predicate<McpServer> policyDataPush, InternalTokenIssuer tokens,
                             JsonMapper json, Duration idleTimeout, Clock clock, String clientName, String clientVersion) {
         this.clientFactory = clientFactory;
+        this.policyDataPush = policyDataPush;
         this.tokens = tokens;
         this.json = json;
         this.idleTimeout = idleTimeout;
@@ -79,14 +89,30 @@ public class UpstreamSessions {
     public JsonNode call(McpServer server, String conversationKey, GatewayUser user, String requestId, ObjectNode message,
                          String tool, Credential credential, boolean repeatable, String risk, String action) throws UpstreamException {
         sweep();
+        if (!server.connectionApproved()) {
+            throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE, server.serverId() + " has no approved connection");
+        }
         StreamableHttpClient client = client(server);
         String key = key(server, conversationKey);
         for (int attempt = 0; attempt < 2; attempt++) {
             Session session = ensure(server, client, key, user, requestId);
-            UpstreamResponse response = client.post(new UpstreamRequest(
+            // A new token for every send: the first one is spent when the server answers, whatever it answers (one-time jti).
+            java.util.function.Supplier<UpstreamRequest> next = () -> new UpstreamRequest(
                     tokens.forUser(server.serverId(), user, tool, requestId, server.adapter() ? risk : null,
                             server.adapter() ? action : null), requestId, session.sessionId(),
-                    session.protocolVersion(), credential, json.writeValueAsString(message)), message.get("id"));
+                    session.protocolVersion(), credential, json.writeValueAsString(message));
+            UpstreamResponse response = client.post(next.get(), message.get("id"));
+            if (tool != null && policyDataStale(response)) {
+                // The server holds no policy data or older than this instance's revision (C14): push the data and repeat the call once,
+                // whether or not the push was delivered (the vectors count two calls for a push that failed). It refused before it did
+                // anything, so repeating is safe whatever the tool does.
+                boolean delivered = policyDataPush.test(server);
+                response = client.post(next.get(), message.get("id"));
+                if (policyDataStale(response)) {
+                    throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE, server.serverId() + " is still stale after the push"
+                            + (delivered ? "" : " (the push did not reach it)"));
+                }
+            }
             if (response.status() == 404 && session.sessionId() != null) {
                 sessions.remove(key, session);
                 if (attempt == 0 && repeatable) {
@@ -105,6 +131,10 @@ public class UpstreamSessions {
             return response.message();
         }
         throw new UpstreamException(UpstreamException.Kind.PROTOCOL, "session lost twice");
+    }
+
+    private static boolean policyDataStale(UpstreamResponse response) {
+        return response.status() == 409 && response.message() != null && "policy_data_stale".equals(response.message().path("error").asString(null));
     }
 
     /** Drops the client and the sessions towards a server that was removed (or is added again later under other settings). */
@@ -224,17 +254,18 @@ public class UpstreamSessions {
 
     private StreamableHttpClient client(McpServer server) {
         Connection connection = clients.get(server.serverId());
-        if (connection != null && connection.url().equals(server.internalUrl())) {
+        if (connection != null && connection.matches(server)) {
             return connection.client();
         }
         synchronized (clients) {
             connection = clients.get(server.serverId());
-            if (connection == null || !connection.url().equals(server.internalUrl())) {
+            if (connection == null || !connection.matches(server)) {
                 if (connection != null) {
-                    // Sessions of the old address mean nothing to the new one.
+                    // Sessions of the old address or trust mean nothing to the new one.
                     sessions.keySet().removeIf(key -> key.startsWith(server.serverId() + "|"));
                 }
-                connection = new Connection(server.internalUrl(), clientFactory.apply(server));
+                connection = new Connection(server.internalUrl(), server.connection().tlsMode(), server.connection().fingerprint(),
+                        clientFactory.apply(server));
                 clients.put(server.serverId(), connection);
             }
             return connection.client();

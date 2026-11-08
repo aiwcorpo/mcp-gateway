@@ -38,7 +38,6 @@ import jakarta.servlet.http.HttpServletResponse;
 import pl.aiwcorpo.mcp.gateway.admin.AdminClientCertificateFilter;
 import pl.aiwcorpo.mcp.gateway.admin.AdminOperations;
 import pl.aiwcorpo.mcp.gateway.admin.ClientCertificateVerifier;
-import pl.aiwcorpo.mcp.gateway.admin.ServerCertificateFilter;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
 import pl.aiwcorpo.mcp.gateway.auth.AuthenticationAudit;
 import pl.aiwcorpo.mcp.gateway.auth.AuthenticationEventLimiter;
@@ -53,7 +52,7 @@ import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
 /**
  * OAuth resource server for C1: JWKS from configuration (the issuer as seen from containers differs from
  * {@code iss}), issuer, audience {@code mcp-gateway}, required claims. Nothing is anonymous except the RFC 9728
- * metadata and the internal JWKS.
+ * metadata and the JWKS of the internal JWT.
  */
 @Configuration
 public class SecurityConfiguration {
@@ -145,9 +144,8 @@ public class SecurityConfiguration {
     }
 
     /**
-     * The two operations of C5 that have no user: registerServer (the pipeline of one server, CN {@code mcp-registry-ci-<serverId>}
-     * equal to the {@code serverId} of the path, CC-161) and purgeUser (the offboarding process, CN {@code mcp-offboarding}, CC-155).
-     * Both are {@code security: mtls} in the contract, so no bearer token is asked for. Any other name is 403.
+     * The one operation of C5 that has no user: purgeUser (the offboarding process, CN {@code mcp-offboarding}, CC-155). It is
+     * {@code security: mtls} in the contract, so no bearer token is asked for. Any other name is 403.
      */
     @Bean
     @Order(0)
@@ -168,27 +166,6 @@ public class SecurityConfiguration {
                 .logout(logout -> logout.disable())
                 .addFilterBefore(new AdminClientCertificateFilter(AdminOperations.certificateOnly(properties.admin().offboardingClientCns()),
                         true, certificates, authenticationAudit), org.springframework.security.web.access.intercept.AuthorizationFilter.class)
-                .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
-        return http.build();
-    }
-
-    /**
-     * {@code GET /internal/v1/policy-data}: the certificate of a server of the internal CA, nothing else (no user, no token). Which CNs
-     * are servers is the registry of servers, so the controller decides that; this chain only proves the certificate.
-     */
-    @Bean
-    @Order(0)
-    SecurityFilterChain policyDataFilterChain(HttpSecurity http, ClientCertificateVerifier certificates,
-                                              AuthenticationAudit authenticationAudit) throws Exception {
-        http.securityMatcher("/internal/v1/policy-data")
-                .csrf(csrf -> csrf.disable())
-                .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                .requestCache(cache -> cache.disable())
-                .formLogin(form -> form.disable())
-                .httpBasic(basic -> basic.disable())
-                .logout(logout -> logout.disable())
-                .addFilterBefore(new ServerCertificateFilter(certificates, authenticationAudit),
-                        org.springframework.security.web.access.intercept.AuthorizationFilter.class)
                 .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
         return http.build();
     }
@@ -274,7 +251,7 @@ public class SecurityConfiguration {
                         false, certificates, authenticationAudit), BearerTokenAuthenticationFilter.class)
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(ResourceMetadata.WELL_KNOWN, ResourceMetadata.WELL_KNOWN + "/**").permitAll()
-                        .requestMatchers(JwksController.PATH, "/actuator/health", "/actuator/prometheus").permitAll()
+                        .requestMatchers(JwksController.PATH, JwksController.PUBLIC_PATH, "/actuator/health", "/actuator/prometheus").permitAll()
                         .requestMatchers("/error").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(rs -> rs.jwt(jwt -> jwt.decoder(decoder)).authenticationEntryPoint(entryPoint)

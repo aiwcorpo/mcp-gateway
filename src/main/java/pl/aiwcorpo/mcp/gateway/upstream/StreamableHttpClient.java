@@ -11,6 +11,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -22,7 +23,8 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Client side of Streamable HTTP (2025-03-26 .. 2025-11-25) towards one MCP server over mTLS. The answer to a
+ * Client side of Streamable HTTP (2025-03-26 .. 2025-11-25) towards one MCP server under the trust approved for it (no client
+ * certificate, CC-249). The answer to a
  * request is either application/json or an SSE stream; on a stream only the response with the request's id is
  * kept (request-scoped notifications are not forwarded in M1). Every body, JSON or SSE, is read through a hard
  * byte limit ({@code maxBytes}).
@@ -37,13 +39,24 @@ public class StreamableHttpClient {
     private final JsonMapper json;
     private final Duration timeout;
     private final int maxBytes;
+    private final java.util.function.Supplier<java.util.Optional<String>> addressRefusal;
 
     public StreamableHttpClient(URI endpoint, HttpClient http, JsonMapper json, Duration timeout, int maxBytes) {
+        this(endpoint, http, json, timeout, maxBytes, java.util.Optional::empty);
+    }
+
+    /**
+     * @param addressRefusal asked before every request: why the address may not be connected to now (a name that resolves to a refused
+     *                       address since the server was added), or empty
+     */
+    public StreamableHttpClient(URI endpoint, HttpClient http, JsonMapper json, Duration timeout, int maxBytes,
+                                java.util.function.Supplier<java.util.Optional<String>> addressRefusal) {
         this.endpoint = endpoint;
         this.http = http;
         this.json = json;
         this.timeout = timeout;
         this.maxBytes = maxBytes;
+        this.addressRefusal = addressRefusal;
     }
 
     public UpstreamResponse post(UpstreamRequest request, JsonNode expectedId) throws UpstreamException {
@@ -68,6 +81,14 @@ public class StreamableHttpClient {
         try (InputStream body = new BoundedInputStream(raw, maxBytes)) {
             if (status == 202) {
                 return new UpstreamResponse(status, sessionId, null);
+            }
+            if (status == 409) {
+                // The body of a 409 says whether it is policy_data_stale (C14): the gateway pushes its data and repeats the call once.
+                try {
+                    return new UpstreamResponse(status, sessionId, json.readTree(body.readAllBytes()));
+                } catch (JacksonException e) {
+                    return new UpstreamResponse(status, sessionId, null);
+                }
             }
             if (status != 200) {
                 return new UpstreamResponse(status, sessionId, null);
@@ -107,6 +128,9 @@ public class StreamableHttpClient {
 
     /** Ends the server's session (legacy DELETE); failures are irrelevant to the caller. */
     public void delete(UpstreamRequest request) {
+        if (addressRefusal.get().isPresent()) {
+            return;
+        }
         HttpRequest.Builder builder = HttpRequest.newBuilder(endpoint).timeout(timeout).DELETE();
         headers(builder, request);
         try {
@@ -134,6 +158,10 @@ public class StreamableHttpClient {
     }
 
     private HttpResponse<InputStream> send(HttpRequest request) throws UpstreamException {
+        Optional<String> refused = addressRefusal.get();
+        if (refused.isPresent()) {
+            throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE, "address_refused: " + refused.get());
+        }
         try {
             return http.send(request, HttpResponse.BodyHandlers.ofInputStream());
         } catch (IOException e) {

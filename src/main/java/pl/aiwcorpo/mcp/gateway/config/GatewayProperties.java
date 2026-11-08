@@ -44,6 +44,7 @@ public record GatewayProperties(
         @DefaultValue @Valid Activity activity,
         @DefaultValue @Valid RateLimit rateLimit,
         @DefaultValue @Valid Registry registry,
+        @DefaultValue @Valid Servers servers,
         /* Dev only: allows http for the IdP token endpoint (token exchange); never for the broker or servers. */
         @DefaultValue("false") boolean allowPlainHttp,
         @DefaultValue List<String> allowedOrigins,
@@ -231,18 +232,53 @@ public record GatewayProperties(
             @DefaultValue("3") @Min(1) int pendingLimit) {
     }
 
+    /**
+     * How the gateway reaches the MCP servers it connects to by address (C5, C14, CC-249). There is no client certificate on either side.
+     */
+    public record Servers(
+            /*
+             * PEM file with CA certificates that the {@code ca} trust accepts besides the default trust store of the JVM
+             * (MCP_SERVER_TRUSTED_CAS); empty adds nothing.
+             */
+            String trustedCas,
+            /* Development only: the test servers listen on the loopback interface, which the address check refuses in production. */
+            @DefaultValue("false") boolean allowLoopback,
+            /* At most this long between two pulls of the manifest of a server by the runtime loop (C5: at most 60 s). */
+            @DefaultValue("60s") Duration manifestPullInterval,
+            /* At most this long between two pushes of the policy data to a server (C14: at most 60 s); a change of the revision is pushed at once. */
+            @DefaultValue("60s") Duration policyDataPushInterval,
+            /* How often the loops look at their timers. */
+            @DefaultValue("1s") Duration loopPoll,
+            /* The shortest time between two refreshes of one server (C5: 5 s). */
+            @DefaultValue("5s") Duration refreshInterval) {
+
+        public Servers {
+            if (manifestPullInterval == null || manifestPullInterval.compareTo(Duration.ofSeconds(1)) < 0
+                    || manifestPullInterval.compareTo(Duration.ofSeconds(60)) > 0) {
+                throw new IllegalArgumentException("gateway.servers.manifest-pull-interval must be between 1 s and 60 s (C5)");
+            }
+            if (policyDataPushInterval == null || policyDataPushInterval.compareTo(Duration.ofSeconds(1)) < 0
+                    || policyDataPushInterval.compareTo(Duration.ofSeconds(60)) > 0) {
+                throw new IllegalArgumentException("gateway.servers.policy-data-push-interval must be between 1 s and 60 s (C14)");
+            }
+            if (loopPoll == null || loopPoll.compareTo(Duration.ofMillis(50)) < 0 || loopPoll.compareTo(Duration.ofSeconds(10)) > 0
+                    || refreshInterval == null || refreshInterval.isNegative()) {
+                throw new IllegalArgumentException("gateway.servers.loop-poll must be between 50 ms and 10 s and refresh-interval not negative");
+            }
+        }
+    }
+
     /** Approved definitions of the servers (C6). */
     public record Registry(
             /*
-             * A server with no stored approval gets, once, the manifest it serves itself at /mcp-manifest (trust on first use: the
-             * server then declares the risk of its own new tools and its policies are approved with them). Development only;
-             * production registers through CI and approves in the portal.
+             * A server that was added and has nothing approved gets its connection, its policies and every tool its first pull brought
+             * approved (trust on first use). Development only; in production an administrator approves each in the portal.
              */
             @DefaultValue("false") boolean bootstrapFromServer,
             @DefaultValue("10s") Duration bootstrapRetry,
             /* How long the last check of the live definitions of a server counts before a call checks them again. */
             @DefaultValue("30s") Duration definitionCheckTtl,
-            /* Consecutive checks of a running server's /mcp-manifest that could not verify its policies after which its tools are blocked. */
+            /* Consecutive checks of a running server's manifest that could not verify its policies after which its tools are blocked. */
             @DefaultValue("3") @Min(1) int policyCheckFailures,
             /* The longest time since its policies were last verified before the tools of a running server are blocked. */
             @DefaultValue("5m") Duration policyCheckMaxAge) {

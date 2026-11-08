@@ -15,7 +15,6 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -35,16 +34,15 @@ import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * C5 registry. The pipeline of a reviewed commit registers a manifest ({@code PUT}, certificate alone, CN bound to the server);
- * the administrators of the portal list the registry, look at a pending definition against the approved one and approve it
- * (group {@code mcp-platform-admin}, hash of the pending entry).
+ * C5 registry. The gateway pulls the manifests itself (CC-249), so there is nothing to register here: the administrators of the portal
+ * list the registry, look at a pending definition against the approved one and approve it (group {@code mcp-platform-admin}, hash of
+ * the pending entry), and do the same for the policies of a server.
  */
 @RestController
 @RequestMapping("/admin/v1/registry/servers")
 public class RegistryController {
 
     public static final String ADMIN_GROUP = "mcp-platform-admin";
-    private static final int MAX_BODY = 1024 * 1024;
     private static final Pattern REQUEST_ID = Pattern.compile("^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$");
     private static final Pattern DEFINITION_HASH = Pattern.compile("^sha256:[0-9a-f]{64}$");
     private static final Pattern SERVER_ID = Pattern.compile("^mcp-[a-z][a-z0-9]{1,30}$");
@@ -63,31 +61,6 @@ public class RegistryController {
         this.registry = registry;
         this.servers = servers;
         this.json = json;
-    }
-
-    @PutMapping("/{serverId}")
-    public ResponseEntity<String> register(@PathVariable String serverId, HttpServletRequest request) throws IOException {
-        String requestId = requestId(request);
-        byte[] raw = request.getInputStream().readNBytes(MAX_BODY + 1);
-        JsonNode manifest;
-        try {
-            if (raw.length > MAX_BODY) {
-                return error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
-            }
-            manifest = json.readTree(raw);
-        } catch (JacksonException e) {
-            return error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
-        }
-        if (manifest == null || !manifest.isObject() || !serverId.equals(manifest.path("serverId").asString(null))) {
-            return error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
-        }
-        return switch (registry.register(requestId, serverId, manifest, "ci")) {
-            case RegistryService.Result.Accepted accepted -> ok(requestId, RegistryViews.server(json, accepted.server(), false, registry.floors(serverId)));
-            case RegistryService.Result.Rejected rejected -> error(HttpStatus.UNPROCESSABLE_ENTITY, requestId, "manifest_rejected",
-                    rejected.reason(), rejected.message());
-            case RegistryService.Result.UnknownServer unknown -> error(HttpStatus.UNPROCESSABLE_ENTITY, requestId, "manifest_rejected",
-                    null, "unknown server");
-        };
     }
 
     @GetMapping

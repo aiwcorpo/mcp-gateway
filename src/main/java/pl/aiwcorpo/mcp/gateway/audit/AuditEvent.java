@@ -125,6 +125,16 @@ public final class AuditEvent {
         return put("reason", reason);
     }
 
+    /** The trust mode of a connection that was approved or proposed (admin_change, CC-249). */
+    public AuditEvent tlsMode(String mode) {
+        return put("tlsMode", mode);
+    }
+
+    /** The fingerprint of the leaf certificate of a connection (CC-249); never the certificate. Not recorded for {@code plain}. */
+    public AuditEvent fingerprint(String fingerprint) {
+        return fingerprint == null ? this : put("fingerprint", fingerprint);
+    }
+
     /** Hash of the definition an admin_change concerns (CC-133). */
     public AuditEvent definitionHash(String hash) {
         return put("definitionHash", hash);

@@ -1,12 +1,17 @@
 package pl.aiwcorpo.mcp.gateway.registry;
 
-import java.net.URI;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
@@ -17,7 +22,11 @@ import pl.aiwcorpo.mcp.gateway.audit.AuditEvent;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
 import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
 import pl.aiwcorpo.mcp.gateway.confirm.PendingCall;
+import pl.aiwcorpo.mcp.gateway.net.AddressPolicy;
+import pl.aiwcorpo.mcp.gateway.net.ServerUrl;
 import pl.aiwcorpo.mcp.gateway.policy.PolicyService;
+import pl.aiwcorpo.mcp.gateway.server.McpServer;
+import pl.aiwcorpo.mcp.gateway.server.CredentialPolicy;
 import pl.aiwcorpo.mcp.manifest.CanonicalJson;
 import pl.aiwcorpo.mcp.manifest.ReservedSystemIds;
 import tools.jackson.databind.JsonNode;
@@ -26,41 +35,57 @@ import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * The registry of servers (C5 {@code /admin/v1/servers}): the only list of servers. A change is written with the counter of changes in one
- * transaction, so that every instance reads it again within a poll interval, and is applied on this instance at once. Removing a server
- * takes everything the gateway holds about it: its manifests, approvals, emergency switches, policy fragment and namespace, the entries of
- * the scope mapping for the types of that namespace and the overrides aimed at it. Every change is an {@code admin_change} event.
+ * The registry of servers (C5 {@code /admin/v1/servers}): the only list of servers. A server is added by its address (CC-249): the gateway
+ * checks the address, reads the certificate, pulls the manifest and derives the {@code serverId} from it; the server is created with
+ * everything pending (its connection, its policies, every tool). A change is written with the counter of changes in one transaction, so
+ * that every instance reads it again within a poll interval, and is applied on this instance at once. Removing a server takes everything
+ * the gateway holds about it: its manifests, approvals, connection, emergency switches, policy fragment and namespace, the entries of the
+ * scope mapping for the types of that namespace and the overrides aimed at it. Every change is an {@code admin_change} event.
  */
 public final class ServerAdmin {
 
     private static final Logger log = LoggerFactory.getLogger(ServerAdmin.class);
-    private static final Pattern SERVER_ID = Pattern.compile("^mcp-[a-z][a-z0-9]{1,30}$");
-    private static final Pattern SYSTEM = Pattern.compile("^[a-z][a-z0-9]{1,30}$");
     private static final Set<String> CREDENTIAL_TYPES = Set.of("user-oauth", "user-secret", "token-exchange", "service-account");
-    private static final Set<String> CREATE_FIELDS = Set.of("serverId", "system", "internalUrl", "credential", "enabled", "adapter");
-    private static final Set<String> PATCH_FIELDS = Set.of("internalUrl", "credential", "enabled");
+    private static final Set<String> ADD_FIELDS = Set.of("internalUrl", "allowPlainHttp", "credential");
+    private static final Set<String> PATCH_FIELDS = Set.of("credential", "enabled");
+    private static final Set<String> APPROVE_FIELDS = Set.of("tlsMode", "fingerprint");
 
-    /** A server as the API shows it, with the ETag of that document. */
+    /** A server as the API shows it, with the ETag of its settings. */
     public record Item(ServerConfig config, String etag) {
     }
 
     private final RegistryStore store;
     private final RegistryService registry;
+    private final ServerChecks checks;
+    private final ManifestValidator validator;
+    private final AddressPolicy addresses;
     private final PolicyService policies;
     private final AuditLog audit;
     private final String componentId;
     private final JsonMapper json;
+    private final Clock clock;
+    private final Duration refreshInterval;
     private final Consumer<String> onDeleted;
+    private final Map<String, Instant> refreshed = new ConcurrentHashMap<>();
 
-    /** @param onDeleted told the serverId after a server was removed: sessions and connections towards it are dropped */
-    public ServerAdmin(RegistryStore store, RegistryService registry, PolicyService policies, AuditLog audit, String componentId,
-                       JsonMapper json, Consumer<String> onDeleted) {
+    /**
+     * @param refreshInterval the shortest time between two refreshes of one server (5 s, C5); a faster one is refused with the seconds to wait
+     * @param onDeleted       told the serverId after a server was removed: sessions and connections towards it are dropped
+     */
+    public ServerAdmin(RegistryStore store, RegistryService registry, ServerChecks checks, ManifestValidator validator, AddressPolicy addresses,
+                       PolicyService policies, AuditLog audit, String componentId, JsonMapper json, Clock clock, Duration refreshInterval,
+                       Consumer<String> onDeleted) {
         this.store = store;
         this.registry = registry;
+        this.checks = checks;
+        this.validator = validator;
+        this.addresses = addresses;
         this.policies = policies;
         this.audit = audit;
         this.componentId = componentId;
         this.json = json;
+        this.clock = clock;
+        this.refreshInterval = refreshInterval;
         this.onDeleted = onDeleted;
     }
 
@@ -76,8 +101,17 @@ public final class ServerAdmin {
         return new Item(config, etag(config));
     }
 
+    /** The ETag covers what an administrator edits (settings), not what the gateway sees: it does not change at every check. */
     public String etag(ServerConfig config) {
-        return PolicyService.etagOf(CanonicalJson.canonicalize(json.writeValueAsString(view(config))));
+        ObjectNode settings = json.createObjectNode();
+        settings.put("serverId", config.serverId());
+        settings.put("system", config.system());
+        settings.put("internalUrl", config.internalUrl().toString());
+        settings.put("allowPlainHttp", config.allowPlainHttp());
+        settings.set("credential", credentialView(config.credential()));
+        settings.put("enabled", config.enabled());
+        settings.put("adapter", config.adapter());
+        return PolicyService.etagOf(CanonicalJson.canonicalize(json.writeValueAsString(settings)));
     }
 
     public ObjectNode view(ServerConfig config) {
@@ -85,48 +119,173 @@ public final class ServerAdmin {
         node.put("serverId", config.serverId());
         node.put("system", config.system());
         node.put("internalUrl", config.internalUrl().toString());
-        ObjectNode credential = node.putObject("credential");
-        credential.put("required", config.credential().required());
-        ArrayNode types = credential.putArray("acceptedTypes");
-        config.credential().acceptedTypes().forEach(types::add);
-        credential.put("type", config.credential().type());
+        node.put("allowPlainHttp", config.allowPlainHttp());
+        node.set("credential", credentialView(config.credential()));
         node.put("enabled", config.enabled());
         node.put("adapter", config.adapter());
+        node.put("status", config.status());
+        node.put("lastCheckedAt", seconds(config.lastCheckedAt()));
+        node.put("lastError", config.lastError());
+        ServerConfig.Connection connection = config.connection();
+        if (connection == null) {
+            node.putNull("connection");
+        } else {
+            ObjectNode shown = node.putObject("connection");
+            shown.put("tlsMode", connection.tlsMode());
+            certificate(shown, connection.fingerprint(), connection.subject(), connection.issuer(), connection.sans(), connection.notAfter());
+            shown.put("approvedBy", connection.approvedBy());
+            shown.put("approvedAt", seconds(connection.approvedAt()));
+        }
+        ServerConfig.PendingConnection pending = config.pendingConnection();
+        if (pending == null) {
+            node.putNull("pendingConnection");
+        } else {
+            ObjectNode shown = node.putObject("pendingConnection");
+            shown.put("tlsMode", pending.tlsMode());
+            certificate(shown, pending.fingerprint(), pending.subject(), pending.issuer(), pending.sans(), pending.notAfter());
+            shown.put("validatesAsCa", pending.validatesAsCa());
+            shown.put("reason", pending.reason());
+            shown.put("detectedAt", seconds(pending.detectedAt()));
+        }
         return node;
     }
 
-    /** {@code 400} for a body that is not of the shape of the contract (reason invalid_request), {@code 422 server_rejected} for one that is inconsistent. */
+    private ObjectNode credentialView(ServerConfig.Credential credential) {
+        ObjectNode node = json.createObjectNode();
+        node.put("required", credential.required());
+        ArrayNode types = node.putArray("acceptedTypes");
+        credential.acceptedTypes().forEach(types::add);
+        node.put("type", credential.type());
+        return node;
+    }
+
+    private static void certificate(ObjectNode node, String fingerprint, String subject, String issuer, List<String> sans, Instant notAfter) {
+        node.put("fingerprint", fingerprint);
+        node.put("subject", subject);
+        node.put("issuer", issuer);
+        ArrayNode names = node.putArray("sans");
+        sans.forEach(names::add);
+        node.put("notAfter", seconds(notAfter));
+    }
+
+    private static String seconds(Instant at) {
+        return at == null ? null : at.truncatedTo(ChronoUnit.SECONDS).toString();
+    }
+
+    /**
+     * Adds a server by its address, in the order of the contract: {@code 400} for a body or an address that is not of the shape, then
+     * {@code 422 server_rejected} with the reason of the first step that fails (address, http without the flag, handshake, manifest, the
+     * identity derived from it), {@code 409} for a server that exists. Nothing is stored for a refusal.
+     */
     public Outcome<Item> create(String requestId, JsonNode body, GatewayUser administrator) {
-        if (body == null || !body.isObject() || !allKnown(body, CREATE_FIELDS) || !body.has("serverId") || !body.has("system")
-                || !body.has("internalUrl") || !body.has("credential")) {
+        if (body == null || !body.isObject() || !allKnown(body, ADD_FIELDS) || !body.path("internalUrl").isString()
+                || (body.has("allowPlainHttp") && !body.get("allowPlainHttp").isBoolean())) {
             return Outcome.rejected("invalid_request", null);
         }
-        String serverId = body.path("serverId").asString("");
-        String system = body.path("system").asString("");
-        if (!SERVER_ID.matcher(serverId).matches() || !SYSTEM.matcher(system).matches()) {
+        Optional<ServerUrl> parsed = ServerUrl.parse(body.get("internalUrl").asString());
+        Optional<ServerConfig.Credential> given = body.has("credential") ? credential(body.get("credential")) : Optional.empty();
+        if (parsed.isEmpty() || (body.has("credential") && given.isEmpty())) {
             return Outcome.rejected("invalid_request", null);
         }
-        Outcome<ServerConfig> parsed = parse(serverId, system, body, true, null);
-        if (!parsed.succeeded()) {
-            return rejection(requestId, serverId, parsed, administrator);
+        ServerUrl url = parsed.get();
+        boolean allowPlainHttp = body.path("allowPlainHttp").asBoolean(false);
+        Optional<AddressPolicy.Refusal> refusal = addresses.check(url.host());
+        if (refusal.isPresent()) {
+            return refused(requestId, administrator, refusal.get().address() == null ? "tls_handshake_failed" : "address_refused",
+                    refusal.get().message());
         }
-        ServerConfig config = parsed.value();
+        if (!url.https() && !allowPlainHttp) {
+            return refused(requestId, administrator, "plain_http_not_allowed", "http needs allowPlainHttp");
+        }
+        Instant now = clock.instant();
+        ServerChecks.Contact contact = checks.contact(url.uri(), now);
+        if (contact instanceof ServerChecks.Contact.Failed failed) {
+            return refused(requestId, administrator, failed.reason(), failed.message());
+        }
+        ServerChecks.Contact.Reached reached = (ServerChecks.Contact.Reached) contact;
+        JsonNode manifest = reached.manifest();
+        String system = manifest.path("system").asString("");
+        if (ReservedSystemIds.isReserved(system)) {
+            // Before the checks of the manifest, which refuse this system too: the administrator learns the reason that names the id.
+            return refused(requestId, administrator, "system_reserved", system + " is a reserved system id: mcp-" + system
+                    + " is the name of a platform component");
+        }
+        boolean adapter = "adapter".equals(manifest.path("source").asString(null));
+        ServerConfig.Credential credential = given.orElseGet(() -> derived(manifest));
+        Outcome<Item> consistent = credentialConsistent(credential);
+        if (!consistent.succeeded() && consistent.status() == Outcome.Status.REJECTED) {
+            return refused(requestId, administrator, consistent.reason(), consistent.message());
+        }
+        McpServer asManifest = new McpServer("mcp-" + system, system, url.uri(), manifest.path("version").asString(""), true,
+                policyOf(credential), Map.of(), adapter, null);
+        List<ManifestValidator.Rejection> rejections = registry.checkPulled(manifest, asManifest, adapter);
+        if (!rejections.isEmpty()) {
+            String cause = rejections.stream().map(ManifestValidator.Rejection::reason).filter(java.util.Objects::nonNull).findFirst().orElse(null);
+            audit.emit(base(requestId, administrator, "mcp-" + system).reason("manifest_invalid").outcome("denied"));
+            return Outcome.manifestRejected(String.join("; ", rejections.stream().map(ManifestValidator.Rejection::message).toList()), cause);
+        }
+        String serverId = "mcp-" + system;
+        String credentialJson = validator.credentialJson(manifest);
+        String namespace = manifest.path("policies").path("namespace").asString("");
+        ServerConfig config = ServerConfig.added(serverId, system, url.uri(), credential, adapter, allowPlainHttp, reached.pending(), now);
+        RegistryService.Stored[] stored = {null};
         Outcome<Item> written = store.locked(serverId, tx -> {
             if (tx.config().isPresent()) {
                 return Outcome.of(Outcome.Status.EXISTS);
             }
+            if (!adapter && tx.namespaceOwner(namespace).filter(owner -> !owner.equals(serverId)).isPresent()) {
+                return Outcome.rejected(ManifestValidator.NAMESPACE_CONFLICT, "the namespace " + namespace + " belongs to another server");
+            }
             tx.purgeLeftovers();
             tx.saveConfig(config, true);
+            stored[0] = registry.writeManifest(tx, serverId, adapter, manifest, credentialJson);
             return Outcome.created(item(config));
         });
         if (written.succeeded()) {
             audit.emit(base(requestId, administrator, serverId).reason("server_created").outcome("ok"));
+            registry.recordPulled(requestId, serverId, stored[0]);
             applyHere();
+        } else if (written.status() == Outcome.Status.REJECTED) {
+            audit.emit(base(requestId, administrator, serverId).reason(written.reason()).outcome("denied"));
         }
         return written;
     }
 
-    /** Only the fields in the body change; {@code serverId} and {@code system} never do. */
+    private Outcome<Item> refused(String requestId, GatewayUser administrator, String reason, String message) {
+        audit.emit(AuditEvent.of("admin_change", requestId, componentId).userWithoutClient(administrator).reason(reason).outcome("denied"));
+        return Outcome.rejected(reason, message);
+    }
+
+    /** The credential settings of a server that was added without them: what its manifest says it accepts. */
+    private static ServerConfig.Credential derived(JsonNode manifest) {
+        JsonNode credential = manifest.path("credential");
+        Set<String> accepted = new LinkedHashSet<>();
+        credential.path("acceptedTypes").forEach(type -> accepted.add(type.asString()));
+        if (accepted.isEmpty()) {
+            // A system that needs no credential accepts none; the settings still need a type (it is the default of the system).
+            accepted.add("user-secret");
+        }
+        return new ServerConfig.Credential(credential.path("required").asBoolean(true), List.copyOf(accepted), accepted.iterator().next());
+    }
+
+    private static CredentialPolicy policyOf(ServerConfig.Credential credential) {
+        return new CredentialPolicy(credential.required(), Set.copyOf(credential.acceptedTypes()), List.of(),
+                "token-exchange".equals(credential.type()), credential.required() ? credential.type() : null);
+    }
+
+    /** {@code service-account} stays alone (CC-168), and the default type is one of the accepted ones. */
+    private static Outcome<Item> credentialConsistent(ServerConfig.Credential credential) {
+        if (credential.acceptedTypes().contains("service-account") && credential.acceptedTypes().size() > 1) {
+            // context.credentialType is one default type: a mixed set would hide a service account from the rules about it (CC-168).
+            return Outcome.rejected("credential_types_mixed", "acceptedTypes mixes service-account with user types");
+        }
+        if (!credential.acceptedTypes().contains(credential.type())) {
+            return Outcome.rejected("credential_type_not_accepted", "type must be one of acceptedTypes");
+        }
+        return Outcome.ok(null);
+    }
+
+    /** Only the fields in the body change; the address, the plain-http flag, {@code serverId}, {@code system} and the adapter mode never do. */
     public Outcome<Item> update(String requestId, String serverId, String ifMatch, JsonNode body, GatewayUser administrator) {
         if (body == null || !body.isObject() || body.isEmpty() || !allKnown(body, PATCH_FIELDS)) {
             return Outcome.rejected("invalid_request", null);
@@ -143,15 +302,26 @@ public final class ServerAdmin {
             if (!etag(current.get()).equals(ifMatch)) {
                 return Outcome.of(Outcome.Status.PRECONDITION_FAILED);
             }
-            Outcome<ServerConfig> parsed = parse(serverId, current.get().system(), body, false, current.get());
-            if (!parsed.succeeded()) {
-                return Outcome.rejected(parsed.reason(), parsed.message());
-            }
             ServerConfig before = current.get();
-            ServerConfig after = parsed.value();
-            if (!before.internalUrl().equals(after.internalUrl())) {
-                changed.add("internalUrl");
+            ServerConfig.Credential credential = before.credential();
+            if (body.has("credential")) {
+                Optional<ServerConfig.Credential> parsed = credential(body.get("credential"));
+                if (parsed.isEmpty()) {
+                    return Outcome.rejected("invalid_request", null);
+                }
+                credential = parsed.get();
+                Outcome<Item> consistent = credentialConsistent(credential);
+                if (consistent.status() == Outcome.Status.REJECTED) {
+                    return Outcome.rejected(consistent.reason(), consistent.message());
+                }
             }
+            if (body.has("enabled") && !body.get("enabled").isBoolean()) {
+                return Outcome.rejected("invalid_request", null);
+            }
+            boolean enabled = body.has("enabled") ? body.get("enabled").asBoolean() : before.enabled();
+            ServerConfig after = new ServerConfig(before.serverId(), before.system(), before.internalUrl(), credential, enabled, before.adapter(),
+                    before.allowPlainHttp(), before.status(), before.lastCheckedAt(), before.lastError(), before.connection(),
+                    before.pendingConnection());
             if (!before.credential().equals(after.credential())) {
                 changed.add("credential");
             }
@@ -170,65 +340,79 @@ public final class ServerAdmin {
         return written;
     }
 
-    private Outcome<Item> rejection(String requestId, String serverId, Outcome<ServerConfig> parsed, GatewayUser administrator) {
-        if (!"invalid_request".equals(parsed.reason())) {
-            audit.emit(base(requestId, administrator, serverId).reason(parsed.reason()).outcome("denied"));
+    /**
+     * Approves the pending connection (C5 approveServerConnection): the body repeats the mode and the fingerprint the administrator saw.
+     * Approves no policy and no tool. The gateway then connects under the approved trust, which sets the status.
+     */
+    public Outcome<Item> approveConnection(String requestId, String serverId, JsonNode body, GatewayUser administrator) {
+        if (body == null || !body.isObject() || !allKnown(body, APPROVE_FIELDS) || !body.path("tlsMode").isString()
+                || !(body.path("fingerprint").isString() || body.path("fingerprint").isNull())
+                || !body.has("fingerprint") || !Set.of("ca", "pinned", "plain").contains(body.get("tlsMode").asString())) {
+            return Outcome.rejected("invalid_request", null);
         }
-        return Outcome.rejected(parsed.reason(), parsed.message());
+        String tlsMode = body.get("tlsMode").asString();
+        String fingerprint = body.get("fingerprint").isNull() ? null : body.get("fingerprint").asString();
+        if (fingerprint != null && !Pattern.matches("^sha256:[0-9a-f]{64}$", fingerprint)) {
+            return Outcome.rejected("invalid_request", null);
+        }
+        Instant now = clock.instant();
+        Outcome<ServerConfig> decided = store.locked(serverId, tx -> {
+            Optional<ServerConfig> current = tx.config();
+            if (current.isEmpty()) {
+                return Outcome.of(Outcome.Status.NOT_FOUND);
+            }
+            ServerConfig before = current.get();
+            ConnectionRules.Approval verdict = ConnectionRules.approve(before.pendingConnection(), tlsMode, fingerprint,
+                    "https".equals(before.internalUrl().getScheme()), before.allowPlainHttp());
+            if (verdict instanceof ConnectionRules.Approval.Refused refused) {
+                return refused.status() == 409 ? Outcome.conflict(refused.error()) : Outcome.rejected(refused.reason(), "the connection cannot be approved as " + tlsMode);
+            }
+            ServerConfig.PendingConnection pending = before.pendingConnection();
+            ServerConfig.Connection connection = new ServerConfig.Connection(tlsMode, fingerprint, pending.subject(), pending.issuer(),
+                    pending.sans(), pending.notAfter(), administrator.sub(), now.truncatedTo(ChronoUnit.MILLIS));
+            ServerConfig after = new ServerConfig(before.serverId(), before.system(), before.internalUrl(), before.credential(), before.enabled(),
+                    before.adapter(), before.allowPlainHttp(), before.status(), before.lastCheckedAt(), before.lastError(), connection, null);
+            tx.saveState(after);
+            return Outcome.ok(after);
+        });
+        if (!decided.succeeded()) {
+            if (decided.status() == Outcome.Status.REJECTED || decided.status() == Outcome.Status.CONFLICT) {
+                audit.emit(base(requestId, administrator, serverId).reason(decided.reason()).outcome("denied"));
+            }
+            return new Outcome<>(decided.status(), null, decided.reason(), decided.message());
+        }
+        audit.emit(base(requestId, administrator, serverId).reason("server_connection_approved").tlsMode(tlsMode).fingerprint(fingerprint)
+                .outcome("ok"));
+        applyHere();
+        Optional<ServerConfig> after = checks.check(requestId, serverId);
+        return after.<Outcome<Item>>map(config -> Outcome.ok(item(config))).orElseGet(() -> Outcome.of(Outcome.Status.NOT_FOUND));
+    }
+
+    /**
+     * Probes the server and pulls its manifest now (C5 refreshServer): what the gateway does at add time and in its loop. A failure of the
+     * connection is no error here, it is the status and the error of the server in the answer. At most one per server per
+     * {@code refreshInterval}.
+     */
+    public Outcome<Item> refresh(String requestId, String serverId) {
+        if (store.config(serverId).isEmpty()) {
+            return Outcome.of(Outcome.Status.NOT_FOUND);
+        }
+        Instant now = clock.instant();
+        Instant[] previous = {null};
+        refreshed.compute(serverId, (id, last) -> {
+            previous[0] = last;
+            return last != null && Duration.between(last, now).compareTo(refreshInterval) < 0 ? last : now;
+        });
+        if (previous[0] != null && Duration.between(previous[0], now).compareTo(refreshInterval) < 0) {
+            long wait = Math.max(1, refreshInterval.minus(Duration.between(previous[0], now)).plusMillis(999).toSeconds());
+            return new Outcome<>(Outcome.Status.TOO_MANY_REQUESTS, null, "refresh_too_frequent", Long.toString(wait));
+        }
+        Optional<ServerConfig> after = checks.check(requestId, serverId);
+        return after.<Outcome<Item>>map(config -> Outcome.ok(item(config))).orElseGet(() -> Outcome.of(Outcome.Status.NOT_FOUND));
     }
 
     private static boolean allKnown(JsonNode body, Set<String> fields) {
         return body.propertyNames().stream().allMatch(fields::contains);
-    }
-
-    /** The settings that result: {@code current} (null for a create) overlaid with the fields of the body, checked as a whole. */
-    private Outcome<ServerConfig> parse(String serverId, String system, JsonNode body, boolean create, ServerConfig current) {
-        if (!serverId.equals("mcp-" + system)) {
-            return Outcome.rejected("server_id_mismatch", "serverId must be mcp-<system>");
-        }
-        if (ReservedSystemIds.isReserved(system)) {
-            return Outcome.rejected("system_reserved", system + " is a reserved system id: mcp-" + system + " is the name of a platform component");
-        }
-        URI url = current == null ? null : current.internalUrl();
-        if (body.has("internalUrl")) {
-            String text = body.get("internalUrl").isString() ? body.get("internalUrl").asString() : "";
-            try {
-                url = URI.create(text);
-            } catch (IllegalArgumentException e) {
-                return Outcome.rejected("invalid_request", null);
-            }
-            if (text.length() > 255 || !"https".equals(url.getScheme()) || url.getHost() == null || url.getUserInfo() != null) {
-                return Outcome.rejected("invalid_request", null);
-            }
-        }
-        ServerConfig.Credential credential = current == null ? null : current.credential();
-        if (body.has("credential")) {
-            Optional<ServerConfig.Credential> parsed = credential(body.get("credential"));
-            if (parsed.isEmpty()) {
-                return Outcome.rejected("invalid_request", null);
-            }
-            credential = parsed.get();
-        }
-        boolean enabled = current == null || current.enabled();
-        boolean adapter = current != null && current.adapter();
-        for (String flag : List.of("enabled", "adapter")) {
-            if (body.has(flag) && !body.get(flag).isBoolean()) {
-                return Outcome.rejected("invalid_request", null);
-            }
-        }
-        enabled = body.has("enabled") ? body.get("enabled").asBoolean() : enabled;
-        adapter = body.has("adapter") ? body.get("adapter").asBoolean() : adapter;
-        if (!create && body.isEmpty()) {
-            return Outcome.rejected("invalid_request", null);
-        }
-        if (credential.acceptedTypes().contains("service-account") && credential.acceptedTypes().size() > 1) {
-            // context.credentialType is one default type: a mixed set would hide a service account from the rules about it (CC-168).
-            return Outcome.rejected("credential_types_mixed", "acceptedTypes mixes service-account with user types");
-        }
-        if (!credential.acceptedTypes().contains(credential.type())) {
-            return Outcome.rejected("credential_type_not_accepted", "type must be one of acceptedTypes");
-        }
-        return Outcome.ok(new ServerConfig(serverId, system, url, credential, enabled, adapter));
     }
 
     private static Optional<ServerConfig.Credential> credential(JsonNode node) {
@@ -249,9 +433,9 @@ public final class ServerAdmin {
     }
 
     /**
-     * Removes the server and everything of it: its tools leave {@code tools/list} (listChanged to the clients), its certificate no longer
-     * gets policy data, its namespace is free, the entries of the scope mapping for the types of that namespace and the overrides aimed at it
-     * are removed and audited one by one.
+     * Removes the server and everything of it: its tools leave {@code tools/list} (listChanged to the clients), the gateway no longer pulls
+     * from it or pushes policy data to it, its namespace is free, the entries of the scope mapping for the types of that namespace and the
+     * overrides aimed at it are removed and audited one by one.
      */
     public Outcome<Void> delete(String requestId, String serverId, GatewayUser administrator) {
         List<MappingCleanup.Removed> removedScopes = new ArrayList<>();
@@ -297,6 +481,7 @@ public final class ServerAdmin {
                     .outcome("ok")));
             log.info("{} removed: {} scope mapping entries and {} overrides went with it", serverId, removedScopes.size(),
                     removedOverrides.size());
+            refreshed.remove(serverId);
             onDeleted.accept(serverId);
             applyHere();
         }

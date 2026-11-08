@@ -41,10 +41,18 @@ final class AdminResponses {
     }
 
     ResponseEntity<String> error(HttpStatus status, String requestId, String code, String reason, String message) {
+        return error(status, requestId, code, reason, null, message);
+    }
+
+    /** {@code manifestReason}: with reason manifest_invalid, why the manifest failed (C5 ServerRejected). */
+    ResponseEntity<String> error(HttpStatus status, String requestId, String code, String reason, String manifestReason, String message) {
         ObjectNode body = json.createObjectNode();
         body.put("error", code);
         if (reason != null) {
             body.put("reason", reason);
+        }
+        if (manifestReason != null) {
+            body.put("manifestReason", manifestReason);
         }
         if (message != null) {
             body.put("message", message.length() > 500 ? message.substring(0, 500) : message);

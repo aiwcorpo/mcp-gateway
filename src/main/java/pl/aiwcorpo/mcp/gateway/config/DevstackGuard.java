@@ -22,7 +22,7 @@ import io.micrometer.core.instrument.MeterRegistry;
  * environment only, never from a property source). The acknowledgements live in the configuration of the deployment, not in the
  * image: a deployment block that carries both of them with the profile is carried as a whole, so this protects against a
  * setting that slips in alone, not against copying the whole block (the gauge and the WARN make it visible). The relaxations are: signing keys named {@code test-*} (internal JWT),
- * a bootstrap of the registry from the manifest a server serves itself (its tools and its policies are approved on first use),
+ * a bootstrap of the registry that approves the connection, the policies and the tools of a server on first use, servers on the loopback interface,
  * plain http for the public URL and the IdP, and keys or cursor keys that are not shared (generated per process), and a private key of the public TLS port that every user of the host can read.
  * The pattern is the one of the server starter (profile {@code devstack}, {@code aiwcorpo.mcp.platform.devstack.acknowledged}).
  */
@@ -45,6 +45,9 @@ public final class DevstackGuard {
         }
         if (p.allowPlainHttp()) {
             used.add("gateway.allow-plain-http");
+        }
+        if (p.servers().allowLoopback()) {
+            used.add("gateway.servers.allow-loopback (servers on the loopback interface)");
         }
         if (!https(p.publicUrl())) {
             used.add("gateway.public-url is not https");
