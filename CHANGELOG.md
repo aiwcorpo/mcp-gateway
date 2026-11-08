@@ -17,7 +17,7 @@ platform, and removed again, without restarting anything and without a policy re
 - **Policies of a server are approved with its tools.** The manifest brings the policy fragment and the resource type declarations;
   `policiesHash` covers both. A new or changed hash waits for `POST /admin/v1/registry/servers/{serverId}/policies/approve`
   (`GET .../policies/pending` shows the difference) and until then the tools of the server are blocked. The definition check of a running server
-  also reads its `GET /mcp-manifest`: other policies than the approved ones put the server back in `pending_approval` (source `server`). The
+  also reads its manifest: other policies than the approved ones put the server back in `pending_approval` (source `server`). The
   resource types are the union of the approved declarations only; a namespace belongs to the first server that declared it
   (`namespace_conflict`).
 - **Decisions on `call`** use the base schema, the platform policies of the contracts and the overrides aimed at the gateway. `User.scopes`
@@ -29,12 +29,26 @@ platform, and removed again, without restarting anything and without a policy re
   approved declarations and against the base schema and the fragment of the target (`gateway`, `all-servers` or a `serverId`). One revision
   (an integer that only rises) is raised by every change of the mapping, the overrides, the allowed clients and the approvals; the internal JWT
   carries it as `prv`.
-- **`GET /internal/v1/policy-data`** on the internal port for servers: the certificate must come from the internal CA and its CN must be a
-  registered `serverId`; the answer holds the revision, the scope mapping reduced to the namespace of the server, the allowed clients, the
-  overrides for that server and for all servers and the policies hash approved for it; `ETag` and `If-None-Match`.
-- **Identity of a server:** there is no `tlsName`. The gateway accepts for a server only a certificate of the internal CA with the SAN
-  `<serverId>.internal` and one CN equal to `serverId` (`V12` drops the column). `adapter` is set when a server is added and never patched; a
-  held manifest of another kind than the server is registered as disables it.
+- **Policy data is pushed** to every server (`POST /.well-known/mcp-policy-data`, purpose `policy-data`, CC-249): the revision, the scope mapping
+  reduced to the namespace of the server, the allowed clients, the overrides for that server and for all servers and the policies hash approved
+  for it; after every change of the revision and at least every 60 s. A tool call answered `409 policy_data_stale` gets a push and one
+  repetition with a new token.
+- **A server is added by its address** (`createServer`, CC-249, contracts 7.0.0): the gateway checks the address (loopback, link-local,
+  unspecified, multicast and broadcast refused for every resolved address and again at every connection), reads the certificate with a handshake
+  that sends no client certificate, pulls `GET /.well-known/mcp-manifest` and takes `serverId` = `mcp-<system>` from it. The server starts
+  `pending_approval` with everything pending, the `READ_ONLY` tools included; a pulled manifest approves nothing. The trust is chosen per server by
+  `POST /admin/v1/servers/{serverId}/connection/approve` (fresh MFA): `ca` (default JVM trust store plus `MCP_SERVER_TRUSTED_CAS`, standard
+  host name check), `pinned` (SHA-256 of the DER of one certificate) or `plain` (`http` with `allowPlainHttp`). `adapter` is derived from
+  `source: adapter` of the first manifest and never changes. `POST .../refresh` (no MFA, one per 5 s per server, `429 refresh_too_frequent`).
+  The gateway pulls the manifest again at least every 60 s: a changed hash is pending and the tools wait; a pinned server that presents another
+  certificate is `certificate_changed` with the new fingerprint as `pendingConnection`; a `ca` renewal needs nothing. Flyway `V14` adds the
+  connection to `servers` and renames the source `ci` to `manifest`.
+- **Internal JWT purpose** (`use`): `call` for the MCP endpoint of a server and for the broker, `manifest` and `policy-data` for the two
+  well-known paths. The public key set is served at `/.well-known/mcp-jwks.json` on the public port (servers fetch their keys from it).
+- **Removed:** `PUT /admin/v1/registry/servers/{serverId}` and the certificate `mcp-registry-ci-<serverId>`, `PUT
+  /admin/v1/registry/adapters/{serverId}` and `mcp-adapter-<serverId>`, `GET /internal/v1/policy-data` and its client certificate check, the
+  pinning of the CN and SAN `<serverId>.internal` of a server (the broker keeps its pinned name), the `internalUrl` of `PATCH`, the automatic
+  approval of `READ_ONLY` tools by a registration, and the `definition_registered` event.
 - **Fresh MFA:** `approveServerPolicies`, `putScopeMapping`, `deleteOverride`, `createServer`, `deleteServer` and every `updateServer` except a
   body that only sets `enabled: false` need `auth_time` within 300 s and proof of a second factor in the token (an `amr` of `mfa`, `otp`, `hwk`
   or `totp`, or an `acr` listed in `MCP_ADMIN_MFA_ACR_VALUES`; `MCP_ADMIN_MFA_AMR_VALUES`); otherwise `401 step_up_required`, audited.

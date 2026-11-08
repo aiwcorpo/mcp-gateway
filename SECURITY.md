@@ -16,8 +16,9 @@ This repository has no bug bounty.
   header the client sent (`Authorization`, `X-MCP-*`, `X-PAT-*`).
 - A different answer for "does not exist" and "not allowed" where the contract wants `not_found_or_denied`.
 - A session, a stream, a cursor or a pending confirmation of one user that another user can use.
-- A caller without the right client certificate name that gets through on the admin port, or a manifest that an
-  adapter or a pipeline of another server can store.
+- A caller without the right client certificate name that gets through on the admin port, or a manifest that a
+  server other than the one at the address an administrator gave can get stored, or a connection to an address that
+  the address rules refuse (loopback, link-local, unspecified, multicast) or under a trust nobody approved.
 - A request that makes the gateway call a server without a credential or without the checks after Redis, the database,
   the broker or the policy store failed (the gateway is meant to fail closed), or an emergency switch that does not
   hold on every instance within 5 seconds.

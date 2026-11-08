@@ -1,7 +1,7 @@
 # Install the gateway
 
 The gateway with its own PostgreSQL and Redis on one Linux host with Docker. The other components (identity provider, credential
-broker, MCP servers) run elsewhere; you give the addresses of the first two here and add the servers afterwards.
+broker, MCP servers) run elsewhere; you give the addresses of the first two here and add the servers afterwards by their address.
 
 ## Prerequisites
 
@@ -9,7 +9,8 @@ broker, MCP servers) run elsewhere; you give the addresses of the first two here
 - From your internal CA: a certificate for the gateway with CN `mcp-gateway` and SAN `mcp-gateway.internal`, for server and client
   use, and the CA certificate.
 - The address of the identity provider and of the credential broker.
-- A TLS reverse proxy for the public address. It forwards `/mcp`, `/s/` and `/.well-known/oauth-protected-resource` to port 8080.
+- A TLS reverse proxy for the public address. It forwards `/mcp`, `/s/`, `/.well-known/oauth-protected-resource` and
+  `/.well-known/mcp-jwks.json` (the public keys that MCP servers verify the gateway's tokens with) to port 8080.
 
 ## Install
 
@@ -62,34 +63,48 @@ the change within a few seconds.
 
 ### Add a server
 
-1. In the portal (Administration, Servers), or with the admin API, add the server: its `serverId` is `mcp-<system>`, the address is its
-   internal HTTPS URL, and the credential says how the broker gets the user's credential for it. The certificate of the server comes
-   from the internal CA with CN `mcp-<system>` and SAN `mcp-<system>.internal` (server and client use); the gateway accepts no other
-   certificate for it. Adding, changing (except switching off with `enabled: false`) and removing a server, and approving policies,
-   need a token of a fresh MFA login (`auth_time` within 5 minutes and an `amr` of `mfa`, `otp`, `hwk` or `totp`, or an `acr` listed in
-   `MCP_ADMIN_MFA_ACR_VALUES`).
+A server author builds the server from the template and runs it anywhere, with a certificate from a public or company CA, with the self-signed
+certificate that the template generates at its first start, or over plain `http` inside the Docker network of the platform. You need its URL and
+nothing else: no certificate from the internal CA is made for a server, the gateway presents no client certificate to it, and nobody creates a token.
+
+1. In the portal (Administration, Servers), or with the admin API, add the server by its URL. The gateway checks the address (loopback,
+   link-local, unspecified and multicast addresses are refused, whatever way they are written and whatever a name resolves to), reads the
+   certificate, pulls the manifest from `/.well-known/mcp-manifest` and takes the `serverId` (`mcp-<system>`) from it. For `http` set
+   `allowPlainHttp`. Adding, changing (except switching off), removing and every approval need a token of a fresh MFA login (`auth_time` within
+   5 minutes and an `amr` of `mfa`, `otp`, `hwk` or `totp`, or an `acr` listed in `MCP_ADMIN_MFA_ACR_VALUES`).
 
     ```bash
     curl --cert bff.crt --key bff.key --cacert ca.crt -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
-      https://gateway.corp.internal:8443/admin/v1/servers -d '{"serverId":"mcp-notes","system":"notes",
-      "internalUrl":"https://mcp-notes.corp.internal:8443/mcp","credential":{"required":true,"acceptedTypes":["user-oauth"],"type":"user-oauth"}}'
+      https://gateway.corp.internal:8443/admin/v1/servers -d '{"internalUrl":"https://mcp-notes.corp.internal:8443/mcp"}'
     ```
 
-2. The server's pipeline registers its manifest (`PUT /admin/v1/registry/servers/mcp-notes`). Tools that only read are approved by that
-   call; the others, and the policies of the server, wait in the portal.
-3. Approve the policies (and the tools that wait). Until then the server has no tools for anyone.
+    The answer shows the server as `pending_approval` with the certificate the gateway saw (`pendingConnection`: subject, issuer, names, end of
+    validity and its SHA-256 fingerprint) and the trust it proposes.
+2. Approve the connection with the fingerprint you checked with the author of the server: `ca` when the certificate is signed by a CA that the
+   gateway trusts and names the host of the address (the default trust store of the JVM, plus the PEM bundle in `MCP_SERVER_TRUSTED_CAS` for a
+   company CA: put the file next to the other certificates and set it in `gateway.env`), `pinned` for a self-signed certificate (or instead of
+   `ca`, to be stricter), `plain` for `http`. A pinned server that later presents another certificate is `certificate_changed`, unreachable, and
+   shows the new fingerprint for your approval; a `ca` server that renews its certificate needs nothing.
+3. Approve the policies and the tools. Every tool waits, the ones that only read included, and a tool is listed and callable only when the
+   connection, the policies and the tool are approved.
 4. Add the system in the credential broker if it is new, and map groups to the resources of the server (Administration, Scope mapping).
+
+The gateway looks at every server at least once a minute (the manifest, the certificate) and pushes it the policy data after every change and at
+least once a minute. A changed definition or policy waits for approval like the first one; a server that cannot be reached is `unreachable` in the list
+and its calls are refused as `upstream_unavailable`. `POST /admin/v1/servers/mcp-notes/refresh` looks at once (no fresh MFA; one per 5 seconds).
+The server fetches its keys from `https://<your domain>/.well-known/mcp-jwks.json`: the reverse proxy forwards that path to port 8080 too.
 
 ### Remove a server
 
 Delete it in the portal, or `DELETE /admin/v1/servers/mcp-notes`. Its tools leave every `tools/list` and clients are told that the list
-changed; calls are refused as for an unknown tool. Its approvals, policies and emergency switches go with it, so do the entries of the
+changed; calls are refused as for an unknown tool; the gateway no longer looks at it. Its approvals, connection, policies and emergency switches go with it, so do the entries of the
 scope mapping for its resource types, and its name is free again. The system in the broker is removed there.
 
 ### Change a server
 
-`PATCH /admin/v1/servers/mcp-notes` with `internalUrl`, `credential` or `enabled` and `If-Match` set to the `ETag` of the last `GET`
-(whether a server is an adapter is set when it is added). `enabled: false` takes a
+`PATCH /admin/v1/servers/mcp-notes` with `credential` or `enabled` and `If-Match` set to the `ETag` of the last `GET`
+(the address, `allowPlainHttp` and whether a server is an adapter are set when it is added: for another address remove the server and add it
+again; for another certificate at the same address approve the connection). `enabled: false` takes a
 server out of service and keeps its approvals.
 
 ## Certificate of the identity provider
@@ -106,7 +121,7 @@ keytool -importcert -noprompt -alias corp-ca -file corp-ca.crt -keystore certs/j
 | Port | For |
 | --- | --- |
 | 8080 | MCP clients through your reverse proxy, plain HTTP. Bound to 127.0.0.1; for a proxy on another host set `GATEWAY_HTTP_BIND=0.0.0.0` in a `.env` file here. |
-| 8443 | TLS with the gateway certificate: the broker and the MCP servers fetch the internal JWT keys here. |
+| 8443 | TLS with the gateway certificate: the broker fetches the internal JWT keys here, and the admin API is here. The MCP servers fetch the keys from the public address (`/.well-known/mcp-jwks.json`, port 8080). |
 
 ## Closed network
 
