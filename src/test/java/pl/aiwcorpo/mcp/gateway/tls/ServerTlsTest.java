@@ -57,7 +57,7 @@ class ServerTlsTest {
     void caAcceptsACertificateOfTheBundleThatNamesTheHost() throws Exception {
         HttpResponse<String> response = get(WITH_BUNDLE.client(ServerTls.CA, null, Duration.ofSeconds(5)), env.jira, "https");
 
-        assertThat(response.statusCode()).as("the server answers (401: no token); the handshake held").isEqualTo(401);
+        assertThat(response.statusCode()).as("the server answers the open manifest; the handshake held").isEqualTo(200);
     }
 
     @Test
@@ -82,7 +82,7 @@ class ServerTlsTest {
     void pinnedAcceptsExactlyTheOneCertificateWithNoChainAndNoName() throws Exception {
         for (TestMcpServer server : new TestMcpServer[] {selfSigned, otherHost}) {
             HttpResponse<String> response = get(DEFAULTS_ONLY.client(ServerTls.PINNED, env.fingerprint(server), Duration.ofSeconds(5)), server, "https");
-            assertThat(response.statusCode()).as("self-signed, and a certificate for another host, both pinned").isEqualTo(401);
+            assertThat(response.statusCode()).as("self-signed, and a certificate for another host, both pinned").isEqualTo(200);
         }
     }
 
@@ -98,7 +98,7 @@ class ServerTlsTest {
     void plainSpeaksHttpToAServerThatDoesNotSpeakTls() throws Exception {
         HttpResponse<String> response = get(WITH_BUNDLE.client(ServerTls.PLAIN, null, Duration.ofSeconds(5)), plain, "http");
 
-        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.statusCode()).isEqualTo(200);
     }
 
     @Test

@@ -23,7 +23,7 @@ public class ManifestFetcher {
         if (!server.connectionApproved()) {
             return Optional.empty();
         }
-        ServerLinks.Pull pull = links.pullManifest(server.internalUrl(), server.serverId(), server.connection().tlsMode(),
+        ServerLinks.Pull pull = links.pullManifest(server.internalUrl(), server.connection().tlsMode(),
                 server.connection().fingerprint());
         return pull.succeeded() ? Optional.of(pull.manifest()) : Optional.empty();
     }

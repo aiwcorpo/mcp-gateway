@@ -127,19 +127,15 @@ public final class ServerLinks {
         return internalUrl.resolve("/.well-known/" + name);
     }
 
-    /**
-     * {@code GET /.well-known/mcp-manifest} under a trust. {@code audience} is the {@code serverId} the token is for; a server that is not
-     * added yet has none (the id comes from its manifest), so the caller then gives a placeholder (see {@code ServerAdmin}).
-     */
-    public Pull pullManifest(URI internalUrl, String audience, String tlsMode, String fingerprint) {
+    /** {@code GET /.well-known/mcp-manifest} under a trust, without a token: the server serves its manifest openly (C14). */
+    public Pull pullManifest(URI internalUrl, String tlsMode, String fingerprint) {
         Optional<AddressPolicy.Refusal> refusal = checkAddress(internalUrl);
         if (refusal.isPresent()) {
             return Pull.failed(Failure.ADDRESS_REFUSED, refusal.get().message());
         }
         String requestId = UuidV7.next();
         HttpRequest request = HttpRequest.newBuilder(wellKnown(internalUrl, "mcp-manifest")).timeout(REQUEST_TIMEOUT)
-                .header("Authorization", "Bearer " + tokens.forManifest(audience, requestId)).header("X-Request-Id", requestId)
-                .header("Accept", "application/json").GET().build();
+                .header("X-Request-Id", requestId).header("Accept", "application/json").GET().build();
         try {
             HttpResponse<InputStream> response = client(tlsMode, fingerprint).send(request, HttpResponse.BodyHandlers.ofInputStream());
             try (InputStream in = new BoundedInputStream(response.body(), MAX_MANIFEST_BYTES)) {

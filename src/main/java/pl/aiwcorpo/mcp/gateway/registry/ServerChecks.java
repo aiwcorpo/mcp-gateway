@@ -40,12 +40,6 @@ public final class ServerChecks implements DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(ServerChecks.class);
 
-    /**
-     * The audience of the token of the first pull, when the server is not added yet and so has no {@code serverId}: that is derived from
-     * its manifest. Every later pull names the real one.
-     */
-    public static final String UNKNOWN_SERVER = "mcp-pending";
-
     /** A first contact with an address: what the probe saw and what the pull brought, or why it failed. */
     public sealed interface Contact {
         record Reached(ServerConfig.PendingConnection pending, JsonNode manifest) implements Contact {
@@ -147,7 +141,7 @@ public final class ServerChecks implements DisposableBean {
      */
     public Contact contact(URI url, Instant now) {
         if (!"https".equals(url.getScheme())) {
-            ServerLinks.Pull pull = links.pullManifest(url, UNKNOWN_SERVER, ServerTls.PLAIN, null);
+            ServerLinks.Pull pull = links.pullManifest(url, ServerTls.PLAIN, null);
             return pull.succeeded() ? new Contact.Reached(new ServerConfig.PendingConnection(ServerTls.PLAIN, null, null, null, java.util.List.of(), null,
                     false, "first_connection", now), pull.manifest()) : failed(pull, false);
         }
@@ -161,7 +155,7 @@ public final class ServerChecks implements DisposableBean {
                     ? "the TLS handshake with the server failed" : "no TLS handshake could be made with the address");
         }
         String mode = ConnectionRules.proposal(true, presented.validatesAsCa());
-        ServerLinks.Pull pull = links.pullManifest(url, UNKNOWN_SERVER, mode, presented.leaf().fingerprint());
+        ServerLinks.Pull pull = links.pullManifest(url, mode, presented.leaf().fingerprint());
         if (!pull.succeeded()) {
             return failed(pull, true);
         }
@@ -278,7 +272,7 @@ public final class ServerChecks implements DisposableBean {
             if (!config.allowPlainHttp()) {
                 return Observation.failed(ServerConfig.UNREACHABLE, "plain_http_not_allowed");
             }
-            return afterPull(links.pullManifest(url, serverId, ServerTls.PLAIN, null), config, null, false, null);
+            return afterPull(links.pullManifest(url, ServerTls.PLAIN, null), config, null, false, null);
         }
         if (approved == null) {
             ServerTls.Presented presented;
@@ -290,10 +284,10 @@ public final class ServerChecks implements DisposableBean {
                 return Observation.failed(ServerConfig.UNREACHABLE, "tls_handshake_failed");
             }
             String mode = ConnectionRules.proposal(true, presented.validatesAsCa());
-            ServerLinks.Pull pull = links.pullManifest(url, serverId, mode, presented.leaf().fingerprint());
+            ServerLinks.Pull pull = links.pullManifest(url, mode, presented.leaf().fingerprint());
             return afterPull(pull, config, pendingOf(mode, presented, "first_connection", now), false, null);
         }
-        ServerLinks.Pull pull = links.pullManifest(url, serverId, approved.tlsMode(), approved.fingerprint());
+        ServerLinks.Pull pull = links.pullManifest(url, approved.tlsMode(), approved.fingerprint());
         if (pull.succeeded()) {
             ServerCertificate leaf = pull.certificate().orElse(null);
             boolean renewed = ServerTls.CA.equals(approved.tlsMode()) && leaf != null && !leaf.fingerprint().equals(approved.fingerprint());

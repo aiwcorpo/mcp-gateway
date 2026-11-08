@@ -104,8 +104,8 @@ its address and pulls everything itself; the server connects to nothing but the 
   to every server after each change of the revision and at least every 60 s; a server that answers `409 policy_data_stale` to a tool call gets a
   push and the call once more with a new token.
 
-Every internal JWT carries `use`: `call` (the MCP endpoint of a server and the broker), `manifest` or `policy-data`; a server refuses a token of
-another purpose.
+Every internal JWT carries `use`: `call` (the MCP endpoint of a server and the broker) or `policy-data`; a server refuses a token of
+another purpose. The manifest of a server is pulled without a token (C14).
 
 Gateway decisions on `call` use the platform policies of `mcp-contracts` (a user needs the group `mcp-<system>-read`, `-write` or
 `-destructive`, and a write needs the scopes of the resources it names) and the overrides of the administrator. The policies of a system

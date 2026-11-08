@@ -119,7 +119,7 @@ class ServerAddressAndPurposeTest extends GatewayTestBase {
         // The same server and the same name, but now the host resolves to an address that is refused (as DNS rebinding makes it).
         ServerLinks strict = new ServerLinks(new AddressPolicy(false), serverTls, issuer, JSON);
 
-        ServerLinks.Pull pull = strict.pullManifest(URI.create("https://127.0.0.1:" + server.port() + "/mcp"), "mcp-addr", "ca", null);
+        ServerLinks.Pull pull = strict.pullManifest(URI.create("https://127.0.0.1:" + server.port() + "/mcp"), "ca", null);
         assertThat(pull.succeeded()).isFalse();
         assertThat(pull.failure()).isEqualTo(ServerLinks.Failure.ADDRESS_REFUSED);
         assertThat(strict.pushPolicyData(URI.create("https://127.0.0.1:" + server.port() + "/mcp"), "mcp-addr", "ca", null, 1, JSON.createObjectNode())
@@ -155,44 +155,33 @@ class ServerAddressAndPurposeTest extends GatewayTestBase {
                 assertThat(claims(request.header("authorization")).path("use").asString()).as(request.rpcMethod()).isEqualTo("call");
             }
         });
-        assertThat(env.jira.manifestReads()).isNotEmpty().allSatisfy(read ->
-                assertThat(claims(read.header("authorization")).path("use").asString()).isEqualTo("manifest"));
+        assertThat(env.jira.manifestReads()).as("the manifest is pulled without a token").isNotEmpty().allSatisfy(read ->
+                assertThat(read.header("authorization")).isNull());
         assertThat(env.jira.policyPushes()).allSatisfy(push ->
                 assertThat(claims(push.header("authorization")).path("use").asString()).isEqualTo("policy-data"));
-        for (TestMcpServer.RecordedRequest read : env.jira.manifestReads()) {
-            JsonNode claims = claims(read.header("authorization"));
-            assertThat(claims.path("sub").asString()).as("the service variant: no user, no tool").isEqualTo("system:mcp-gateway");
-            assertThat(claims.has("tool") || claims.has("usr")).isFalse();
-            assertThat(claims.path("aud").asString()).isEqualTo("mcp-jira");
-        }
         assertThat(env.broker.received()).as("the broker takes call tokens only, and refused none").isNotEmpty().allSatisfy(received ->
                 assertThat(received.rejectReason()).isNull());
     }
 
     @Test
-    void aTokenOfOnePurposeIsRefusedForAnotherAndEveryTokenWorksOnce() throws Exception {
-        String rid = UuidV7.next();
-        String manifest = issuer.forManifest("mcp-jira", rid);
-        String call = issuer.forUser("mcp-jira", alice(), "get_issue", UuidV7.next());
+    void theManifestNeedsNoTokenAndAPolicyDataTokenIsRefusedForAnotherPurposeAndWorksOnce() throws Exception {
+        env.jira.clearRequests();
+        String ridCall = UuidV7.next();
+        assertThat(manifestGet(null, ridCall)).as("no token at the manifest").isEqualTo(200);
+        assertThat(manifestGet(issuer.forService("mcp-jira", ridCall), ridCall)).as("a token that arrives is not read").isEqualTo(200);
+        assertThat(refused(env.jira.manifestReads())).isEmpty();
+
+        String ridUser = UuidV7.next();
+        assertThat(pushWith(issuer.forUser("mcp-jira", alice(), null, ridUser), ridUser)).as("a user token at policy-data").isEqualTo(401);
+        String ridService = UuidV7.next();
+        assertThat(pushWith(issuer.forService("mcp-jira", ridService), ridService)).as("a call token at policy-data").isEqualTo(401);
+        assertThat(refused(env.jira.policyPushes())).containsExactly("wrong_purpose", "wrong_purpose");
+
         String ridData = UuidV7.next();
         String data = issuer.forPolicyData("mcp-jira", ridData, 1);
-        String ridCall = UuidV7.next();
-        env.jira.clearRequests();
-
-        assertThat(manifestGet(issuer.forUser("mcp-jira", alice(), null, ridCall), ridCall)).as("a call token at the manifest").isEqualTo(401);
-        assertThat(manifestGet(data, ridData)).as("a policy-data token at the manifest").isEqualTo(401);
-        // The loop of the gateway may pull the manifest meanwhile, which is a read like any other: only what the test sent is judged here.
-        assertThat(refused(env.jira.manifestReads())).containsExactly("wrong_purpose", "wrong_purpose");
-        assertThat(manifestGet(manifest, rid)).isEqualTo(200);
-        assertThat(manifestGet(manifest, rid)).as("the same token again").isEqualTo(401);
-        assertThat(refused(env.jira.manifestReads())).last().isEqualTo("replayed_jti");
-        assertThat(call).isNotEqualTo(manifest);
-
-        String ridPush = UuidV7.next();
-        assertThat(pushWith(issuer.forUser("mcp-jira", alice(), null, ridPush), ridPush)).as("a call token at policy-data").isEqualTo(401);
-        String ridManifest = UuidV7.next();
-        assertThat(pushWith(issuer.forManifest("mcp-jira", ridManifest), ridManifest)).as("a manifest token at policy-data").isEqualTo(401);
-        assertThat(refused(env.jira.policyPushes())).containsExactly("wrong_purpose", "wrong_purpose");
+        assertThat(pushWith(data, ridData)).as("the right purpose passes the check").isNotEqualTo(401);
+        assertThat(pushWith(data, ridData)).as("the same token again").isEqualTo(401);
+        assertThat(refused(env.jira.policyPushes())).last().isEqualTo("replayed_jti");
     }
 
     /** The reasons of the requests a server refused, in order. */
@@ -210,7 +199,10 @@ class ServerAddressAndPurposeTest extends GatewayTestBase {
 
     private int sendToJira(String method, String path, String token, String requestId, String body) throws Exception {
         HttpRequest.Builder request = HttpRequest.newBuilder(URI.create("https://127.0.0.1:" + env.jira.port() + path))
-                .header("Authorization", "Bearer " + token).header("X-Request-Id", requestId).timeout(Duration.ofSeconds(5));
+                .header("X-Request-Id", requestId).timeout(Duration.ofSeconds(5));
+        if (token != null) {
+            request.header("Authorization", "Bearer " + token);
+        }
         request.method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body));
         HttpClient client = HttpClient.newBuilder().sslContext(env.noClientCertificateTls).build();
         return client.send(request.build(), HttpResponse.BodyHandlers.discarding()).statusCode();

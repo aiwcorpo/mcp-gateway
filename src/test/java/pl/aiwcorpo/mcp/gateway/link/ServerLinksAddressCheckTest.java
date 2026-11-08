@@ -89,7 +89,6 @@ class ServerLinksAddressCheckTest {
             }
         });
         InternalTokenIssuer tokens = mock(InternalTokenIssuer.class);
-        when(tokens.forManifest(anyString(), anyString())).thenReturn("manifest-token");
         when(tokens.forPolicyData(anyString(), anyString(), anyLong())).thenReturn("policy-data-token");
         links = new ServerLinks(policy, new ServerTls(null), tokens, JSON);
     }
@@ -128,7 +127,7 @@ class ServerLinksAddressCheckTest {
     void anAllowedNameIsConnectedToAndTheListenerSeesIt() throws Exception {
         assertThat(links.checkAddress(tlsUrl())).isEmpty();
 
-        ServerLinks.Pull pull = links.pullManifest(tlsUrl(), "mcp-test", ServerTls.PINNED, fingerprint);
+        ServerLinks.Pull pull = links.pullManifest(tlsUrl(), ServerTls.PINNED, fingerprint);
 
         assertThat(pull.failure()).as("the listener speaks no HTTP, the connection itself is what is shown").isNotEqualTo(ServerLinks.Failure.ADDRESS_REFUSED);
         assertThat(accepted.get()).isPositive();
@@ -141,11 +140,11 @@ class ServerLinksAddressCheckTest {
             answer.set(resolved);
             int before = accepted.get();
 
-            assertThat(links.pullManifest(tlsUrl(), "mcp-test", ServerTls.PINNED, fingerprint).failure()).as(resolved.toString())
+            assertThat(links.pullManifest(tlsUrl(), ServerTls.PINNED, fingerprint).failure()).as(resolved.toString())
                     .isEqualTo(ServerLinks.Failure.ADDRESS_REFUSED);
             assertThat(links.pushPolicyData(tlsUrl(), "mcp-test", ServerTls.PINNED, fingerprint, 1, JSON.readTree("{}")).failure())
                     .isEqualTo(ServerLinks.Failure.ADDRESS_REFUSED);
-            assertThat(links.pullManifest(plainUrl(), "mcp-test", ServerTls.PLAIN, null).failure()).isEqualTo(ServerLinks.Failure.ADDRESS_REFUSED);
+            assertThat(links.pullManifest(plainUrl(), ServerTls.PLAIN, null).failure()).isEqualTo(ServerLinks.Failure.ADDRESS_REFUSED);
             assertThat(links.pushPolicyData(plainUrl(), "mcp-test", ServerTls.PLAIN, null, 1, JSON.readTree("{}")).failure())
                     .isEqualTo(ServerLinks.Failure.ADDRESS_REFUSED);
             assertThatThrownBy(() -> links.probe(tlsUrl())).isInstanceOf(ServerLinks.AddressRefused.class);

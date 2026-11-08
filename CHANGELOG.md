@@ -46,8 +46,8 @@ platform, and removed again, without restarting anything and without a policy re
   The gateway pulls the manifest again at least every 60 s: a changed hash is pending and the tools wait; a pinned server that presents another
   certificate is `certificate_changed` with the new fingerprint as `pendingConnection`; a `ca` renewal needs nothing. Flyway `V14` adds the
   connection to `servers` and renames the source `ci` to `manifest`.
-- **Internal JWT purpose** (`use`): `call` for the MCP endpoint of a server and for the broker, `manifest` and `policy-data` for the two
-  well-known paths. The public key set is served at `/.well-known/mcp-jwks.json` on the public port (servers fetch their keys from it).
+- **Internal JWT purpose** (`use`): `call` for the MCP endpoint of a server and for the broker, `policy-data` for the push of policy data. The manifest is
+  pulled without a token (add, refresh and the runtime loop): a server serves it openly, so there is no `use: manifest` and no `mcp-pending` audience. The public key set is served at `/.well-known/mcp-jwks.json` on the public port (servers fetch their keys from it).
 - **Removed:** `PUT /admin/v1/registry/servers/{serverId}` and the certificate `mcp-registry-ci-<serverId>`, `PUT
   /admin/v1/registry/adapters/{serverId}` and `mcp-adapter-<serverId>`, `GET /internal/v1/policy-data` and its client certificate check, the
   pinning of the CN and SAN `<serverId>.internal` of a server (the broker keeps its pinned name), the `internalUrl` of `PATCH`, the automatic

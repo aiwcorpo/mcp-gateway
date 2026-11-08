@@ -36,12 +36,9 @@ public final class InternalJwtVerifier {
 
     /**
      * What the receiving endpoint allows: the purpose of the token ({@code use}), the service variant and the {@code tool} claim.
-     * {@code placeholderAudience}: the endpoint also takes the audience of a pull that comes before the server has a serverId (the manifest
-     * at the time a server is added).
+     * {@code open}: the endpoint takes no token at all (the manifest, C14).
      */
-    public record RequestRule(String purpose, boolean serviceAllowed, ToolRule toolRule, String toolName, boolean placeholderAudience) {
-
-        public static final String PLACEHOLDER_AUDIENCE = "mcp-pending";
+    public record RequestRule(String purpose, boolean serviceAllowed, ToolRule toolRule, String toolName, boolean open) {
 
         public RequestRule(boolean serviceAllowed, ToolRule toolRule, String toolName) {
             this("call", serviceAllowed, toolRule, toolName, false);
@@ -62,7 +59,7 @@ public final class InternalJwtVerifier {
                 return new RequestRule(false, ToolRule.REQUIRED, null);
             }
             if ("GET".equals(method) && "/.well-known/mcp-manifest".equals(path)) {
-                return new RequestRule("manifest", true, ToolRule.ABSENT, null, true);
+                return new RequestRule(null, false, ToolRule.ABSENT, null, true);
             }
             if ("POST".equals(method) && "/.well-known/mcp-policy-data".equals(path)) {
                 return new RequestRule("policy-data", true, ToolRule.ABSENT, null, false);
@@ -98,7 +95,6 @@ public final class InternalJwtVerifier {
     private final Clock clock;
     private final Map<String, Long> seenJtis = new ConcurrentHashMap<>();
     private volatile boolean adapterReceiver;
-    private volatile boolean holdsPolicyData;
 
     public InternalJwtVerifier(String issuer, String audience, boolean allowTestKeys, KeySource keys, Clock clock) {
         this(issuer, audience, allowTestKeys, false, keys, clock);
@@ -124,15 +120,6 @@ public final class InternalJwtVerifier {
         return this;
     }
 
-    /**
-     * Once a server holds policy data it was connected, so every purpose needs {@code aud} equal to its serverId: the placeholder audience of
-     * the add operation is refused from then on.
-     */
-    public InternalJwtVerifier holdingPolicyData(boolean holds) {
-        this.holdsPolicyData = holds;
-        return this;
-    }
-
     private static boolean pairFits(String risk, String action) {
         return switch (risk) {
             case "READ_ONLY" -> "read".equals(action);
@@ -148,6 +135,9 @@ public final class InternalJwtVerifier {
     }
 
     public Result verify(String authorization, String requestIdHeader, RequestRule rule) {
+        if (rule.open()) {
+            return new Result(null, Map.of());
+        }
         if (authorization == null || !authorization.startsWith("Bearer ") || authorization.length() == 7) {
             return Result.reject("missing_token");
         }
@@ -205,9 +195,7 @@ public final class InternalJwtVerifier {
         if (!issuer.equals(claims.path("iss").asString())) {
             return Result.reject("wrong_issuer");
         }
-        if (!audience.equals(claims.path("aud").asString())
-                && !(rule.placeholderAudience() && !holdsPolicyData && "manifest".equals(claims.path("use").asString())
-                        && RequestRule.PLACEHOLDER_AUDIENCE.equals(claims.path("aud").asString()))) {
+        if (!audience.equals(claims.path("aud").asString())) {
             return Result.reject("wrong_audience");
         }
         long now = Instant.now(clock).getEpochSecond();

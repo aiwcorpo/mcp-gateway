@@ -229,7 +229,6 @@ class AdditionalGroupTest extends GatewayTestBase {
                 .query(String.class).single()).isEqualTo("mcp-ops-ops");
         ops.additionalGroup("get_issue", null);
         ops.serveManifest(null);
-        ops.restart();
         assertThat(adminCall("POST", "/admin/v1/servers", body).statusCode()).isEqualTo(201);
 
         assertThat(status("get_issue")).isEqualTo("pending_approval");

@@ -146,12 +146,6 @@ public final class TestMcpServer implements AutoCloseable {
         return List.copyOf(policyPushes);
     }
 
-    /** A restart of the server: it holds no policy data and takes the placeholder audience of the add operation again. */
-    public void restart() {
-        heldPolicyData = null;
-        verifier.holdingPolicyData(false);
-    }
-
     /** The revision of the policy data the server holds, or -1 when it holds none (as after a restart). */
     public long heldRevision() {
         return heldPolicyData == null ? -1 : heldPolicyData.revision();
@@ -329,21 +323,14 @@ public final class TestMcpServer implements AutoCloseable {
         }
     }
 
-    /** {@code GET /.well-known/mcp-manifest} (C14): the definitions as they are, with their hashes. */
+    /** {@code GET /.well-known/mcp-manifest} (C14): the definitions as they are, with their hashes. Open: no token is asked for or looked at. */
     private void manifest(HttpExchange exchange, Map<String, List<String>> headers, String body) throws IOException {
-        InternalJwtVerifier.Result auth = verifier.verify(first(headers, "authorization"), first(headers, "x-request-id"),
-                InternalJwtVerifier.RequestRule.forHttp("GET", "/.well-known/mcp-manifest"));
-        if (!auth.valid()) {
-            manifestReads.add(new RecordedRequest("GET", headers, body, null, null, 401, auth.reason(), null, null));
-            send(exchange, 401, null, null);
-            return;
-        }
         if (manifestStatus != 200) {
-            manifestReads.add(new RecordedRequest("GET", headers, body, null, null, manifestStatus, null, (String) auth.claims().get("sub"), null));
+            manifestReads.add(new RecordedRequest("GET", headers, body, null, null, manifestStatus, null, null, null));
             send(exchange, manifestStatus, null, null);
             return;
         }
-        manifestReads.add(new RecordedRequest("GET", headers, body, null, null, 200, null, (String) auth.claims().get("sub"), null));
+        manifestReads.add(new RecordedRequest("GET", headers, body, null, null, 200, null, null, null));
         exchange.getResponseHeaders().set("Cache-Control", "no-store");
         JsonNode served = servedManifest != null ? servedManifest : config.adapterReceiver() ? adapterManifest() : manifest();
         send(exchange, 200, "application/json", JSON.writeValueAsString(served));
@@ -391,7 +378,6 @@ public final class TestMcpServer implements AutoCloseable {
         boolean accepted = pl.aiwcorpo.mcp.manifest.PolicyDataGate.acceptRevision(
                 held == null ? java.util.OptionalLong.empty() : java.util.OptionalLong.of(held.revision()), offered);
         if (accepted) {
-            verifier.holdingPolicyData(true);
             heldPolicyData = new pl.aiwcorpo.mcp.manifest.PolicyDataGate.Data(offered,
                     java.util.Optional.ofNullable(data.path("approvedPoliciesHash").asString(null)), true);
         }

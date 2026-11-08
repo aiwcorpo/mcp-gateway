@@ -436,7 +436,8 @@ class ServerConnectionTest extends GatewayTestBase {
             assertThat(tool.path("status").asString()).isEqualTo("pending_approval");
             assertThat(tool.path("source").asString()).isEqualTo("manifest");
         });
-        assertThat(claims(server.manifestReads().getFirst().header("authorization")).path("use").asString()).isEqualTo("manifest");
+        assertThat(server.manifestReads()).as("the loop pulls the manifest without a token").allSatisfy(read ->
+                assertThat(read.header("authorization")).isNull());
         assertThat(callConn().path("error").asString()).as("the approved definition stays in force while the server still serves it").isEmpty();
 
         // The server now runs the new code: what it lists differs from what was approved, so the tool is blocked until the change is approved.

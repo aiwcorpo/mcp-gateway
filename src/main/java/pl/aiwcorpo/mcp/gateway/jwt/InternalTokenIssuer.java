@@ -20,8 +20,8 @@ import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
 /**
  * Issues the internal JWT (C2): a new token for every HTTP request to a server or the broker. {@code tool} only for tools/call and the
  * broker resolve (CC-038); the service variant only where C2 allows it, which the callers decide. The claim {@code use} says what the
- * token is for (CC-249): {@code call} for the MCP endpoint of a server and for the broker, {@code manifest} for
- * {@code GET /.well-known/mcp-manifest}, {@code policy-data} for {@code POST /.well-known/mcp-policy-data}. A receiver refuses a token
+ * token is for (CC-249): {@code call} for the MCP endpoint of a server and for the broker, {@code policy-data} for
+ * {@code POST /.well-known/mcp-policy-data}. The manifest of a server is pulled without a token. A receiver refuses a token
  * of another purpose, so a token minted for one request cannot be replayed for another kind.
  */
 public final class InternalTokenIssuer {
@@ -29,7 +29,6 @@ public final class InternalTokenIssuer {
     public static final String SERVICE_SUBJECT = "system:mcp-gateway";
 
     public static final String CALL = "call";
-    public static final String MANIFEST = "manifest";
     public static final String POLICY_DATA = "policy-data";
 
     private final SigningKeys keys;
@@ -87,11 +86,6 @@ public final class InternalTokenIssuer {
     /** Service variant (no user) for a call: C2 allows it for initialize, tools/list, ping and the broker's GET /v1/systems. */
     public String forService(String audience, String requestId) {
         return service(audience, requestId, CALL, policyRevision.getAsLong());
-    }
-
-    /** The pull of the manifest of a server: {@code GET /.well-known/mcp-manifest}. */
-    public String forManifest(String audience, String requestId) {
-        return service(audience, requestId, MANIFEST, policyRevision.getAsLong());
     }
 
     /** The push of policy data: {@code prv} is the revision of the body that goes with the token, not the revision this instance last read. */
