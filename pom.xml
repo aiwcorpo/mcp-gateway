@@ -13,7 +13,7 @@
 
     <groupId>pl.aiwcorpo.mcp</groupId>
     <artifactId>mcp-gateway</artifactId>
-    <version>2.0.0</version>
+    <version>2.0.1</version>
     <name>MCP Gateway</name>
     <description>The single entry point of the MCP platform for AI clients: authentication, authorization of every tool call, credentials from the broker, audit.</description>
     <url>https://github.com/aiwcorpo/mcp-gateway</url>

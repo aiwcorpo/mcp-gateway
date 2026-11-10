@@ -3,6 +3,13 @@
 The gateway ships as a container image (`ghcr.io/aiwcorpo/mcp-gateway`); the version in `pom.xml` follows SemVer. Local and
 integration builds tag the image `m6-<short sha>`.
 
+## 2.0.1
+
+- Clients on MCP 2026-07-28 accept the tool list again: `tools/list` carries `ttlMs` (60 s) and `cacheScope` `private`, and
+  `server/discover` carries `ttlMs` (5 min) and `cacheScope` `public`, both required on cacheable results by that version. Claude
+  Code 2.1.295 rejected the list without them and showed the server with no capabilities. Results for 2025-11-25, 2025-06-18 and
+  2025-03-26 are unchanged. ([#1](https://github.com/aiwcorpo/mcp-gateway/issues/1))
+
 ## 2.0.0
 
 Built on `mcp-contracts` 7.0.0. Servers, the scope mapping and emergency overrides are runtime data: a new MCP server is added to a running

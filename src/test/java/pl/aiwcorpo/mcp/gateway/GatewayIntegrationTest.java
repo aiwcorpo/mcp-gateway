@@ -147,6 +147,7 @@ class GatewayIntegrationTest extends GatewayTestBase {
         List<String> names = new ArrayList<>();
         list.path("result").path("tools").forEach(t -> names.add(t.path("name").asString()));
         assertThat(names).containsExactlyInAnyOrder("jira__get_issue", "jira__search_issues");
+        assertThat(list.path("result").has("ttlMs")).as("the shape for 2025-11-25 stays as it was").isFalse();
 
         Map<String, String> clientHeaders = new LinkedHashMap<>();
         clientHeaders.put("X-MCP-Credential", "Bearer stolen-pat");
@@ -331,9 +332,14 @@ class GatewayIntegrationTest extends GatewayTestBase {
         JsonNode discovered = JSON.readTree(discover.body()).path("result");
         assertThat(discovered.path("resultType").asString()).isEqualTo("complete");
         assertThat(discovered.path("supportedVersions").toString()).contains("2026-07-28", "2025-11-25");
+        assertThat(discovered.path("ttlMs").asLong()).isPositive();
+        assertThat(discovered.path("cacheScope").asString()).isEqualTo("public");
 
         HttpResponse<String> list = sendModern(token, "tools/list", null, "{}");
-        assertThat(JSON.readTree(list.body()).path("result").path("tools").size()).isEqualTo(2);
+        JsonNode listed = JSON.readTree(list.body()).path("result");
+        assertThat(listed.path("tools").size()).isEqualTo(2);
+        assertThat(listed.path("ttlMs").asLong()).as("the list depends on the user").isPositive();
+        assertThat(listed.path("cacheScope").asString()).isEqualTo("private");
         assertThat(list.headers().firstValue("Mcp-Session-Id")).isEmpty();
 
         HttpResponse<String> call = sendModern(token, "tools/call", "jira__get_issue",

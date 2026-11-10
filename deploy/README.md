@@ -14,7 +14,7 @@ The gateway with its own PostgreSQL and Redis (primary and replica) on one Linux
 1. Download and unpack this directory:
 
     ```bash
-    curl -LO https://github.com/aiwcorpo/mcp-gateway/releases/download/v2.0.0/mcp-gateway-deploy.tar.gz
+    curl -LO https://github.com/aiwcorpo/mcp-gateway/releases/download/v2.0.1/mcp-gateway-deploy.tar.gz
     tar xzf mcp-gateway-deploy.tar.gz && cd mcp-gateway-deploy
     ```
 

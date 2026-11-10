@@ -55,6 +55,10 @@ public class McpEndpoint {
     private static final String META_VERSION = "io.modelcontextprotocol/protocolVersion";
     private static final String META_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities";
     private static final String META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
+    // 2026-07-28 makes ttlMs and cacheScope required on cacheable results. The tool list depends on the user's groups and on
+    // approvals, so it is private and short-lived (a change is also announced as list_changed); discovery is the same for everyone.
+    private static final long TOOLS_LIST_TTL_MS = 60_000;
+    private static final long DISCOVER_TTL_MS = 300_000;
     private static final java.util.regex.Pattern EVENT_STREAM = java.util.regex.Pattern.compile("(^|,)\\s*text/event-stream\\s*(;|,|$)");
     private static final String INVALID_FILTER_BODY = "{\"error\":\"invalid_request\",\"reason\":\"invalid_filter\","
             + "\"message\":\"The query of the address is not a valid filter.\"}";
@@ -450,6 +454,7 @@ public class McpEndpoint {
             ObjectNode result = json.createObjectNode();
             result.set("supportedVersions", json.valueToTree(ProtocolVersions.ALL));
             result.putObject("capabilities").putObject("tools").put("listChanged", true);
+            cacheable(result, DISCOVER_TTL_MS, "public");
             return ok(requestId, result(id, result, true));
         }
         if ("subscriptions/listen".equals(method)) {
@@ -472,11 +477,19 @@ public class McpEndpoint {
                 return error(modern ? HttpStatus.NOT_FOUND : HttpStatus.OK, ctx.requestId(), id, -32601,
                         "Method not found", null, modern);
             }
+            if (modern && "tools/list".equals(method)) {
+                cacheable(result, TOOLS_LIST_TTL_MS, "private");
+            }
             return ok(ctx.requestId(), result(id, result, modern));
         } catch (RpcFailure failure) {
             HttpStatus status = modern && failure.httpStatus() == 400 ? HttpStatus.BAD_REQUEST : HttpStatus.OK;
             return error(status, ctx.requestId(), id, failure.code(), failure.getMessage(), null, modern);
         }
+    }
+
+    private static void cacheable(ObjectNode result, long ttlMs, String scope) {
+        result.put("ttlMs", ttlMs);
+        result.put("cacheScope", scope);
     }
 
     private String result(JsonNode id, ObjectNode result, boolean modern) {
