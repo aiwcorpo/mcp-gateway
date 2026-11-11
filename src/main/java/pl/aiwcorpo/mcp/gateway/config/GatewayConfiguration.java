@@ -86,6 +86,8 @@ import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
 import pl.aiwcorpo.mcp.gateway.tls.InternalTls;
 import pl.aiwcorpo.mcp.gateway.upstream.StreamableHttpClient;
 import pl.aiwcorpo.mcp.gateway.upstream.UpstreamSessions;
+import tools.jackson.core.StreamReadConstraints;
+import tools.jackson.core.json.JsonFactory;
 import tools.jackson.databind.json.JsonMapper;
 
 @Configuration
@@ -96,9 +98,24 @@ public class GatewayConfiguration {
         return Clock.systemUTC();
     }
 
+    /**
+     * The one mapper of the gateway. It parses what clients, servers and administrators send, so its read limits are set here and not
+     * left to the library. A document holds at most one token per four bytes of the largest request (1 MiB, McpEndpoint): real data of
+     * that size fits, and a body of empty objects no longer becomes a tree some thirty times its length. A document is no longer than the
+     * longest body the gateway reads, the answer of a server (gateway.upstream.max-response-bytes, never less than 4 MiB, which also
+     * covers a stored document of 1 MiB as PostgreSQL returns it). 100 levels and numbers of 100 characters are far beyond any message.
+     */
     @Bean
-    JsonMapper gatewayJson() {
-        return JsonMapper.builder().build();
+    JsonMapper gatewayJson(GatewayProperties properties) {
+        int longest = Math.max(4 * 1024 * 1024, properties.upstream().maxResponseBytes());
+        StreamReadConstraints limits = StreamReadConstraints.builder()
+                .maxDocumentLength(longest)
+                .maxStringLength(longest)
+                .maxTokenCount(1024 * 1024 / 4)
+                .maxNestingDepth(100)
+                .maxNumberLength(100)
+                .build();
+        return JsonMapper.builder(JsonFactory.builder().streamReadConstraints(limits).build()).build();
     }
 
     @Bean
