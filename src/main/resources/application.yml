@@ -39,6 +39,10 @@ spring:
   mvc:
     problemdetails:
       enabled: false
+    # The gateway takes no form bodies: the filter would read the whole form body of a PUT, PATCH or DELETE before authentication.
+    formcontent:
+      filter:
+        enabled: false
   datasource:
     url: ${MCP_DB_URL}
     username: ${MCP_DB_USER:gateway}

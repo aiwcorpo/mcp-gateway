@@ -2,11 +2,17 @@ package pl.aiwcorpo.mcp.gateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+
+import javax.net.ssl.SSLSocket;
 
 import org.junit.jupiter.api.Test;
 
@@ -84,6 +90,25 @@ class AdminApiTest extends GatewayTestBase {
         }
         assertThat(admin(env.bffTls, "PATCH", "/admin/v1/catalog", token, "{}").statusCode()).as("a method the contract lacks")
                 .isEqualTo(403);
+    }
+
+    @Test
+    void aFormBodyIsNotReadBeforeTheClientCertificateIsChecked() throws Exception {
+        // The body is declared but never sent: the 401 comes without the gateway waiting for it.
+        try (SSLSocket socket = withoutCertificate("DELETE /admin/v1/servers/x", "application/x-www-form-urlencoded", 1024 * 1024)) {
+            assertThat(new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII)).readLine())
+                    .startsWith("HTTP/1.1 401");
+        }
+    }
+
+    /** A TLS connection to the internal port without a client certificate that sends the head of a request and one byte of its body. */
+    private static SSLSocket withoutCertificate(String requestLine, String contentType, int declaredLength) throws IOException {
+        SSLSocket socket = (SSLSocket) env.noClientCertificateTls.getSocketFactory().createSocket("localhost", env.internalPort);
+        socket.setSoTimeout(5000);
+        socket.getOutputStream().write((requestLine + " HTTP/1.1\r\nHost: localhost\r\nContent-Type: " + contentType + "\r\nContent-Length: "
+                + declaredLength + "\r\n\r\na").getBytes(StandardCharsets.US_ASCII));
+        socket.getOutputStream().flush();
+        return socket;
     }
 
     @Test

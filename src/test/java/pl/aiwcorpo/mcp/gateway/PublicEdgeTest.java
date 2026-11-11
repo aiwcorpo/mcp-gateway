@@ -2,8 +2,10 @@ package pl.aiwcorpo.mcp.gateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
@@ -13,6 +15,9 @@ import java.util.Locale;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationContext;
+import org.springframework.web.filter.FormContentFilter;
 
 import pl.aiwcorpo.mcp.gateway.support.GatewayTestEnvironment;
 import tools.jackson.databind.JsonNode;
@@ -22,6 +27,9 @@ class PublicEdgeTest extends GatewayTestBase {
 
     private static final String METADATA = GatewayTestEnvironment.PUBLIC_URL + "/.well-known/oauth-protected-resource";
     private static final String CALL = "{\"name\":\"jira__get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}";
+
+    @Autowired
+    ApplicationContext context;
 
     @Test
     void everyPublicResponseIsJsonWithNosniffAndCspAndNeverSetsACookie() throws Exception {
@@ -118,6 +126,25 @@ class PublicEdgeTest extends GatewayTestBase {
             assertThat(request.headers().values().toString()).doesNotContain("portal-session-value").doesNotContain("xsrf-value");
         });
         env.broker.received().forEach(received -> assertThat(received.body()).doesNotContain("portal-session-value"));
+    }
+
+    @Test
+    void aFormBodyIsNotReadBeforeTheCallerIsAuthenticated() throws Exception {
+        // The body is declared but never sent: the 401 comes without the gateway waiting for it.
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress("localhost", port), 3000);
+            assertThat(statusLineOfFormBodyNotSent(socket, "DELETE /mcp")).startsWith("HTTP/1.1 401");
+        }
+        assertThat(context.getBeansOfType(FormContentFilter.class)).isEmpty();
+    }
+
+    /** Sends a request that declares a form body of 1 MiB and sends one byte of it; the status line of the answer, read within 5 s. */
+    static String statusLineOfFormBodyNotSent(Socket socket, String requestLine) throws IOException {
+        socket.setSoTimeout(5000);
+        socket.getOutputStream().write((requestLine + " HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\n"
+                + "Content-Length: 1048576\r\n\r\na").getBytes(StandardCharsets.US_ASCII));
+        socket.getOutputStream().flush();
+        return new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII)).readLine();
     }
 
     @Test
