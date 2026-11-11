@@ -12,7 +12,7 @@ Changes go through a pull request.
 ## Setup
 
 JDK 25 and Docker (Testcontainers starts Redis with an ACL and PostgreSQL 18.6). On Windows use WSL2. One Maven module (Spring
-Boot 4.1.0); IntelliJ opens the directory as a Maven project. The `mcp-contracts` artifacts come from Maven Central, so no registry
+Boot 4.1.2); IntelliJ opens the directory as a Maven project. The `mcp-contracts` artifacts come from Maven Central, so no registry
 login is needed.
 
 ```bash
