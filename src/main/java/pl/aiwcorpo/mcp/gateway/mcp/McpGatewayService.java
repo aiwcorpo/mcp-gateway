@@ -761,6 +761,11 @@ public class McpGatewayService {
                     errors.error("invalid_argument", "A destructive call takes at most " + OperationDescription.MAX_ARGUMENTS
                             + " arguments, so that the confirmation can show all of them.")), null, null);
         }
+        if (!OperationDescription.hashedExactly(withoutCode)) {
+            return new Confirmed(finish(ctx, server, tool, null, started, argsLength, "allow", null, "invalid_argument",
+                    errors.error("invalid_argument", "An integer in the arguments of a destructive call must lie between "
+                            + "-9007199254740991 and 9007199254740991.")), null, null);
+        }
         ConfirmationRules.Operation operation = new ConfirmationRules.Operation(server.serverId(), tool.name(),
                 tool.risk().name(), OperationDescription.argumentsHash(withoutCode));
         PendingCall.Display display = OperationDescription.of(json, server.qualifiedName(tool), server.system(), withoutCode,
