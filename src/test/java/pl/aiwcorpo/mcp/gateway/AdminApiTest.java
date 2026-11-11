@@ -1,6 +1,7 @@
 package pl.aiwcorpo.mcp.gateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -9,12 +10,18 @@ import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
 import javax.net.ssl.SSLSocket;
 
+import org.apache.catalina.connector.Connector;
+import org.apache.tomcat.util.threads.VirtualThreadExecutor;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.tomcat.TomcatWebServer;
+import org.springframework.boot.web.server.context.WebServerApplicationContext;
 
 import pl.aiwcorpo.mcp.gateway.support.Contracts;
 import tools.jackson.databind.JsonNode;
@@ -23,6 +30,9 @@ import tools.jackson.databind.JsonNode;
 class AdminApiTest extends GatewayTestBase {
 
     private static final List<String> BOB_GROUPS = List.of("mcp-jira-read");
+
+    @Autowired
+    WebServerApplicationContext server;
 
     // --- who may call ----------------------------------------------------------------------------------------
 
@@ -99,6 +109,19 @@ class AdminApiTest extends GatewayTestBase {
             assertThat(new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII)).readLine())
                     .startsWith("HTTP/1.1 401");
         }
+    }
+
+    @Test
+    void peersWithoutACertificateCannotHoldTheWorkersOfTheInternalPort() throws Exception {
+        // Refused, and its body, which never comes, is not waited for: the connection ends after the answer.
+        try (SSLSocket socket = withoutCertificate("POST /admin/v1/servers", "application/json", 1000)) {
+            BufferedReader answer = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII));
+            assertThat(answer.readLine()).startsWith("HTTP/1.1 401");
+            assertThatCode(() -> answer.lines().count()).doesNotThrowAnyException();
+        }
+        Connector internal = Arrays.stream(((TomcatWebServer) server.getWebServer()).getTomcat().getService().findConnectors())
+                .filter(connector -> connector.getPort() == env.internalPort).findFirst().orElseThrow();
+        assertThat(internal.getProtocolHandler().getExecutor()).as("no fixed pool of workers").isInstanceOf(VirtualThreadExecutor.class);
     }
 
     /** A TLS connection to the internal port without a client certificate that sends the head of a request and one byte of its body. */
