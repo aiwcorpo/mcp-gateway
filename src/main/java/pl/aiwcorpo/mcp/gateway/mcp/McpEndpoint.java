@@ -52,6 +52,8 @@ public class McpEndpoint {
 
     private static final Logger log = LoggerFactory.getLogger(McpEndpoint.class);
     private static final int MAX_BODY = 1024 * 1024;
+    /** The longest string id of a request, as for the X-Request-Id of a client: a stream keeps the id while it is open. */
+    private static final int MAX_ID_LENGTH = 128;
     private static final String META_VERSION = "io.modelcontextprotocol/protocolVersion";
     private static final String META_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities";
     private static final String META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
@@ -142,7 +144,7 @@ public class McpEndpoint {
             return error(HttpStatus.BAD_REQUEST, requestId, null, -32700, "Parse error.", null, false);
         }
         if (message == null || !message.isObject() || !"2.0".equals(message.path("jsonrpc").asString(null))
-                || !message.path("method").isString()) {
+                || !message.path("method").isString() || !validId(message.get("id"))) {
             return error(HttpStatus.BAD_REQUEST, requestId, null, -32600,
                     "Expected a single JSON-RPC request or notification.", null, false);
         }
@@ -176,6 +178,11 @@ public class McpEndpoint {
             return modern(target, filter, user, token, message, meta, request, response, requestId, clientRequestId);
         }
         return legacy(target, filter, user, message, request, session, requestId, clientRequestId, method, id);
+    }
+
+    /** JSON-RPC 2.0: the id of a request is a string, a number or null, and a notification has none. */
+    private static boolean validId(JsonNode id) {
+        return id == null || id.isNull() || id.isNumber() || id.isString() && id.asString().length() <= MAX_ID_LENGTH;
     }
 
     /**
