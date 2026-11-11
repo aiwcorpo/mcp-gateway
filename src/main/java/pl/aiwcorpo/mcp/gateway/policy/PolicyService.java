@@ -111,8 +111,9 @@ public final class PolicyService implements PolicySource {
 
     /**
      * First load. The allowed clients are policy data: the list in the database is the one every instance enforces and every server is
-     * served. The configuration ({@code MCP_ALLOWED_CLIENTS}) only seeds it, once, when the database has none; a configuration that differs from
-     * what the database holds is logged and otherwise ignored, so two instances never decide with different lists.
+     * served, so two instances never decide with different lists. The configuration ({@code MCP_ALLOWED_CLIENTS}) sets it: a start whose
+     * configuration differs from what the database holds writes the configured list and raises the revision, so that a client taken out of
+     * the configuration is refused by every instance once they read the change. Every instance needs the same value.
      */
     public PolicyService start() {
         String configured = String.join(",", allowedClients);
@@ -123,7 +124,10 @@ public final class PolicyService implements PolicySource {
                 tx.raiseRevision();
                 log.info("the allowed clients of the database were empty and are now {}", configured);
             } else if (!stored.equals(configured)) {
-                log.warn("MCP_ALLOWED_CLIENTS ({}) differs from the allowed clients in the database ({}); the database is in force", configured, stored);
+                data.saveAllowedClients(configured);
+                tx.raiseRevision();
+                log.warn("MCP_ALLOWED_CLIENTS ({}) replaces the allowed clients in the database ({}); every instance needs the same value",
+                        configured, stored);
             }
             return null;
         });

@@ -13,10 +13,14 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.system.CapturedOutput;
 
+import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
 import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
+import pl.aiwcorpo.mcp.gateway.policy.PolicyDataStore;
 import pl.aiwcorpo.mcp.gateway.policy.PolicyService;
+import pl.aiwcorpo.mcp.gateway.registry.RegistryStore;
 import pl.aiwcorpo.mcp.gateway.support.Contracts;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * The administrator's policy data (C5 scope mapping and overrides) and what the gateway decides with it: the mapping is validated against
@@ -31,6 +35,18 @@ class PolicyAdminApiTest extends GatewayTestBase {
 
     @Autowired
     PolicyService policies;
+
+    @Autowired
+    RegistryStore store;
+
+    @Autowired
+    PolicyDataStore data;
+
+    @Autowired
+    AuditLog audit;
+
+    @Autowired
+    JsonMapper gatewayJson;
 
     @AfterEach
     void clean() {
@@ -266,6 +282,20 @@ class PolicyAdminApiTest extends GatewayTestBase {
             assertThat(JSON.readTree(pushes.getLast().body()).path("allowedClients").toString()).as("the data the gateway pushed to the server")
                     .isEqualTo("[\"claude-code\"]");
         });
+    }
+
+    @Test
+    void aClientTakenOutOfTheConfigurationIsRefusedAfterARestart() throws Exception {
+        String ai = env.idp.token(ALICE_SUB, "alice", ALICE_GROUPS, "mcp-gateway", "claude-ai");
+        assertThat(toolError(callGetIssue(ai)).path("error").asString("")).isEmpty();
+
+        // A start with MCP_ALLOWED_CLIENTS=claude-code, built as GatewayConfiguration builds the bean.
+        PolicyService restarted = new PolicyService(store, data, audit, "mcp-gateway", gatewayJson, List.of("claude-code")).start();
+        policies.reload();
+
+        assertThat(restarted.snapshot().allowedClients()).containsExactly("claude-code");
+        assertThat(jdbc.sql("SELECT allowed_clients FROM policy_state WHERE id = 1").query(String.class).single()).isEqualTo("claude-code");
+        assertThat(toolError(callGetIssue(ai)).path("error").asString("")).isEqualTo("not_found_or_denied");
     }
 
     @Test

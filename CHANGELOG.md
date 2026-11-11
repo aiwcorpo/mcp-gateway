@@ -8,6 +8,10 @@ integration builds tag the image `m6-<short sha>`.
 - A tool call is checked against the emergency switches and the registry again right before it is sent, after every wait on the server (the
   definitions read, a new session, a push of the policy data): a switch, a disable or a removal made while the call waited holds for it too
   (`tool_disabled`, audited as `kill_switch` or `tool_disabled`).
+- `MCP_ALLOWED_CLIENTS` sets the allowed clients again: a start whose value differs from the list in the database writes it there and raises
+  the revision, so a client taken out of the variable is refused on every instance and no longer served to the servers. Before upgrading,
+  compare the variable with `SELECT allowed_clients FROM policy_state WHERE id = 1`; a client that is only in the database is removed at the
+  first start. Every instance needs the same value; with different values the one that started last is in force.
 
 ## 2.0.1
 
