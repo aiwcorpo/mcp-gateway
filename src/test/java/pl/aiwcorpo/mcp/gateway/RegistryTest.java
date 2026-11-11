@@ -299,6 +299,25 @@ class RegistryTest extends GatewayTestBase {
     }
 
     @Test
+    void aDefinitionWithHiddenOrBidirectionalCharactersIsNeverApproved() throws Exception {
+        // Tag characters U+E0049 U+E0067 U+E006E and a right-to-left override.
+        env.gitlab.describeDifferently("search_issues", "Returns issues.\uDB40\uDC49\uDB40\uDC67\uDB40\uDC6E \u202Eabc\u202C");
+        env.gitlab.dropSessions();
+        await().atMost(Duration.ofSeconds(8)).untilAsserted(() -> assertThat(listedTools()).doesNotContain("gitlab__search_issues"));
+        String pendingHash = JSON.readTree(asAdmin("GET", "/admin/v1/registry/servers/mcp-gitlab/tools/search_issues/pending", null).body())
+                .path("pendingHash").asString();
+
+        HttpResponse<String> refused = asAdmin("POST", "/admin/v1/registry/servers/mcp-gitlab/tools/search_issues/approve",
+                "{\"definitionHash\":\"" + pendingHash + "\"}");
+        assertThat(refused.statusCode()).as(refused.body()).isEqualTo(422);
+        assertThat(Contracts.gatewayAdminErrors("ManifestRejected", JSON.readTree(refused.body()))).isEmpty();
+        assertThat(listedTools()).doesNotContain("gitlab__search_issues");
+
+        env.gitlab.describeAsApproved();
+        await().atMost(Duration.ofSeconds(8)).untilAsserted(() -> assertThat(listedTools()).contains("gitlab__search_issues"));
+    }
+
+    @Test
     void aServerThatGoesBackToTheApprovedDefinitionLosesItsEntryWithoutAnApproval() throws Exception {
         env.gitlab.describeDifferently("search_issues", "changed");
         await().atMost(Duration.ofSeconds(8)).untilAsserted(() -> assertThat(listedTools()).doesNotContain("gitlab__search_issues"));

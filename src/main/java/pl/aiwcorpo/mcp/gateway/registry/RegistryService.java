@@ -77,7 +77,10 @@ public final class RegistryService {
         record RiskLowered(String message) implements Approval {
         }
 
-        /** The classification of an entry of an adapter is missing, given for another entry, or does not fit (CC-193, CC-207). */
+        /**
+         * The classification of an entry of an adapter is missing, given for another entry, or does not fit (CC-193, CC-207); or the definition
+         * holds a character CC-121 forbids (no reason).
+         */
         record Rejected(String reason, String message) implements Approval {
         }
     }
@@ -350,6 +353,9 @@ public final class RegistryService {
             RegisteredTool.Pending pending = current.pending();
             if (!pending.hash().equals(hash)) {
                 return new Approval.HashMismatch();
+            }
+            if (DefinitionCheck.hidesText(pending.entry().path("definition"))) {
+                return new Approval.Rejected(null, tool + " has a control, format or bidirectional character in its definition");
             }
             boolean fromAdapter = "adapter".equals(pending.source());
             if (fromAdapter && (classification == null || classification.risk() == null || classification.action() == null)) {
