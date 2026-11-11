@@ -38,4 +38,16 @@ class OperationDescriptionTest {
         assertThat(display.arguments().getFirst().value()).contains("\\u202e").doesNotContain("\u202E");
         assertThat(display.resource()).as("an identifier with such a character is no resource").isNull();
     }
+
+    @Test
+    void aCallWithMoreArgumentsThanThePreviewListsCannotBeConfirmed() {
+        ObjectNode arguments = JSON.createObjectNode();
+        arguments.put("path", "/x");
+        for (int i = 0; i < 49; i++) {
+            arguments.put(String.format("q%02d", i), 0);
+        }
+        assertThat(OperationDescription.listsEveryArgument(arguments)).isTrue();
+        arguments.put("recursive", true);
+        assertThat(OperationDescription.listsEveryArgument(arguments)).isFalse();
+    }
 }
