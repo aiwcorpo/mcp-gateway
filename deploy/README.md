@@ -92,7 +92,7 @@ Instances behind one address share PostgreSQL, Redis, the file of internal JWT k
 
 ## Refused server addresses
 
-The gateway refuses servers at loopback, link-local, unspecified, multicast and cloud metadata addresses. To refuse more, set `MCP_SERVER_REFUSED_ADDRESSES` in `gateway.env` (comma-separated addresses or CIDR ranges). For a company CA on the servers, set `MCP_SERVER_TRUSTED_CAS` to a PEM file with the CA certificates and put the file next to the other certificates.
+The gateway refuses servers at loopback, link-local, unspecified, multicast and cloud metadata addresses. To refuse more, set `MCP_SERVER_REFUSED_ADDRESSES` in `gateway.env` (comma-separated addresses or CIDR ranges; write IPv4 as four decimal numbers, `10.0.0.0/8`, because the gateway does not start with a shortened form such as `10/8`). For a company CA on the servers, set `MCP_SERVER_TRUSTED_CAS` to a PEM file with the CA certificates and put the file next to the other certificates.
 
 ## Closed network
 
