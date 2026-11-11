@@ -147,6 +147,22 @@ class UpstreamSessionsTest {
         assertThat(posts.get()).isLessThan(8);
     }
 
+    @Test
+    void aSessionIdBeyondTheLimitIsNeitherKeptNorSentBack() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        start(exchange -> {
+            requests.incrementAndGet();
+            answer(exchange, "a".repeat(StreamableHttpClient.MAX_SESSION_ID + 1));
+        });
+        UpstreamSessions sessions = sessions(Duration.ofSeconds(5));
+
+        assertThatThrownBy(() -> sessions.call(server("mcp-jira"), CONVERSATION, ALICE, "r-1", toolsCall(), "get_issue", null, true))
+                .isInstanceOfSatisfying(UpstreamException.class, e -> assertThat(e.kind()).isEqualTo(UpstreamException.Kind.PROTOCOL));
+
+        assertThat(sessions.size()).isZero();
+        assertThat(requests.get()).as("only the initialize").isEqualTo(1);
+    }
+
     private static void pause(long millis) {
         try {
             Thread.sleep(millis);
