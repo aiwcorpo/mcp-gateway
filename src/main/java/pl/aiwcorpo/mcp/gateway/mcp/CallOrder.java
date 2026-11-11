@@ -69,4 +69,13 @@ public final class CallOrder {
         }
         return PASSES;
     }
+
+    /**
+     * The switch and the state of the tool asked again right before the call is sent, with the answers of {@link #decide}: the waits
+     * after those checks (the definitions read, a new session) are timed by the server, and a switch, a disable or a removal that came
+     * meanwhile holds for this call too (CC-194).
+     */
+    public static Verdict atSend(Supplier<KillSwitches.Status> killSwitch, BooleanSupplier toolEnabled) {
+        return decide(true, true, killSwitch, toolEnabled, () -> true, () -> true, () -> true);
+    }
 }

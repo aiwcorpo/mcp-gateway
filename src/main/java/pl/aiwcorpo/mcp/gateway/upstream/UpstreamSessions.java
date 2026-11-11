@@ -82,12 +82,16 @@ public class UpstreamSessions {
      */
     public JsonNode call(McpServer server, String conversationKey, GatewayUser user, String requestId, ObjectNode message,
                          String tool, Credential credential, boolean repeatable) throws UpstreamException {
-        return call(server, conversationKey, user, requestId, message, tool, credential, repeatable, null, null);
+        return call(server, conversationKey, user, requestId, message, tool, credential, repeatable, null, null, () -> true);
     }
 
-    /** {@code risk} and {@code action}: the classification of a tool of an adapter, put into the token of the call only for a server in adapter mode (CC-226). */
+    /**
+     * {@code risk} and {@code action}: the classification of a tool of an adapter, put into the token of the call only for a server in adapter mode (CC-226).
+     * {@code admitted}: asked right before every send of the request, after the session is made; false stops the request before it leaves.
+     */
     public JsonNode call(McpServer server, String conversationKey, GatewayUser user, String requestId, ObjectNode message,
-                         String tool, Credential credential, boolean repeatable, String risk, String action) throws UpstreamException {
+                         String tool, Credential credential, boolean repeatable, String risk, String action,
+                         java.util.function.BooleanSupplier admitted) throws UpstreamException {
         sweep();
         if (!server.connectionApproved()) {
             throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE, server.serverId() + " has no approved connection");
@@ -101,12 +105,14 @@ public class UpstreamSessions {
                     tokens.forUser(server.serverId(), user, tool, requestId, server.adapter() ? risk : null,
                             server.adapter() ? action : null), requestId, session.sessionId(),
                     session.protocolVersion(), credential, json.writeValueAsString(message));
+            admit(server, admitted);
             UpstreamResponse response = client.post(next.get(), message.get("id"));
             if (tool != null && policyDataStale(response)) {
                 // The server holds no policy data or older than this instance's revision (C14): push the data and repeat the call once,
                 // whether or not the push was delivered (the vectors count two calls for a push that failed). It refused before it did
                 // anything, so repeating is safe whatever the tool does.
                 boolean delivered = policyDataPush.test(server);
+                admit(server, admitted);
                 response = client.post(next.get(), message.get("id"));
                 if (policyDataStale(response)) {
                     throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE, server.serverId() + " is still stale after the push"
@@ -131,6 +137,13 @@ public class UpstreamSessions {
             return response.message();
         }
         throw new UpstreamException(UpstreamException.Kind.PROTOCOL, "session lost twice");
+    }
+
+    /** What came before a send (a new session, a push of the policy data) is timed by the server: the caller is asked again just before. */
+    private static void admit(McpServer server, java.util.function.BooleanSupplier admitted) throws UpstreamException {
+        if (!admitted.getAsBoolean()) {
+            throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE, server.serverId() + ": the request is no longer admitted, not sent");
+        }
     }
 
     private static boolean policyDataStale(UpstreamResponse response) {
