@@ -7,6 +7,7 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
+import pl.aiwcorpo.mcp.gateway.confirm.TextHygiene;
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
 import pl.aiwcorpo.mcp.gateway.server.ToolDefinition;
 import pl.aiwcorpo.mcp.manifest.DefinitionHash;
@@ -58,5 +59,26 @@ public final class DefinitionCheck {
         ArrayNode refs = entry.putArray("resourceRefs");
         approved.resourceRefs().forEach(ref -> refs.addObject().put("argument", ref.argument()).put("type", ref.type()));
         return entry;
+    }
+
+    /**
+     * Whether a name or a text anywhere in a definition holds a character CC-121 forbids (control, format, bidirectional, tag): such a
+     * character can hide or reorder text in the review of an administrator, while a client still reads it.
+     */
+    public static boolean hidesText(JsonNode definition) {
+        if (definition.isString()) {
+            return definition.asString().codePoints().anyMatch(TextHygiene::forbidden);
+        }
+        for (String name : definition.propertyNames()) {
+            if (name.codePoints().anyMatch(TextHygiene::forbidden)) {
+                return true;
+            }
+        }
+        for (JsonNode value : definition.values()) {
+            if (hidesText(value)) {
+                return true;
+            }
+        }
+        return false;
     }
 }
