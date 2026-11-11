@@ -157,8 +157,13 @@ public class UpstreamSessions {
         serverVersions.remove(serverId);
     }
 
-    /** Ends the server sessions whose conversation key starts with the prefix (client DELETE of a legacy session). */
+    /**
+     * Ends the server sessions whose conversation key starts with the prefix (client DELETE of a legacy session). The DELETEs share one
+     * deadline, the upstream timeout, so the client's request waits for its servers no longer in all; a session not ended by then expires
+     * on its server.
+     */
     public void close(String conversationPrefix, GatewayUser user, String requestId) {
+        java.util.concurrent.atomic.AtomicReference<Long> deadline = new java.util.concurrent.atomic.AtomicReference<>();
         sessions.entrySet().removeIf(entry -> {
             if (!entry.getKey().substring(entry.getKey().indexOf('|') + 1).startsWith(conversationPrefix) || !entry.getValue().sub().equals(user.sub())) {
                 return false;
@@ -169,7 +174,7 @@ public class UpstreamSessions {
             Session session = entry.getValue();
             if (client != null && session.sessionId() != null) {
                 client.delete(new UpstreamRequest(tokens.forUser(serverId, user, null, requestId), requestId,
-                        session.sessionId(), session.protocolVersion(), null, null));
+                        session.sessionId(), session.protocolVersion(), null, null), deadline.updateAndGet(d -> d != null ? d : client.deadline()));
             }
             return true;
         });

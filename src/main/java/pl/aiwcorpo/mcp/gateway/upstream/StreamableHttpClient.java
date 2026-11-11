@@ -126,15 +126,29 @@ public class StreamableHttpClient {
         }
     }
 
+    /** The deadline ({@link System#nanoTime}) of an operation that starts now: the timeout covers it whole, however many requests it makes. */
+    public long deadline() {
+        return System.nanoTime() + timeout.toNanos();
+    }
+
     /** Ends the server's session (legacy DELETE); failures are irrelevant to the caller. */
     public void delete(UpstreamRequest request) {
-        if (addressRefusal.get().isPresent()) {
+        delete(request, deadline());
+    }
+
+    /**
+     * Ends the server's session (legacy DELETE) no later than {@code deadline} ({@link #deadline()}); failures are irrelevant to the caller.
+     * Nothing of the answer is read: the body is closed as soon as the status arrives, so a server that keeps it open holds nothing.
+     */
+    public void delete(UpstreamRequest request, long deadline) {
+        long remaining = deadline - System.nanoTime();
+        if (remaining <= 0 || addressRefusal.get().isPresent()) {
             return;
         }
-        HttpRequest.Builder builder = HttpRequest.newBuilder(endpoint).timeout(timeout).DELETE();
+        HttpRequest.Builder builder = HttpRequest.newBuilder(endpoint).timeout(Duration.ofNanos(remaining)).DELETE();
         headers(builder, request);
         try {
-            http.send(builder.build(), HttpResponse.BodyHandlers.discarding());
+            http.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream()).body().close();
         } catch (IOException e) {
             // the session expires on the server anyway
         } catch (InterruptedException e) {
