@@ -1,6 +1,9 @@
 package pl.aiwcorpo.mcp.gateway.confirm;
 
+import java.math.BigInteger;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -21,6 +24,8 @@ public final class OperationDescription {
     static final int MAX_VALUE_CHARS = 200;
     public static final int MAX_ARGUMENTS = 50;
     static final int MAX_DESCRIPTION = 1000;
+    /** The largest integer that an IEEE-754 double holds together with every integer below it (2^53 - 1, I-JSON). */
+    private static final BigInteger MAX_EXACT_INTEGER = BigInteger.valueOf(9_007_199_254_740_991L);
     /**
      * What an audit event may carry as a resource id (C8 {@code resource.id}). The arguments have been checked against the {@code idPattern}
      * of their type by the decision that precedes the confirmation; this only keeps a character out of the log that the log format cannot take.
@@ -49,6 +54,24 @@ public final class OperationDescription {
      */
     public static boolean listsEveryArgument(JsonNode argumentsWithoutCode) {
         return argumentsWithoutCode.size() <= MAX_ARGUMENTS;
+    }
+
+    /**
+     * Whether {@link #argumentsHash} tells these arguments apart from any others. The canonical form writes a number as an
+     * IEEE-754 double, so two integers beyond 2^53 - 1 can share one hash while the server gets the exact value of the
+     * retry: such a call is refused before anything is pending.
+     */
+    public static boolean hashedExactly(JsonNode argumentsWithoutCode) {
+        Deque<JsonNode> open = new ArrayDeque<>();
+        open.push(argumentsWithoutCode);
+        while (!open.isEmpty()) {
+            JsonNode node = open.pop();
+            if (node.isIntegralNumber() && node.bigIntegerValue().abs().compareTo(MAX_EXACT_INTEGER) > 0) {
+                return false;
+            }
+            node.forEach(open::push);
+        }
+        return true;
     }
 
     public static PendingCall.Display of(JsonMapper json, String qualifiedTool, String system, JsonNode arguments,

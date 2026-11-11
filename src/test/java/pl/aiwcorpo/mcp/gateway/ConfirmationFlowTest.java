@@ -186,6 +186,17 @@ class ConfirmationFlowTest extends GatewayTestBase {
     }
 
     @Test
+    void anIntegerThatADoubleCannotHoldExactlyIsRefusedAndNeverRuns() throws Exception {
+        Person p = enrolled();
+        JsonNode first = error(deleteWith(p, "{\"issueKey\":\"ABC-60\",\"n\":9007199254740993}"));
+        assertThat(first.path("error").asString()).isEqualTo("invalid_argument");
+        assertThat(first.has("confirmationId")).isFalse();
+        JsonNode retry = error(deleteWith(p, "{\"issueKey\":\"ABC-60\",\"n\":9007199254740992,\"confirmation_code\":\"" + code() + "\"}"));
+        assertThat(retry.path("error").asString()).isEqualTo("invalid_argument");
+        assertThat(deletesAtTheServer()).isZero();
+    }
+
+    @Test
     void withoutAnAuthenticatorThereIsOnlyARegisterUrl() throws Exception {
         Person p = new Person();
         JsonNode error = error(delete(p, "ABC-5", null));

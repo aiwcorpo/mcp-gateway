@@ -50,4 +50,15 @@ class OperationDescriptionTest {
         arguments.put("recursive", true);
         assertThat(OperationDescription.listsEveryArgument(arguments)).isFalse();
     }
+
+    @Test
+    void anIntegerThatADoubleCannotHoldExactlyCannotBeConfirmed() {
+        for (String n : List.of("9007199254740991", "-9007199254740991")) {
+            assertThat(OperationDescription.hashedExactly(JSON.readTree("{\"issueKey\":\"ABC-1\",\"n\":" + n + "}"))).as(n).isTrue();
+        }
+        for (String n : List.of("9007199254740992", "9007199254740993", "-9007199254740993", "123456789012345678901234567890")) {
+            assertThat(OperationDescription.hashedExactly(JSON.readTree("{\"issueKey\":\"ABC-1\",\"n\":" + n + "}"))).as(n).isFalse();
+        }
+        assertThat(OperationDescription.hashedExactly(JSON.readTree("{\"ids\":[1,{\"n\":9007199254740993}]}"))).isFalse();
+    }
 }
