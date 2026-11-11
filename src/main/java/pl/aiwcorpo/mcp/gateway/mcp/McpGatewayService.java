@@ -453,6 +453,8 @@ public class McpGatewayService {
         boolean forbidden;
         Verdict definition;
         Resolution resolution;
+        /** The switch and the state of the tool as they were when the call was about to be sent. */
+        CallOrder.Verdict atSend;
     }
 
     /**
@@ -565,8 +567,16 @@ public class McpGatewayService {
         JsonNode response;
         try {
             response = upstream.call(server, ctx.conversationKey(), ctx.user(), ctx.requestId(), request, tool.name(), credential,
-                    tool.risk() == pl.aiwcorpo.mcp.gateway.server.Risk.READ_ONLY, tool.risk().name(), tool.action());
+                    tool.risk() == pl.aiwcorpo.mcp.gateway.server.Risk.READ_ONLY, tool.risk().name(), tool.action(),
+                    () -> stillCallable(server, tool, state));
         } catch (UpstreamException e) {
+            if (state.atSend != null && !state.atSend.passes()) {
+                // Switched off, disabled or removed while the call waited: not sent, and answered as a call that starts now would be. The
+                // decision event is already out; the tool_call event carries the reason.
+                return finish(callKey, ctx, server, tool, null, started, argsLength, "deny", state.atSend.auditReason(), null,
+                        "tool_disabled".equals(state.atSend.errorCode()) ? errors.error("tool_disabled", "This tool is not available.")
+                                : errors.error("upstream_unavailable", "The MCP server is unavailable. Try again later."));
+            }
             log.warn("tools/call rid={} to {} failed: {} {}", ctx.requestId(), server.serverId(), e.kind(), e.getMessage());
             String code = e.kind() == UpstreamException.Kind.UNAVAILABLE ? "upstream_unavailable" : "internal_error";
             String message = e.kind() == UpstreamException.Kind.UNAVAILABLE
@@ -600,6 +610,17 @@ public class McpGatewayService {
         } catch (RpcFailure failure) {
             return false;
         }
+    }
+
+    /**
+     * The emergency switch and the tool as the registry holds them now, asked right before the call leaves (CC-194): the snapshot the
+     * call started with says nothing of a switch, a disable or a removal that came while it waited on the server.
+     */
+    private boolean stillCallable(McpServer server, ToolDefinition tool, CallState state) {
+        state.atSend = CallOrder.atSend(() -> killSwitches.status(server.serverId(), tool.name()),
+                () -> registry.find(server.serverId()).filter(McpServer::enabled).flatMap(current -> current.tool(tool.name()))
+                        .filter(current -> !current.disabled()).isPresent());
+        return state.atSend.passes();
     }
 
     /**

@@ -3,6 +3,12 @@
 The gateway ships as a container image (`ghcr.io/aiwcorpo/mcp-gateway`); the version in `pom.xml` follows SemVer. Local and
 integration builds tag the image `m6-<short sha>`.
 
+## Unreleased
+
+- A tool call is checked against the emergency switches and the registry again right before it is sent, after every wait on the server (the
+  definitions read, a new session, a push of the policy data): a switch, a disable or a removal made while the call waited holds for it too
+  (`tool_disabled`, audited as `kill_switch` or `tool_disabled`).
+
 ## 2.0.1
 
 - Clients on MCP 2026-07-28 accept the tool list again: `tools/list` carries `ttlMs` (60 s) and `cacheScope` `private`, and
