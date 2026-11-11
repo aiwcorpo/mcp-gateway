@@ -19,7 +19,7 @@ import tools.jackson.databind.json.JsonMapper;
 public final class OperationDescription {
 
     static final int MAX_VALUE_CHARS = 200;
-    static final int MAX_ARGUMENTS = 50;
+    public static final int MAX_ARGUMENTS = 50;
     static final int MAX_DESCRIPTION = 1000;
     /**
      * What an audit event may carry as a resource id (C8 {@code resource.id}). The arguments have been checked against the {@code idPattern}
@@ -41,6 +41,14 @@ public final class OperationDescription {
         } catch (java.security.NoSuchAlgorithmException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    /**
+     * Whether the preview lists every argument. The hash and the call cover all of them, so an argument the preview left
+     * out would run without the owner having seen it: such a call is refused before anything is pending.
+     */
+    public static boolean listsEveryArgument(JsonNode argumentsWithoutCode) {
+        return argumentsWithoutCode.size() <= MAX_ARGUMENTS;
     }
 
     public static PendingCall.Display of(JsonMapper json, String qualifiedTool, String system, JsonNode arguments,

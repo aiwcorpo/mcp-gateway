@@ -756,6 +756,11 @@ public class McpGatewayService {
             }
             code = codeNode.asString();
         }
+        if (!OperationDescription.listsEveryArgument(withoutCode)) {
+            return new Confirmed(finish(ctx, server, tool, null, started, argsLength, "allow", null, "invalid_argument",
+                    errors.error("invalid_argument", "A destructive call takes at most " + OperationDescription.MAX_ARGUMENTS
+                            + " arguments, so that the confirmation can show all of them.")), null, null);
+        }
         ConfirmationRules.Operation operation = new ConfirmationRules.Operation(server.serverId(), tool.name(),
                 tool.risk().name(), OperationDescription.argumentsHash(withoutCode));
         PendingCall.Display display = OperationDescription.of(json, server.qualifiedName(tool), server.system(), withoutCode,

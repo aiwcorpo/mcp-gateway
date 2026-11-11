@@ -63,7 +63,10 @@ class ConfirmationFlowTest extends GatewayTestBase {
     }
 
     private HttpResponse<String> delete(Person p, String key, String code) throws Exception {
-        String arguments = "{\"issueKey\":\"" + key + "\"" + (code == null ? "" : ",\"confirmation_code\":\"" + code + "\"") + "}";
+        return deleteWith(p, "{\"issueKey\":\"" + key + "\"" + (code == null ? "" : ",\"confirmation_code\":\"" + code + "\"") + "}");
+    }
+
+    private HttpResponse<String> deleteWith(Person p, String arguments) throws Exception {
         return sendModern(token(p), "tools/call", "jira__delete_issue",
                 "{\"name\":\"jira__delete_issue\",\"arguments\":" + arguments + "}");
     }
@@ -165,6 +168,21 @@ class ConfirmationFlowTest extends GatewayTestBase {
             assertThat(error(delete(p, "ABC-4", bad)).path("error").asString()).as(bad).isEqualTo("invalid_argument");
         }
         assertThat(env.broker.count("/v1/authenticator/verify")).isEqualTo(verifies);
+    }
+
+    @Test
+    void aCallWithMoreArgumentsThanThePreviewListsIsRefusedAndNeverRuns() throws Exception {
+        Person p = enrolled();
+        StringBuilder arguments = new StringBuilder("{\"issueKey\":\"ABC-70\"");
+        for (int i = 0; i < 50; i++) {
+            arguments.append(",\"a").append(String.format("%02d", i)).append("\":0");
+        }
+        JsonNode first = error(deleteWith(p, arguments + "}"));
+        assertThat(first.path("error").asString()).isEqualTo("invalid_argument");
+        assertThat(first.has("confirmationId")).isFalse();
+        JsonNode retry = error(deleteWith(p, arguments + ",\"confirmation_code\":\"" + code() + "\"}"));
+        assertThat(retry.path("error").asString()).isEqualTo("invalid_argument");
+        assertThat(deletesAtTheServer()).isZero();
     }
 
     @Test
