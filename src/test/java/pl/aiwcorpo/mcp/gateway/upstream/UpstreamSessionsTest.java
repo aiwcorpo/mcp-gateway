@@ -1,6 +1,7 @@
 package pl.aiwcorpo.mcp.gateway.upstream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -13,7 +14,10 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -102,6 +106,55 @@ class UpstreamSessionsTest {
         assertThat(sessions.size()).isZero();
     }
 
+    @Test
+    void theRequestsOfOneCallShareTheUpstreamTimeout() throws Exception {
+        AtomicInteger posts = new AtomicInteger();
+        AtomicInteger initializes = new AtomicInteger();
+        Map<String, AtomicInteger> callsPerSession = new ConcurrentHashMap<>();
+        start(exchange -> {
+            JsonNode message = JSON.readTree(exchange.getRequestBody().readAllBytes());
+            posts.incrementAndGet();
+            pause(150);
+            switch (message.path("method").asString("")) {
+                case "initialize" -> send(exchange, 200, "s-" + initializes.incrementAndGet(),
+                        result(message.get("id"), "{\"protocolVersion\":\"2025-11-25\"}"));
+                case "notifications/initialized" -> send(exchange, 202, null, null);
+                case "tools/call" -> {
+                    String session = exchange.getRequestHeaders().getFirst("Mcp-Session-Id");
+                    int n = callsPerSession.computeIfAbsent(session, k -> new AtomicInteger()).incrementAndGet();
+                    if (n == 1) {
+                        send(exchange, 409, null, "{\"error\":\"policy_data_stale\",\"requiredRevision\":1}");
+                    } else if ("s-1".equals(session)) {
+                        send(exchange, 404, null, null);
+                    } else {
+                        send(exchange, 200, null, result(message.get("id"), "{\"isError\":false}"));
+                    }
+                }
+                default -> send(exchange, 400, null, null);
+            }
+        });
+        // Each answer comes within the 400 ms timeout, but the call would need eight of them and two pushes.
+        UpstreamSessions sessions = sessions(Duration.ofMillis(400), mcp -> {
+            pause(150);
+            return true;
+        });
+        long started = System.nanoTime();
+
+        assertThatThrownBy(() -> sessions.call(server("mcp-jira"), CONVERSATION, ALICE, "r-1", toolsCall(), "get_issue", null, true))
+                .isInstanceOfSatisfying(UpstreamException.class, e -> assertThat(e.kind()).isEqualTo(UpstreamException.Kind.UNAVAILABLE));
+
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofMillis(1_000));
+        assertThat(posts.get()).isLessThan(8);
+    }
+
+    private static void pause(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private void start(HttpHandler handler) throws IOException {
         http = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         http.setExecutor(Executors.newCachedThreadPool());
@@ -139,13 +192,17 @@ class UpstreamSessionsTest {
         return "{\"jsonrpc\":\"2.0\",\"id\":" + JSON.writeValueAsString(id) + ",\"result\":" + result + "}";
     }
 
-    /** The client is made as in production (ServerTls.client): HTTP/1.1, no redirects, a connect timeout. */
     private static UpstreamSessions sessions(Duration timeout) throws Exception {
+        return sessions(timeout, mcp -> true);
+    }
+
+    /** The client is made as in production (ServerTls.client): HTTP/1.1, no redirects, a connect timeout. */
+    private static UpstreamSessions sessions(Duration timeout, Predicate<McpServer> push) throws Exception {
         InternalTokenIssuer tokens = new InternalTokenIssuer(SigningKeys.load(null, null, false, false), "https://mcp-gateway.internal",
                 Duration.ofSeconds(30), () -> 1L, Clock.systemUTC());
         return new UpstreamSessions(mcp -> new StreamableHttpClient(mcp.internalUrl(), HttpClient.newBuilder()
                 .version(HttpClient.Version.HTTP_1_1).followRedirects(HttpClient.Redirect.NEVER).connectTimeout(Duration.ofSeconds(1)).build(),
-                JSON, timeout, 1 << 20), mcp -> true, tokens, JSON, Duration.ofMinutes(30), Clock.systemUTC(), "mcp-gateway", "test");
+                JSON, timeout, 1 << 20), push, tokens, JSON, Duration.ofMinutes(30), Clock.systemUTC(), "mcp-gateway", "test");
     }
 
     private McpServer server(String serverId) {

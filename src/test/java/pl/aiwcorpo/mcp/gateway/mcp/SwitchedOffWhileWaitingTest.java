@@ -2,6 +2,7 @@ package pl.aiwcorpo.mcp.gateway.mcp;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -87,7 +88,7 @@ class SwitchedOffWhileWaitingTest {
         killSwitches = new KillSwitches(switches::get, Duration.ofMillis(5), System::nanoTime, meters);
         // The server: a session at once, its tools/list held until the test releases it.
         StreamableHttpClient http = mock(StreamableHttpClient.class);
-        when(http.post(any(), any())).thenAnswer(invocation -> {
+        when(http.post(any(), any(), anyLong())).thenAnswer(invocation -> {
             UpstreamRequest sent = invocation.getArgument(0);
             return switch (JSON.readTree(sent.body()).path("method").asString()) {
                 case "initialize" -> new UpstreamResponse(200, "session-1",
