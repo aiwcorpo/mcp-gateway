@@ -36,6 +36,8 @@ spring:
       username: ${MCP_REDIS_USER:gateway}
       password: ${MCP_REDIS_PASSWORD:}
       timeout: 2s
+      # TLS: ssl.enabled (SPRING_DATA_REDIS_SSL_ENABLED) and ssl.bundle; the connections the gateway opens itself (the confirmation store
+      # with WAIT, the credential.invalidated subscriber) follow the same setting.
   mvc:
     problemdetails:
       enabled: false
