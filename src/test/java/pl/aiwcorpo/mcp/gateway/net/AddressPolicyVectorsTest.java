@@ -155,6 +155,21 @@ class AddressPolicyVectorsTest {
     }
 
     @Test
+    void anIpv4RangeNotWrittenAsFourDecimalNumbersStopsTheGatewayInsteadOfRefusingAnotherRange() {
+        for (String shortened : List.of("10/8", "172.16/12", "192.168/16", "010.0.0.0/8", "0x0a.0.0.0/8", "167772160/8", "10.0.0/24",
+                "::ffff:010.0.0.1/104", "[::ffff:10.0.0.1x]/104")) {
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> new AddressPolicy(false, AddressPolicy.parseList(shortened)))
+                    .as(shortened).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("four decimal numbers");
+        }
+        AddressPolicy written = new AddressPolicy(false, AddressPolicy.parseList("10.0.0.0/8,172.16.0.0/12,0.0.0.0/32,::ffff:192.168.0.0/112,[fd12::]/16"));
+        assertThat(written.judge("10.1.2.3").cls()).isEqualTo("refused_by_configuration");
+        assertThat(written.judge("172.17.0.2").cls()).isEqualTo("refused_by_configuration");
+        assertThat(written.judge("::ffff:192.168.1.10").cls()).isEqualTo("refused_by_configuration");
+        assertThat(written.judge("fd12::1").cls()).isEqualTo("refused_by_configuration");
+        assertThat(written.judge("8.8.8.8").allowed()).isTrue();
+    }
+
+    @Test
     void aSettingThatIsNoAddressOrRangeStopsTheGateway() {
         for (String bad : List.of("10.9.0.0/33", "not-an-address", "10.0.0.0/x", "fd12::/129", "10.0.0.0/8/8", "example")) {
             org.assertj.core.api.Assertions.assertThatThrownBy(() -> new AddressPolicy(false, AddressPolicy.parseList(bad)))
