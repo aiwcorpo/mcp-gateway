@@ -39,10 +39,17 @@ public final class AddressPolicy {
 
     private static final byte[] METADATA_V6 = {(byte) 0xfd, 0, 0x0e, (byte) 0xc2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02, 0x54};
 
+    /** Four decimal numbers from 0 to 255 without leading zeros. */
+    private static final java.util.regex.Pattern DOTTED_QUAD = java.util.regex.Pattern.compile(
+            "(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}");
+
     /** An address or a range the deployment refuses; {@code bits} is the length of the prefix. */
     private record Range(byte[] base, int bits) {
         static Range parse(String text) {
             String[] parts = text.strip().split("/", -1);
+            if (!writtenOut(parts[0])) {
+                throw new IllegalArgumentException(text + " is not an IP address or a range: write IPv4 as four decimal numbers, such as 10.0.0.0/8");
+            }
             byte[] base = parseLiteral(parts[0]).orElseThrow(() -> new IllegalArgumentException(text + " is not an IP address or a range"));
             int bits = base.length * 8;
             if (parts.length == 2) {
@@ -58,6 +65,16 @@ public final class AddressPolicy {
                 throw new IllegalArgumentException(text + " has a prefix length out of range");
             }
             return new Range(base, bits);
+        }
+
+        /**
+         * Whether an IPv4 address, alone or at the end of an IPv6 one, is written as four decimal numbers. The forms of inet_aton that a
+         * server's host may use would read a setting as another range than was meant: 10/8 as 0.0.0.10/8, 010.0.0.0/8 as 8.0.0.0/8.
+         */
+        private static boolean writtenOut(String address) {
+            String plain = address.startsWith("[") && address.endsWith("]") ? address.substring(1, address.length() - 1) : address;
+            String last = plain.substring(plain.lastIndexOf(':') + 1);
+            return (plain.indexOf(':') >= 0 && last.indexOf('.') < 0) || DOTTED_QUAD.matcher(last).matches();
         }
 
         boolean contains(byte[] address) {
