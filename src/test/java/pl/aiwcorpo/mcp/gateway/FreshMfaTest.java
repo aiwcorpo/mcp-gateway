@@ -91,6 +91,10 @@ class FreshMfaTest extends GatewayTestBase {
                     Map.of("If-Match", etag(created), "X-Request-Id", requestId)));
             refused.put("approveServerPolicies", call(stale, "POST", "/admin/v1/registry/servers/mcp-mfa/policies/approve",
                     "{\"policiesHash\":\"sha256:" + "0".repeat(64) + "\"}", rid));
+            refused.put("approveToolLoweringRisk", call(stale, "POST", "/admin/v1/registry/servers/mcp-mfa/tools/get_issue/approve",
+                    "{\"definitionHash\":\"sha256:" + "0".repeat(64) + "\",\"acceptRiskLowering\":true}", rid));
+            refused.put("deleteServerKillSwitch", call(stale, "DELETE", "/admin/v1/registry/servers/mcp-mfa/kill-switch", null, rid));
+            refused.put("deleteToolKillSwitch", call(stale, "DELETE", "/admin/v1/registry/servers/mcp-mfa/tools/get_issue/kill-switch", null, rid));
             refused.forEach((operation, response) -> {
                 assertThat(response.statusCode()).as(kind + " " + operation + " " + response.body()).isEqualTo(401);
                 assertThat(JSON.readTree(response.body()).path("error").asString()).isEqualTo("step_up_required");
