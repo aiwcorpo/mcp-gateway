@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,6 +28,7 @@ class PublicEdgeTest extends GatewayTestBase {
 
     private static final String METADATA = GatewayTestEnvironment.PUBLIC_URL + "/.well-known/oauth-protected-resource";
     private static final String CALL = "{\"name\":\"jira__get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}";
+    private static final Pattern STATUS_LINE = Pattern.compile("(?m)^HTTP/1\\.[01] (\\d{3})");
 
     @Autowired
     ApplicationContext context;
@@ -145,6 +147,26 @@ class PublicEdgeTest extends GatewayTestBase {
                 + "Content-Length: 1048576\r\n\r\na").getBytes(StandardCharsets.US_ASCII));
         socket.getOutputStream().flush();
         return new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII)).readLine();
+    }
+
+    @Test
+    void anHttp10RequestWithTransferEncodingIsRefusedAndEndsItsConnection() throws Exception {
+        for (String framing : List.of("Transfer-Encoding: chunked\r\n", "Transfer-Encoding: chunked\r\nContent-Length: 5\r\n")) {
+            String answers = exchange("POST /mcp HTTP/1.0\r\nHost: localhost\r\n" + framing + "Connection: keep-alive\r\n\r\n0\r\n\r\n"
+                    + "GET /.well-known/mcp-jwks.json HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+            assertThat(STATUS_LINE.matcher(answers).results().map(status -> status.group(1)).toList()).as(framing).containsExactly("400");
+        }
+    }
+
+    /** Everything the gateway answers to these bytes on one connection, until it closes it. */
+    private String exchange(String bytes) throws IOException {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress("localhost", port), 3000);
+            socket.setSoTimeout(5000);
+            socket.getOutputStream().write(bytes.getBytes(StandardCharsets.US_ASCII));
+            socket.getOutputStream().flush();
+            return new String(socket.getInputStream().readAllBytes(), StandardCharsets.US_ASCII);
+        }
     }
 
     @Test
