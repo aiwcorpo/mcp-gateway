@@ -80,6 +80,11 @@ class StreamEndpointTest extends GatewayTestBase {
     }
 
     private SseClient listen(String token, String pathWithQuery, int id, boolean tools) throws Exception {
+        return listen(token, pathWithQuery, Integer.toString(id), tools);
+    }
+
+    /** As above with the id as JSON text. */
+    private SseClient listen(String token, String pathWithQuery, String id, boolean tools) throws Exception {
         String body = "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"method\":\"subscriptions/listen\",\"params\":{\"_meta\":{"
                 + "\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\",\"io.modelcontextprotocol/clientCapabilities\":{}},"
                 + "\"notifications\":{" + (tools ? "\"toolsListChanged\":true" : "") + "}}}";
@@ -242,6 +247,25 @@ class StreamEndpointTest extends GatewayTestBase {
         assertThat(closing.path("id").asInt()).isEqualTo(7);
         assertThat(closing.path("result").path("resultType").asString()).isEqualTo("complete");
         await().atMost(Duration.ofSeconds(3)).until(stream::ended);
+    }
+
+    @Test
+    void aListenWhoseIdIsNotAStringOrANumberOpensNoStream() throws Exception {
+        double before = meters.get("mcp_gateway_open_streams").gauge().value();
+        for (String id : List.of("[{},{}]", "{\"a\":1}", "true", "\"" + "x".repeat(129) + "\"")) {
+            SseClient client = listen(token(UUID.randomUUID().toString()), "/mcp", id, true);
+            assertThat(client.status()).as(id).isEqualTo(400);
+            JsonNode error = JSON.readTree(String.join("", client.untilEnd(Duration.ofSeconds(2))));
+            assertThat(error.path("error").path("code").asInt()).as(id).isEqualTo(-32600);
+            assertThat(error.has("id")).as(id).isFalse();
+        }
+        assertThat(meters.get("mcp_gateway_open_streams").gauge().value()).isLessThanOrEqualTo(before);
+
+        String longest = "x".repeat(128);
+        SseClient stream = listen(token(UUID.randomUUID().toString()), "/mcp", "\"" + longest + "\"", true);
+        assertThat(stream.status()).isEqualTo(200);
+        assertThat(stream.nextMessage(Duration.ofSeconds(2)).path("params").path("_meta").path("io.modelcontextprotocol/subscriptionId")
+                .asString()).isEqualTo(longest);
     }
 
     @Test
