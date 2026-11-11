@@ -34,6 +34,9 @@ public class StreamableHttpClient {
     private static final ScheduledExecutorService DEADLINES = Executors.newSingleThreadScheduledExecutor(
             Thread.ofPlatform().daemon().name("upstream-deadline").factory());
 
+    /** The longest Mcp-Session-Id a server may give the gateway to keep. */
+    static final int MAX_SESSION_ID = 1024;
+
     private final URI endpoint;
     private final HttpClient http;
     private final JsonMapper json;
@@ -87,6 +90,10 @@ public class StreamableHttpClient {
             closeQuietly(raw);
         }, Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
         try (InputStream body = new BoundedInputStream(raw, maxBytes)) {
+            if (sessionId != null && !validSessionId(sessionId)) {
+                // The gateway keeps the id for the life of the session and sends it back on every request.
+                throw new UpstreamException(UpstreamException.Kind.PROTOCOL, "invalid session id");
+            }
             if (status == 202) {
                 return new UpstreamResponse(status, sessionId, null);
             }
@@ -124,6 +131,11 @@ public class StreamableHttpClient {
         } finally {
             guard.cancel(false);
         }
+    }
+
+    /** Visible ASCII only, as the transport requires, and no longer than {@link #MAX_SESSION_ID} (a UUID, a JWT or a hash fits). */
+    private static boolean validSessionId(String id) {
+        return id.length() <= MAX_SESSION_ID && id.chars().allMatch(c -> c >= 0x21 && c <= 0x7e);
     }
 
     private static void closeQuietly(InputStream in) {
