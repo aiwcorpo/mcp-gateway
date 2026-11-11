@@ -15,6 +15,7 @@ import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisConnectionStateListener;
 import io.lettuce.core.RedisURI;
 import io.lettuce.core.SocketOptions;
+import io.lettuce.core.SslOptions;
 import io.lettuce.core.pubsub.RedisPubSubAdapter;
 import io.lettuce.core.pubsub.StatefulRedisPubSubConnection;
 import pl.aiwcorpo.mcp.manifest.ReservedSystemIds;
@@ -40,6 +41,7 @@ public final class InvalidationListener implements SmartLifecycle {
     private final CredentialCache cache;
     private final JsonMapper json;
     private final Duration healthInterval;
+    private final SslOptions sslOptions;
     private final AtomicBoolean live = new AtomicBoolean();
     private RedisClient client;
     private volatile StatefulRedisPubSubConnection<String, String> connection;
@@ -48,11 +50,18 @@ public final class InvalidationListener implements SmartLifecycle {
             java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>()));
 
     public InvalidationListener(RedisURI uri, String channel, CredentialCache cache, JsonMapper json, Duration healthInterval) {
+        this(uri, channel, cache, json, healthInterval, null);
+    }
+
+    /** @param sslOptions keys and trust of the TLS that {@code uri} asks for, or null for those of the JVM */
+    public InvalidationListener(RedisURI uri, String channel, CredentialCache cache, JsonMapper json, Duration healthInterval,
+                                SslOptions sslOptions) {
         this.uri = uri;
         this.channel = channel;
         this.cache = cache;
         this.json = json;
         this.healthInterval = healthInterval;
+        this.sslOptions = sslOptions;
     }
 
     public boolean live() {
@@ -62,11 +71,14 @@ public final class InvalidationListener implements SmartLifecycle {
     @Override
     public void start() {
         client = RedisClient.create(uri);
-        client.setOptions(ClientOptions.builder()
+        ClientOptions.Builder options = ClientOptions.builder()
                 .autoReconnect(true)
                 .pingBeforeActivateConnection(false)
-                .socketOptions(SocketOptions.builder().keepAlive(true).connectTimeout(Duration.ofSeconds(2)).build())
-                .build());
+                .socketOptions(SocketOptions.builder().keepAlive(true).connectTimeout(Duration.ofSeconds(2)).build());
+        if (sslOptions != null) {
+            options.sslOptions(sslOptions);
+        }
+        client.setOptions(options.build());
         client.addListener(new RedisConnectionStateListener() {
             @Override
             public void onRedisConnected(RedisChannelHandler<?, ?> handler, SocketAddress address) {

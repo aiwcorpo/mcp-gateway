@@ -340,10 +340,12 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    InvalidationListener invalidationListener(GatewayProperties properties, CredentialCache cache, JsonMapper gatewayJson) {
+    InvalidationListener invalidationListener(GatewayProperties properties, CredentialCache cache, JsonMapper gatewayJson,
+                                              org.springframework.boot.data.redis.autoconfigure.DataRedisConnectionDetails redisConnection) {
         GatewayProperties.Redis redis = properties.redis();
+        org.springframework.boot.ssl.SslBundle tls = redisConnection.getSslBundle();
         RedisURI.Builder uri = RedisURI.builder().withHost(redis.host()).withPort(redis.port())
-                .withTimeout(java.time.Duration.ofSeconds(2));
+                .withTimeout(java.time.Duration.ofSeconds(2)).withSsl(tls != null);
         if (redis.password() != null && !redis.password().isEmpty()) {
             if (redis.username() != null && !redis.username().isEmpty()) {
                 uri.withAuthentication(redis.username(), redis.password().toCharArray());
@@ -351,7 +353,25 @@ public class GatewayConfiguration {
                 uri.withPassword(redis.password().toCharArray());
             }
         }
-        return new InvalidationListener(uri.build(), redis.invalidationChannel(), cache, gatewayJson, redis.healthInterval());
+        return new InvalidationListener(uri.build(), redis.invalidationChannel(), cache, gatewayJson, redis.healthInterval(),
+                tls == null ? null : redisSslOptions(tls));
+    }
+
+    /**
+     * TLS of the connections to Redis that the gateway opens itself (the confirmation store with WAIT, the invalidation subscriber): the
+     * same as the main connection, from spring.data.redis.ssl.enabled and .bundle, applied as Spring Boot applies it there.
+     */
+    private static io.lettuce.core.SslOptions redisSslOptions(org.springframework.boot.ssl.SslBundle bundle) {
+        io.lettuce.core.SslOptions.Builder options = io.lettuce.core.SslOptions.builder()
+                .keyManager(bundle.getManagers().getKeyManagerFactory())
+                .trustManager(bundle.getManagers().getTrustManagerFactory());
+        if (bundle.getOptions().getCiphers() != null) {
+            options.cipherSuites(bundle.getOptions().getCiphers());
+        }
+        if (bundle.getOptions().getEnabledProtocols() != null) {
+            options.protocols(bundle.getOptions().getEnabledProtocols());
+        }
+        return options.build();
     }
 
     @Bean
@@ -475,7 +495,8 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    ConfirmationStore confirmationStore(StringRedisTemplate redis, JsonMapper gatewayJson, GatewayProperties properties) {
+    ConfirmationStore confirmationStore(StringRedisTemplate redis, JsonMapper gatewayJson, GatewayProperties properties,
+                                        org.springframework.boot.data.redis.autoconfigure.DataRedisConnectionDetails redisConnection) {
         GatewayProperties.Redis config = properties.redis();
         org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory dedicated = null;
         if (config.waitReplicas() > 0) {
@@ -487,9 +508,16 @@ public class GatewayConfiguration {
             if (config.password() != null && !config.password().isEmpty()) {
                 standalone.setPassword(config.password());
             }
-            dedicated = new org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory(standalone,
+            org.springframework.data.redis.connection.lettuce.LettuceClientConfiguration.LettuceClientConfigurationBuilder client =
                     org.springframework.data.redis.connection.lettuce.LettuceClientConfiguration.builder()
-                            .commandTimeout(java.time.Duration.ofSeconds(2)).build());
+                            .commandTimeout(java.time.Duration.ofSeconds(2));
+            org.springframework.boot.ssl.SslBundle tls = redisConnection.getSslBundle();
+            if (tls != null) {
+                client.useSsl();
+                client.clientOptions(io.lettuce.core.ClientOptions.builder().timeoutOptions(io.lettuce.core.TimeoutOptions.enabled())
+                        .sslOptions(redisSslOptions(tls)).build());
+            }
+            dedicated = new org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory(standalone, client.build());
             dedicated.setShareNativeConnection(false);
             dedicated.afterPropertiesSet();
         }
