@@ -1,8 +1,10 @@
 package pl.aiwcorpo.mcp.gateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 
@@ -171,6 +173,25 @@ class AdditionalGroupTest extends GatewayTestBase {
         assertThat(tool(JSON.readTree(adminCall("GET", "/admin/v1/registry/servers", null).body()), "get_issue").path("status").asString())
                 .as("changing it is no better than removing it").isEqualTo("pending_approval");
         assertThat(toolError(call(token("mcp-ops-read", "mcp-ops-audit"))).path("error").asString()).isEqualTo("not_found_or_denied");
+    }
+
+    @Test
+    void approvingADefinitionTheServerChangedKeepsTheGroup() throws Exception {
+        String both = token("mcp-ops-read", "mcp-ops-ops");
+        ops.describeDifferently("get_issue", "Reads one issue, v2");
+        ops.dropSessions();
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
+            listed(both);
+            assertThat(status("get_issue")).isEqualTo("pending_approval");
+        });
+        JsonNode diff = JSON.readTree(adminCall("GET", REGISTRY + "/tools/get_issue/pending", null).body());
+        assertThat(diff.path("pendingEntry").path("additionalGroup").asString()).isEqualTo("mcp-ops-ops");
+
+        assertThat(adminCall("POST", REGISTRY + "/tools/get_issue/approve", "{\"definitionHash\":\"" + diff.path("pendingHash").asString() + "\"}")
+                .statusCode()).isEqualTo(204);
+        ops.dropSessions();
+        await().atMost(Duration.ofSeconds(8)).untilAsserted(() -> assertThat(listed(both)).as("one approval is enough").contains("ops__get_issue"));
+        assertThat(toolError(call(token("mcp-ops-read"))).path("error").asString()).isEqualTo("not_found_or_denied");
     }
 
     @Test
