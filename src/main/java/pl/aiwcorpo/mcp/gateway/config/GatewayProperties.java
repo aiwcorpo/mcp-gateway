@@ -157,7 +157,10 @@ public record GatewayProperties(
     }
 
     public record Upstream(
-            /* Total time for one request, headers and body (SSE included); the DELETEs that end the sessions of one client session share it. */
+            /*
+             * Total time for one call to a server, headers and body (SSE included) of every request it makes (initialize, a repetition after
+             * 409 or 404); the DELETEs that end the sessions of one client session share it too.
+             */
             @DefaultValue("30s") Duration timeout,
             @DefaultValue("4194304") int maxResponseBytes) {
     }

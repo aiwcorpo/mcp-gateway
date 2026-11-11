@@ -98,22 +98,24 @@ public class UpstreamSessions {
         }
         StreamableHttpClient client = client(server);
         String key = key(server, conversationKey);
+        // One deadline for the whole call: the requests it makes (initialize, a repetition after 409 or 404) share the upstream timeout.
+        long deadline = client.deadline();
         for (int attempt = 0; attempt < 2; attempt++) {
-            Session session = ensure(server, client, key, user, requestId);
+            Session session = ensure(server, client, key, user, requestId, deadline);
             // A new token for every send: the first one is spent when the server answers, whatever it answers (one-time jti).
             java.util.function.Supplier<UpstreamRequest> next = () -> new UpstreamRequest(
                     tokens.forUser(server.serverId(), user, tool, requestId, server.adapter() ? risk : null,
                             server.adapter() ? action : null), requestId, session.sessionId(),
                     session.protocolVersion(), credential, json.writeValueAsString(message));
             admit(server, admitted);
-            UpstreamResponse response = client.post(next.get(), message.get("id"));
+            UpstreamResponse response = client.post(next.get(), message.get("id"), deadline);
             if (tool != null && policyDataStale(response)) {
                 // The server holds no policy data or older than this instance's revision (C14): push the data and repeat the call once,
                 // whether or not the push was delivered (the vectors count two calls for a push that failed). It refused before it did
                 // anything, so repeating is safe whatever the tool does.
                 boolean delivered = policyDataPush.test(server);
                 admit(server, admitted);
-                response = client.post(next.get(), message.get("id"));
+                response = client.post(next.get(), message.get("id"), deadline);
                 if (policyDataStale(response)) {
                     throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE, server.serverId() + " is still stale after the push"
                             + (delivered ? "" : " (the push did not reach it)"));
@@ -194,7 +196,8 @@ public class UpstreamSessions {
         return sessions.size();
     }
 
-    private Session ensure(McpServer server, StreamableHttpClient client, String key, GatewayUser user, String requestId) throws UpstreamException {
+    private Session ensure(McpServer server, StreamableHttpClient client, String key, GatewayUser user, String requestId, long deadline)
+            throws UpstreamException {
         Session existing = sessions.get(key);
         if (existing != null) {
             verifyOwner(existing, user);
@@ -208,7 +211,7 @@ public class UpstreamSessions {
                     verifyOwner(existing, user);
                     return existing;
                 }
-                Session created = initialize(server, client, user, requestId);
+                Session created = initialize(server, client, user, requestId, deadline);
                 sessions.put(key, created);
                 return created;
             }
@@ -217,7 +220,8 @@ public class UpstreamSessions {
         }
     }
 
-    private Session initialize(McpServer server, StreamableHttpClient client, GatewayUser user, String requestId) throws UpstreamException {
+    private Session initialize(McpServer server, StreamableHttpClient client, GatewayUser user, String requestId, long deadline)
+            throws UpstreamException {
         ObjectNode init = json.createObjectNode();
         init.put("jsonrpc", "2.0");
         init.put("id", "gw-init-" + UuidV7.next());
@@ -227,7 +231,7 @@ public class UpstreamSessions {
         params.putObject("clientInfo").put("name", clientName).put("version", clientVersion);
         init.put("method", "initialize");
         UpstreamResponse response = client.post(new UpstreamRequest(tokens.forUser(server.serverId(), user, null, requestId),
-                requestId, null, null, null, json.writeValueAsString(init)), init.get("id"));
+                requestId, null, null, null, json.writeValueAsString(init)), init.get("id"), deadline);
         check(response, server);
         JsonNode result = response.message() == null ? null : response.message().get("result");
         String version = result == null ? null : result.path("protocolVersion").asString(null);
@@ -242,7 +246,7 @@ public class UpstreamSessions {
         initialized.put("jsonrpc", "2.0");
         initialized.put("method", "notifications/initialized");
         UpstreamResponse ack = client.post(new UpstreamRequest(tokens.forUser(server.serverId(), user, null, requestId),
-                requestId, response.sessionId(), version, null, json.writeValueAsString(initialized)), null);
+                requestId, response.sessionId(), version, null, json.writeValueAsString(initialized)), null, deadline);
         if (ack.status() != 202 && ack.status() != 200) {
             throw new UpstreamException(UpstreamException.Kind.PROTOCOL, "notifications/initialized answered " + ack.status());
         }

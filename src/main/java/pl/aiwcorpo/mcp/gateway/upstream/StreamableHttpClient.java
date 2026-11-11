@@ -60,13 +60,21 @@ public class StreamableHttpClient {
     }
 
     public UpstreamResponse post(UpstreamRequest request, JsonNode expectedId) throws UpstreamException {
+        return post(request, expectedId, deadline());
+    }
+
+    /** One request of an operation that ends at {@code deadline} ({@link #deadline()}): its headers and its body end there at the latest. */
+    public UpstreamResponse post(UpstreamRequest request, JsonNode expectedId, long deadline) throws UpstreamException {
+        long remaining = deadline - System.nanoTime();
+        if (remaining <= 0) {
+            throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE, "no time left for another request");
+        }
         HttpRequest.Builder builder = HttpRequest.newBuilder(endpoint)
-                .timeout(timeout)
+                .timeout(Duration.ofNanos(remaining))
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json, text/event-stream")
                 .POST(HttpRequest.BodyPublishers.ofString(request.body()));
         headers(builder, request);
-        long deadline = System.nanoTime() + timeout.toNanos();
         HttpResponse<InputStream> response = send(builder.build());
         int status = response.statusCode();
         String sessionId = response.headers().firstValue("Mcp-Session-Id").orElse(null);
