@@ -778,6 +778,10 @@ public final class RegistryService {
                         full.set("risk", entry.get("risk"));
                         full.set("action", entry.get("action"));
                     }
+                    // The group is in the hash; an approval of the entry keeps it, as it keeps the risk.
+                    if (entry.has("additionalGroup")) {
+                        full.set("additionalGroup", entry.get("additionalGroup"));
+                    }
                     full.set("resourceRefs", entry.get("resourceRefs"));
                     full.set("definition", live.get(name));
                     full.put("definitionHash", changedHashes.get(name));
