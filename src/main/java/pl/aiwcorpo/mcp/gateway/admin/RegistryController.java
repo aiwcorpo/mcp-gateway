@@ -253,6 +253,11 @@ public class RegistryController {
         } catch (JacksonException e) {
             hash = null;
         }
+        // Lowering a risk widens access: the portal asks for a fresh MFA first, and the gateway checks it on the token it gets (CC-167).
+        if (acceptRiskLowering && !mfa.fresh(token)) {
+            mfa.refused(token, requestId, "approveTool");
+            return error(HttpStatus.UNAUTHORIZED, requestId, "step_up_required", null, null);
+        }
         if (hash == null || !DEFINITION_HASH.matcher(hash).matches()) {
             return error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
         }
