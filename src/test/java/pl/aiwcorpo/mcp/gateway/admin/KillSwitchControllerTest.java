@@ -8,6 +8,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -33,7 +34,12 @@ class KillSwitchControllerTest {
 
     private static Jwt administrator() {
         return Jwt.withTokenValue("t").header("alg", "none").subject("sub-admin").claim("preferred_username", "a.admin")
-                .claim("azp", "mcp-portal-bff").claim("groups", List.of("mcp-platform-admin")).issuedAt(Instant.now()).expiresAt(Instant.now().plusSeconds(60)).build();
+                .claim("azp", "mcp-portal-bff").claim("groups", List.of("mcp-platform-admin")).claim("auth_time", Instant.now().getEpochSecond())
+                .claim("amr", List.of("pwd", "otp")).issuedAt(Instant.now()).expiresAt(Instant.now().plusSeconds(60)).build();
+    }
+
+    private static FreshMfa mfa() {
+        return new FreshMfa(List.of(), List.of("otp"), Clock.systemUTC(), new AuditLog(), "mcp-gateway");
     }
 
     private static MockHttpServletRequest body(String json) {
@@ -53,7 +59,7 @@ class KillSwitchControllerTest {
         audit.listen(event -> events.add(String.valueOf(event.view().get("reason"))));
         AtomicInteger announced = new AtomicInteger();
         KillSwitchController controller = new KillSwitchController(store, mock(KillSwitches.class), servers, audit, "mcp-gateway", JSON,
-                announced::incrementAndGet);
+                announced::incrementAndGet, mfa());
 
         ResponseEntity<String> answer = controller.putServer("mcp-jira", administrator(), body("{\"reason\":\"incident\"}"));
 
@@ -70,7 +76,8 @@ class KillSwitchControllerTest {
         doThrow(new DataAccessResourceFailureException("down")).when(store).delete(any(), any());
         ServerRegistry servers = mock(ServerRegistry.class);
         when(servers.find("mcp-jira")).thenReturn(Optional.of(mock(McpServer.class)));
-        KillSwitchController controller = new KillSwitchController(store, mock(KillSwitches.class), servers, new AuditLog(), "mcp-gateway", JSON, () -> { });
+        KillSwitchController controller = new KillSwitchController(store, mock(KillSwitches.class), servers, new AuditLog(), "mcp-gateway", JSON, () -> { },
+                mfa());
 
         assertThat(controller.deleteServer("mcp-jira", administrator(), new MockHttpServletRequest()).getStatusCode().value()).isEqualTo(503);
     }
@@ -80,7 +87,7 @@ class KillSwitchControllerTest {
         KillSwitches switches = mock(KillSwitches.class);
         when(switches.entries()).thenReturn(Optional.empty());
         KillSwitchController controller = new KillSwitchController(mock(KillSwitchStore.class), switches, mock(ServerRegistry.class),
-                new AuditLog(), "mcp-gateway", JSON, () -> { });
+                new AuditLog(), "mcp-gateway", JSON, () -> { }, mfa());
 
         ResponseEntity<String> answer = controller.list(administrator(), new MockHttpServletRequest());
 

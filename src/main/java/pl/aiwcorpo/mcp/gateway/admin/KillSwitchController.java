@@ -37,7 +37,8 @@ import tools.jackson.databind.node.ObjectNode;
 /**
  * The emergency switch of a server or a tool (C5, CC-194, A9): put and lifted by an administrator of the portal, listed for the portal.
  * The switch is stored first, then the counter of changes moves and every instance reads it within its cache time; a switch that could
- * not be stored is a 503, never a 204. Putting needs no fresh MFA (the BFF asks for one when a switch is lifted).
+ * not be stored is a 503, never a 204. Putting needs no fresh MFA (an incident must not wait for a second factor); lifting widens access
+ * again, so the BFF asks for one and the gateway checks it on the token it gets.
  */
 @RestController
 public class KillSwitchController {
@@ -55,10 +56,11 @@ public class KillSwitchController {
     private final JsonMapper json;
     private final AdminResponses answers;
     private final Runnable changed;
+    private final FreshMfa mfa;
 
     /** @param changed told after a switch was stored, so that this instance reads it and its streams are checked at once */
     public KillSwitchController(KillSwitchStore store, KillSwitches switches, ServerRegistry servers, AuditLog audit, String componentId,
-                                JsonMapper json, Runnable changed) {
+                                JsonMapper json, Runnable changed, FreshMfa mfa) {
         this.store = store;
         this.switches = switches;
         this.servers = servers;
@@ -67,6 +69,7 @@ public class KillSwitchController {
         this.json = json;
         this.answers = new AdminResponses(json);
         this.changed = changed;
+        this.mfa = mfa;
     }
 
     @GetMapping("/admin/v1/kill-switches")
@@ -152,6 +155,10 @@ public class KillSwitchController {
         String requestId = AdminResponses.requestId(request);
         if (!administrator(token)) {
             return answers.error(HttpStatus.FORBIDDEN, requestId, "access_denied", null, null);
+        }
+        if (!mfa.fresh(token)) {
+            mfa.refused(token, requestId, tool == null ? "deleteServerKillSwitch" : "deleteToolKillSwitch");
+            return answers.error(HttpStatus.UNAUTHORIZED, requestId, "step_up_required", null, null);
         }
         // The switch of a tool that left the manifest can still be lifted: the address is checked, the tool is not.
         if (!SERVER_ID.matcher(serverId).matches() || (tool != null && !TOOL_NAME.matcher(tool).matches())) {
