@@ -607,6 +607,30 @@ class GatewayIntegrationTest extends GatewayTestBase {
     }
 
     @Test
+    void aBodyUnderTheSizeLimitIsRefusedWhenItHoldsFarMoreTokensThanData() throws Exception {
+        StringBuilder rows = new StringBuilder("[");
+        for (int i = 0; rows.length() < 1_000_000; i++) {
+            rows.append(i == 0 ? "" : ",").append("{\"id\":").append(100_000 + i).append(",\"key\":\"ABC-").append(i)
+                    .append("\",\"status\":\"Open\",\"labels\":[\"a\",\"b\"],\"points\":3}");
+        }
+        assertThat(modernPing(rows.append(']').toString()).statusCode()).as("about 1 MiB of records").isEqualTo(200);
+
+        Map<String, String> refused = Map.of("1 MiB of empty objects", "[" + "{},".repeat(340_000) + "{}]",
+                "101 levels", "[".repeat(101) + "]".repeat(101), "a number of 101 digits", "1".repeat(101));
+        for (Map.Entry<String, String> pad : refused.entrySet()) {
+            HttpResponse<String> response = modernPing(pad.getValue());
+            assertThat(response.statusCode()).as(pad.getKey()).isEqualTo(400);
+            assertThat(JSON.readTree(response.body()).path("error").path("code").asInt()).as(pad.getKey()).isEqualTo(-32700);
+        }
+    }
+
+    private HttpResponse<String> modernPing(String pad) throws Exception {
+        return send(aliceToken(), "/mcp", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"params\":{\"_meta\":{"
+                + "\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\",\"io.modelcontextprotocol/clientCapabilities\":{}},\"pad\":"
+                + pad + "}}", Map.of("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "ping"));
+    }
+
+    @Test
     void invalidToolsCallIsAudited(CapturedOutput output) throws Exception {
         HttpResponse<String> call = sendModern(aliceToken(), "tools/call", "jira__get_issue",
                 "{\"name\":\"jira__get_issue\",\"arguments\":[1]}");
