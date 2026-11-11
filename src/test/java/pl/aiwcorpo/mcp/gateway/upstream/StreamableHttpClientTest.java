@@ -36,6 +36,8 @@ class StreamableHttpClientTest {
     @BeforeEach
     void start() throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        // Handlers off the dispatcher thread: a silent one would otherwise hold stop() until it ends.
+        server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
         server.createContext("/mcp", exchange -> {
             exchange.getRequestBody().readAllBytes();
             exchange.getResponseHeaders().set("Content-Type", contentType.get());
@@ -90,6 +92,19 @@ class StreamableHttpClientTest {
                     assertThat(e.kind()).isEqualTo(UpstreamException.Kind.UNAVAILABLE);
                     assertThat(e.getMessage()).isEqualTo("response not complete in time");
                 });
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(3));
+    }
+
+    @Test
+    void deleteEndsWhenTheStatusArrivesAlthoughTheBodyStalls() {
+        contentType.set("text/event-stream");
+        silent = true;
+        StreamableHttpClient http11 = new StreamableHttpClient(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/mcp"),
+                HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build(), JSON, Duration.ofSeconds(1), LIMIT);
+        long started = System.nanoTime();
+
+        http11.delete(new UpstreamRequest("jwt", "0192d1b2-7c3a-7d4e-8f10-2a3b4c5d6e7f", "s-1", "2025-11-25", null, null));
+
         assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(3));
     }
 
