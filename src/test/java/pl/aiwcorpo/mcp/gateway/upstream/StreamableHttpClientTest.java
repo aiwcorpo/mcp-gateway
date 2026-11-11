@@ -28,6 +28,7 @@ class StreamableHttpClientTest {
 
     private final AtomicReference<String> contentType = new AtomicReference<>();
     private final AtomicReference<byte[]> chunk = new AtomicReference<>();
+    private final AtomicReference<String> sessionId = new AtomicReference<>();
     private volatile long chunks;
     private volatile boolean silent;
     private HttpServer server;
@@ -41,6 +42,9 @@ class StreamableHttpClientTest {
         server.createContext("/mcp", exchange -> {
             exchange.getRequestBody().readAllBytes();
             exchange.getResponseHeaders().set("Content-Type", contentType.get());
+            if (sessionId.get() != null) {
+                exchange.getResponseHeaders().set("Mcp-Session-Id", sessionId.get());
+            }
             exchange.sendResponseHeaders(200, 0);
             try (OutputStream out = exchange.getResponseBody()) {
                 if (silent) {
@@ -106,6 +110,22 @@ class StreamableHttpClientTest {
         http11.delete(new UpstreamRequest("jwt", "0192d1b2-7c3a-7d4e-8f10-2a3b4c5d6e7f", "s-1", "2025-11-25", null, null));
 
         assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(3));
+    }
+
+    @Test
+    void aSessionIdIsTakenOnlyInVisibleAsciiAndUpToTheLimit() throws Exception {
+        respond("application/json", "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}".getBytes(StandardCharsets.UTF_8), 1);
+        String longest = "a".repeat(StreamableHttpClient.MAX_SESSION_ID);
+        sessionId.set(longest);
+        assertThat(client.post(request(), IntNode.valueOf(1)).sessionId()).isEqualTo(longest);
+
+        for (String refused : java.util.List.of(longest + "a", "a b")) {
+            sessionId.set(refused);
+            assertThatThrownBy(() -> client.post(request(), IntNode.valueOf(1))).isInstanceOfSatisfying(UpstreamException.class, e -> {
+                assertThat(e.kind()).isEqualTo(UpstreamException.Kind.PROTOCOL);
+                assertThat(e.getMessage()).isEqualTo("invalid session id");
+            });
+        }
     }
 
     @Test
