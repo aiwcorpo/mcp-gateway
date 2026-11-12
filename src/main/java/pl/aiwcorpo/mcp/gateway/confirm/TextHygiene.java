@@ -9,7 +9,26 @@ public final class TextHygiene {
     private TextHygiene() {
     }
 
-    public static boolean forbidden(int cp) {
+    /** True when {@code text} holds a forbidden character; a lone U+FE0F is allowed only directly after an emoji (CC-121, CC-122). */
+    public static boolean containsForbidden(String text) {
+        int[] cps = text.codePoints().toArray();
+        for (int i = 0; i < cps.length; i++) {
+            if (forbiddenAt(cps, i)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The variation selector 16 is judged by its predecessor, so a second one in a row follows no emoji and is refused. */
+    private static boolean forbiddenAt(int[] cps, int index) {
+        if (cps[index] == 0xFE0F && index > 0 && Character.isExtendedPictographic(cps[index - 1])) {
+            return false;
+        }
+        return forbidden(cps[index]);
+    }
+
+    private static boolean forbidden(int cp) {
         if (cp < 0x20) {
             return cp != '\t' && cp != '\n' && cp != '\r';
         }
@@ -32,8 +51,10 @@ public final class TextHygiene {
     /** Forbidden characters as {@code \\uXXXX}, so the text stays readable and cannot hide anything. */
     static String escape(String text) {
         StringBuilder out = new StringBuilder(text.length());
-        text.codePoints().forEach(cp -> {
-            if (forbidden(cp)) {
+        int[] cps = text.codePoints().toArray();
+        for (int i = 0; i < cps.length; i++) {
+            int cp = cps[i];
+            if (forbiddenAt(cps, i)) {
                 if (cp > 0xFFFF) {
                     char[] pair = Character.toChars(cp);
                     out.append(String.format("\\u%04x\\u%04x", (int) pair[0], (int) pair[1]));
@@ -43,7 +64,7 @@ public final class TextHygiene {
             } else {
                 out.appendCodePoint(cp);
             }
-        });
+        }
         return out.toString();
     }
 }
