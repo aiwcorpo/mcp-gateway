@@ -8,6 +8,7 @@ import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -70,6 +71,7 @@ public class McpEndpoint {
     private final ClientSessionStore sessions;
     private final UpstreamSessions upstream;
     private final JsonMapper json;
+    private final JsonMapper requestJson;
     private final MeterRegistry meters;
     private final List<String> allowedOrigins;
     private final String name;
@@ -79,12 +81,14 @@ public class McpEndpoint {
     private final ToolStreams streams;
 
     public McpEndpoint(ServerRegistry servers, McpGatewayService service, ClientSessionStore sessions, UpstreamSessions upstream,
-                       JsonMapper json, MeterRegistry meters, GatewayProperties properties, ToolStreams streams) {
+                       JsonMapper json, @Qualifier("requestJson") JsonMapper requestJson, MeterRegistry meters, GatewayProperties properties,
+                       ToolStreams streams) {
         this.servers = servers;
         this.service = service;
         this.sessions = sessions;
         this.upstream = upstream;
         this.json = json;
+        this.requestJson = requestJson;
         this.meters = meters;
         this.allowedOrigins = properties.allowedOrigins();
         this.name = properties.componentId();
@@ -139,7 +143,7 @@ public class McpEndpoint {
         }
         JsonNode message;
         try {
-            message = json.readTree(body);
+            message = requestJson.readTree(body);
         } catch (JacksonException e) {
             return error(HttpStatus.BAD_REQUEST, requestId, null, -32700, "Parse error.", null, false);
         }

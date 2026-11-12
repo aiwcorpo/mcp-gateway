@@ -235,6 +235,7 @@ public final class TestMcpServer implements AutoCloseable {
     private final java.util.concurrent.atomic.AtomicInteger callsInFlight = new java.util.concurrent.atomic.AtomicInteger();
     private final java.util.concurrent.atomic.AtomicInteger mostCallsInFlight = new java.util.concurrent.atomic.AtomicInteger();
     private volatile int extraTools;
+    private volatile int fillerNumbers;
     private volatile boolean driftedPolicies;
     private volatile Map<String, String> additionalGroups = Map.of();
     private volatile boolean updateTool;
@@ -261,6 +262,11 @@ public final class TestMcpServer implements AutoCloseable {
     /** {@code tools/call} answers after this many milliseconds: a system that is slow. */
     public void slowToolCalls(long millis) {
         toolCallDelayMillis = millis;
+    }
+
+    /** Every {@code tools/call} answer carries a {@code structuredContent} array of this many numbers: a long answer of few bytes per token. */
+    public void answerWithNumbers(int count) {
+        fillerNumbers = count;
     }
 
     /** The most {@code tools/call} requests this server has had in flight at once since the start. */
@@ -621,6 +627,12 @@ public final class TestMcpServer implements AutoCloseable {
                         }
                     }
                     result = callTool(toolName, message.path("params").path("arguments"), headers);
+                    if (fillerNumbers > 0) {
+                        ArrayNode numbers = result.putArray("structuredContent");
+                        for (int i = 0; i < fillerNumbers; i++) {
+                            numbers.add(1);
+                        }
+                    }
                 } finally {
                     callsInFlight.decrementAndGet();
                 }

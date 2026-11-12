@@ -46,12 +46,14 @@ public class PolicyController {
     private final PolicyService policies;
     private final AdminResponses responses;
     private final JsonMapper json;
+    private final JsonMapper requestJson;
 
-    public PolicyController(PolicyService policies, JsonMapper json, FreshMfa mfa) {
+    public PolicyController(PolicyService policies, JsonMapper json, JsonMapper requestJson, FreshMfa mfa) {
         this.mfa = mfa;
         this.policies = policies;
         this.responses = new AdminResponses(json);
         this.json = json;
+        this.requestJson = requestJson;
     }
 
     @GetMapping("/scope-mapping")
@@ -192,7 +194,7 @@ public class PolicyController {
             return null;
         }
         try {
-            return json.readTree(raw);
+            return requestJson.readTree(raw);
         } catch (JacksonException e) {
             return null;
         }

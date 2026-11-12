@@ -624,6 +624,21 @@ class GatewayIntegrationTest extends GatewayTestBase {
         }
     }
 
+    @Test
+    void anAnswerOfAServerIsReadUpToTheResponseLimitWhateverItsTokenCount() throws Exception {
+        env.jira.answerWithNumbers(400_000);
+        try {
+            HttpResponse<String> call = sendModern(aliceToken(), "tools/call", "jira__get_issue",
+                    "{\"name\":\"jira__get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
+            assertThat(call.statusCode()).isEqualTo(200);
+            JsonNode result = JSON.readTree(call.body()).path("result");
+            assertThat(result.path("isError").asBoolean()).isFalse();
+            assertThat(result.path("structuredContent").size()).as("400,000 tokens, more than a request may hold").isEqualTo(400_000);
+        } finally {
+            env.jira.answerWithNumbers(0);
+        }
+    }
+
     private HttpResponse<String> modernPing(String pad) throws Exception {
         return send(aliceToken(), "/mcp", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"params\":{\"_meta\":{"
                 + "\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\",\"io.modelcontextprotocol/clientCapabilities\":{}},\"pad\":"
