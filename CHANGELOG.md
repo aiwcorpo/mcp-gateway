@@ -23,6 +23,9 @@ integration builds tag the image `m6-<short sha>`.
 - `MCP_SERVER_REFUSED_ADDRESSES` takes IPv4 only as four decimal numbers without leading zeros. Shorthand such as `10/8` or `192.168/16`
   was read as another range (`0.0.0.10/8`) and `010.0.0.0/8` as `8.0.0.0/8`; such an entry now stops the gateway at start. Before
   upgrading, write every entry out in full (`10.0.0.0/8`).
+- A call that needs a confirmation is refused with `invalid_argument`, before anything is pending, when its arguments hold an integer
+  beyond 2^53 - 1 at any depth (the RFC 8785 hash writes numbers as doubles, so two such integers could share one pending call) or
+  more than 50 arguments (the preview shows at most 50). Before upgrading, check that no DESTRUCTIVE tool takes such arguments.
 
 ## 2.0.1
 
