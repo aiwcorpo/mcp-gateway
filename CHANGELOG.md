@@ -35,6 +35,15 @@ integration builds tag the image `m6-<short sha>`.
 - Approving a pending definition whose names or texts hold a control, format, bidirectional or tag character is refused with
   `422 manifest_rejected` (audited as `admin_change`, outcome `denied`, reason `hidden_characters`); the tool stays pending. A single U+FE0F
   directly after an emoji is allowed, as in the contract; anywhere else it is refused.
+- The gateway no longer reads form bodies (Spring's form content filter is off): a PUT, PATCH or DELETE with a form body was read in
+  full before authentication.
+- The JSON of a request has limits: 262,144 tokens, 100 levels, numbers of at most 100 characters, and the existing size limits. A body
+  over them is refused with 400 and -32700. Answers of servers and stored documents are not held to the token limit, only to
+  `gateway.upstream.max-response-bytes`.
+- A JSON-RPC `id` that is an object, an array or a boolean, or a string longer than 128 characters, is refused with 400 and -32600.
+- The internal port (8443) runs on virtual threads, like the public one, and waits 10 s for what a peer sends, so keep-alive on it drops
+  from 60 s to 10 s. A refused request's body is not read to its end: the answer carries `Connection: close` and the connection ends.
+- Spring Boot 4.1.2 (Jackson 3.1.7, Tomcat 11.0.27).
 
 ## 2.0.1
 
