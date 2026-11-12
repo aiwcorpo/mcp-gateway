@@ -67,10 +67,10 @@ public final class DefinitionCheck {
      */
     public static boolean hidesText(JsonNode definition) {
         if (definition.isString()) {
-            return definition.asString().codePoints().anyMatch(TextHygiene::forbidden);
+            return TextHygiene.containsForbidden(definition.asString());
         }
         for (String name : definition.propertyNames()) {
-            if (name.codePoints().anyMatch(TextHygiene::forbidden)) {
+            if (TextHygiene.containsForbidden(name)) {
                 return true;
             }
         }

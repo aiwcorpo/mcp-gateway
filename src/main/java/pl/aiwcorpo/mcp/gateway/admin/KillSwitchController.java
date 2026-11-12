@@ -197,7 +197,7 @@ public class KillSwitchController {
             }
             String reason = body.path("reason").asString();
             int length = reason.codePointCount(0, reason.length());
-            if (length < 1 || length > 200 || reason.codePoints().anyMatch(TextHygiene::forbidden)) {
+            if (length < 1 || length > 200 || TextHygiene.containsForbidden(reason)) {
                 return Optional.empty();
             }
             return Optional.of(reason);
