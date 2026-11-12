@@ -26,6 +26,15 @@ integration builds tag the image `m6-<short sha>`.
 - A call that needs a confirmation is refused with `invalid_argument`, before anything is pending, when its arguments hold an integer
   beyond 2^53 - 1 at any depth (the RFC 8785 hash writes numbers as doubles, so two such integers could share one pending call) or
   more than 50 arguments (the preview shows at most 50). Before upgrading, check that no DESTRUCTIVE tool takes such arguments.
+- Lifting a server or tool kill switch and approving a tool with `acceptRiskLowering` need a fresh MFA on the token, like the other operations
+  that widen access: an older token gets `401 step_up_required` (audited). A plain tool approval is unchanged.
+- Approving a definition that the server recorded after a change keeps the tool's `additionalGroup`; before, the recorded entry left it out
+  and approving it removed the group requirement. Migration `V16` clears the pending entries recorded that way, and the next check of the
+  server records them again with the group. Tools that already lost their group requirement through this bug are not found by the
+  migration: an administrator has to check the tools whose manifest names an `additionalGroup` and restore it where it is missing.
+- Approving a pending definition whose names or texts hold a control, format, bidirectional or tag character is refused with
+  `422 manifest_rejected` (audited as `admin_change`, outcome `denied`, reason `hidden_characters`); the tool stays pending. A single U+FE0F
+  directly after an emoji is allowed, as in the contract; anywhere else it is refused.
 
 ## 2.0.1
 
