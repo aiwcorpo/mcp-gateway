@@ -299,7 +299,7 @@ class RegistryTest extends GatewayTestBase {
     }
 
     @Test
-    void aDefinitionWithHiddenOrBidirectionalCharactersIsNeverApproved() throws Exception {
+    void aDefinitionWithHiddenOrBidirectionalCharactersIsNeverApproved(CapturedOutput output) throws Exception {
         // Tag characters U+E0049 U+E0067 U+E006E and a right-to-left override.
         env.gitlab.describeDifferently("search_issues", "Returns issues.\uDB40\uDC49\uDB40\uDC67\uDB40\uDC6E \u202Eabc\u202C");
         env.gitlab.dropSessions();
@@ -312,6 +312,9 @@ class RegistryTest extends GatewayTestBase {
         assertThat(refused.statusCode()).as(refused.body()).isEqualTo(422);
         assertThat(Contracts.gatewayAdminErrors("ManifestRejected", JSON.readTree(refused.body()))).isEmpty();
         assertThat(listedTools()).doesNotContain("gitlab__search_issues");
+        assertThat(events(output, "admin_change", "hidden_characters")).anyMatch(e -> pendingHash.equals(e.path("definitionHash").asString())
+                && "search_issues".equals(e.path("tool").asString()) && "mcp-gitlab".equals(e.path("server").asString())
+                && "denied".equals(e.path("outcome").asString()) && ADMIN_SUB.equals(e.path("sub").asString()));
 
         env.gitlab.describeAsApproved();
         await().atMost(Duration.ofSeconds(8)).untilAsserted(() -> assertThat(listedTools()).contains("gitlab__search_issues"));
