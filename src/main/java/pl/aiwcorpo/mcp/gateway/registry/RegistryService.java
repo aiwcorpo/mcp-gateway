@@ -414,7 +414,13 @@ public final class RegistryService {
         } else if (result instanceof Approval.RiskLowered) {
             denied(requestId, serverId, "risk_lowered");
         } else if (result instanceof Approval.Rejected rejected) {
-            denied(requestId, serverId, rejected.reason());
+            if (rejected.reason() == null) {
+                // The only refusal without a reason in the answer is the hidden-character screen; the administrator still has to find it in the audit.
+                audit.emit(AuditEvent.of("admin_change", requestId, componentId).userWithoutClient(administrator).server(serverId).tool(tool)
+                        .reason("hidden_characters").definitionHash(hash).outcome("denied"));
+            } else {
+                denied(requestId, serverId, rejected.reason());
+            }
         }
         return result;
     }
