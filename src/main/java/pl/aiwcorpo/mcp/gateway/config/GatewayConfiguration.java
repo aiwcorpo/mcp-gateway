@@ -6,9 +6,11 @@ import java.time.Clock;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.DependsOn;
+import org.springframework.context.annotation.Primary;
 import org.springframework.core.Ordered;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -99,19 +101,33 @@ public class GatewayConfiguration {
     }
 
     /**
-     * The one mapper of the gateway. It parses what clients, servers and administrators send, so its read limits are set here and not
-     * left to the library. A document holds at most one token per four bytes of the largest request (1 MiB, McpEndpoint): real data of
-     * that size fits, and a body of empty objects no longer becomes a tree some thirty times its length. A document is no longer than the
-     * longest body the gateway reads, the answer of a server (gateway.upstream.max-response-bytes, never less than 4 MiB, which also
-     * covers a stored document of 1 MiB as PostgreSQL returns it). 100 levels and numbers of 100 characters are far beyond any message.
+     * The mapper for what the gateway stores and what servers answer: a stored document, which PostgreSQL returns as at most the
+     * answer of a server allows, and the answer itself (gateway.upstream.max-response-bytes, never less than 4 MiB). A token takes at
+     * least one byte, so the token count cannot be what stops a document of that size; the document length is. 100 levels and numbers of
+     * 100 characters are far beyond any message.
      */
     @Bean
+    @Primary
     JsonMapper gatewayJson(GatewayProperties properties) {
         int longest = Math.max(4 * 1024 * 1024, properties.upstream().maxResponseBytes());
+        return mapper(longest, longest);
+    }
+
+    /**
+     * The mapper for the bodies of requests that clients and administrators send, which come before anything is known about the
+     * caller's data. A document holds at most one token per four bytes of the largest request (1 MiB, McpEndpoint and PolicyController):
+     * real data of that size fits, and a body of empty objects no longer becomes a tree some thirty times its length.
+     */
+    @Bean
+    JsonMapper requestJson() {
+        return mapper(1024 * 1024, 1024 * 1024 / 4);
+    }
+
+    private static JsonMapper mapper(int longestDocument, int mostTokens) {
         StreamReadConstraints limits = StreamReadConstraints.builder()
-                .maxDocumentLength(longest)
-                .maxStringLength(longest)
-                .maxTokenCount(1024 * 1024 / 4)
+                .maxDocumentLength(longestDocument)
+                .maxStringLength(longestDocument)
+                .maxTokenCount(mostTokens)
                 .maxNestingDepth(100)
                 .maxNumberLength(100)
                 .build();
@@ -660,8 +676,9 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    PolicyController policyController(PolicyService policies, JsonMapper gatewayJson, FreshMfa mfa) {
-        return new PolicyController(policies, gatewayJson, mfa);
+    PolicyController policyController(PolicyService policies, JsonMapper gatewayJson, @Qualifier("requestJson") JsonMapper requestJson,
+                                      FreshMfa mfa) {
+        return new PolicyController(policies, gatewayJson, requestJson, mfa);
     }
 
     /** Takes what other instances stored; in development it also approves what a server that was just added brought. */
