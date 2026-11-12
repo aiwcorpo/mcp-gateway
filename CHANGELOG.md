@@ -12,6 +12,17 @@ integration builds tag the image `m6-<short sha>`.
   the revision, so a client taken out of the variable is refused on every instance and no longer served to the servers. Before upgrading,
   compare the variable with `SELECT allowed_clients FROM policy_state WHERE id = 1`; a client that is only in the database is removed at the
   first start. Every instance needs the same value; with different values the one that started last is in force.
+- One upstream call has one deadline, `gateway.upstream.timeout` (30 s), for all the requests it makes (a new session, the policy data
+  push, the call again after 409 or 404) instead of 30 s for each; a request that would start after it fails as `upstream_unavailable`.
+  A tool that needs a new session and answers close to 30 s can now get that error. The DELETEs that end the sessions of one client
+  share the same deadline and no longer wait for the server to close the response body.
+- A server's `Mcp-Session-Id` outside visible ASCII (0x21 to 0x7E) or longer than 1024 characters is a protocol error and no session is
+  created.
+- The confirmation store's connection and the `credential.invalidated` subscriber use the TLS of the main Redis connection
+  (`SPRING_DATA_REDIS_SSL_ENABLED` and the SSL bundle); before, they connected in plaintext even with TLS on.
+- `MCP_SERVER_REFUSED_ADDRESSES` takes IPv4 only as four decimal numbers without leading zeros. Shorthand such as `10/8` or `192.168/16`
+  was read as another range (`0.0.0.10/8`) and `010.0.0.0/8` as `8.0.0.0/8`; such an entry now stops the gateway at start. Before
+  upgrading, write every entry out in full (`10.0.0.0/8`).
 
 ## 2.0.1
 
