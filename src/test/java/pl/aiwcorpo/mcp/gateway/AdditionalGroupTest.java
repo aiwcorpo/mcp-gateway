@@ -11,6 +11,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import pl.aiwcorpo.mcp.testserver.TestMcpServer;
 import tools.jackson.databind.JsonNode;
@@ -192,6 +193,66 @@ class AdditionalGroupTest extends GatewayTestBase {
         ops.dropSessions();
         await().atMost(Duration.ofSeconds(8)).untilAsserted(() -> assertThat(listed(both)).as("one approval is enough").contains("ops__get_issue"));
         assertThat(toolError(call(token("mcp-ops-read"))).path("error").asString()).isEqualTo("not_found_or_denied");
+    }
+
+    @Test
+    void migrationV16ClearsAPendingEntryThatLostTheGroupAndTheNextCheckRecordsItAgain(@Autowired javax.sql.DataSource dataSource) throws Exception {
+        String both = token("mcp-ops-read", "mcp-ops-ops");
+        ops.describeDifferently("get_issue", "Reads one issue, v2");
+        ops.dropSessions();
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
+            listed(both);
+            assertThat(status("get_issue")).isEqualTo("pending_approval");
+        });
+        // What the build before the fix stored: the hash covers the group, the entry does not carry it.
+        jdbc.sql("UPDATE registry_tools SET pending_entry = pending_entry - 'additionalGroup' WHERE server_id = 'mcp-ops' AND tool = 'get_issue'").update();
+        long counter = jdbc.sql("SELECT version FROM registry_changes WHERE id = 1").query(Long.class).single();
+
+        try (java.sql.Connection connection = dataSource.getConnection()) {
+            org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,
+                    new org.springframework.core.io.ClassPathResource("db/migration/V16__registry_pending_group_rerecord.sql"));
+        }
+
+        assertThat(jdbc.sql("SELECT count(*) FROM registry_tools WHERE server_id = 'mcp-ops' AND tool = 'get_issue' AND approved_entry IS NOT NULL "
+                + "AND pending_entry IS NULL AND pending_hash IS NULL AND pending_version IS NULL AND pending_change IS NULL "
+                + "AND pending_source IS NULL AND pending_credential IS NULL AND NOT pending_risk_lowered").query(Long.class).single())
+                .as("the pending columns are cleared together and the approved entry stays").isEqualTo(1L);
+        assertThat(jdbc.sql("SELECT version FROM registry_changes WHERE id = 1").query(Long.class).single()).isGreaterThan(counter);
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> {
+            ops.dropSessions();
+            listed(both);
+            HttpResponse<String> pending = adminCall("GET", REGISTRY + "/tools/get_issue/pending", null);
+            assertThat(pending.statusCode()).isEqualTo(200);
+            assertThat(JSON.readTree(pending.body()).path("pendingEntry").path("additionalGroup").asString()).isEqualTo("mcp-ops-ops");
+        });
+    }
+
+    @Test
+    void migrationV16LeavesAnEntryThatKeptItsGroupAndOneThatCameFromAManifest(@Autowired javax.sql.DataSource dataSource) throws Exception {
+        String both = token("mcp-ops-read", "mcp-ops-ops");
+        ops.describeDifferently("get_issue", "Reads one issue, v2");
+        ops.dropSessions();
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
+            listed(both);
+            assertThat(status("get_issue")).isEqualTo("pending_approval");
+        });
+        String pendingHash = jdbc.sql("SELECT pending_hash FROM registry_tools WHERE server_id = 'mcp-ops' AND tool = 'get_issue'").query(String.class).single();
+
+        try (java.sql.Connection connection = dataSource.getConnection()) {
+            org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,
+                    new org.springframework.core.io.ClassPathResource("db/migration/V16__registry_pending_group_rerecord.sql"));
+        }
+        assertThat(jdbc.sql("SELECT pending_hash FROM registry_tools WHERE server_id = 'mcp-ops' AND tool = 'get_issue'").query(String.class).single())
+                .isEqualTo(pendingHash);
+
+        jdbc.sql("UPDATE registry_tools SET pending_source = 'manifest', pending_entry = pending_entry - 'additionalGroup' "
+                + "WHERE server_id = 'mcp-ops' AND tool = 'get_issue'").update();
+        try (java.sql.Connection connection = dataSource.getConnection()) {
+            org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,
+                    new org.springframework.core.io.ClassPathResource("db/migration/V16__registry_pending_group_rerecord.sql"));
+        }
+        assertThat(jdbc.sql("SELECT pending_hash FROM registry_tools WHERE server_id = 'mcp-ops' AND tool = 'get_issue'").query(String.class).single())
+                .as("an entry from a pulled manifest is the manifest's own and stays").isEqualTo(pendingHash);
     }
 
     @Test
