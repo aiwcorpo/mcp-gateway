@@ -99,4 +99,19 @@ class ServerChecksRaceTest extends GatewayTestBase {
         assertThat(stored.status()).isEqualTo(ServerConfig.UNREACHABLE);
         assertThat(stored.connection().fingerprint()).isEqualTo(pinned.path("fingerprint").asString());
     }
+
+    @Test
+    void aLookThatBeganBeforeTheOneAlreadyStoredIsNotApplied() throws Exception {
+        approvePinned();
+        ServerConfig current = store.config("mcp-race").orElseThrow();
+        Instant earlier = Instant.now();
+        Instant later = earlier.plusSeconds(1);
+        ServerChecks.Observation invalid = ServerChecks.Observation.failed(ServerConfig.MANIFEST_INVALID, "manifest_invalid");
+        ServerChecks.Observation down = ServerChecks.Observation.failed(ServerConfig.UNREACHABLE, "manifest_unreachable");
+
+        checks.applyObservation(UuidV7.next(), "mcp-race", current.connection(), invalid, ServerConfig.MANIFEST_INVALID, "manifest_invalid", later);
+        checks.applyObservation(UuidV7.next(), "mcp-race", current.connection(), down, ServerConfig.UNREACHABLE, "manifest_unreachable", earlier);
+
+        assertThat(store.config("mcp-race").orElseThrow().status()).as("the newer look stays").isEqualTo(ServerConfig.MANIFEST_INVALID);
+    }
 }

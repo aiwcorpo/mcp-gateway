@@ -228,6 +228,11 @@ public final class ServerChecks implements DisposableBean {
                 // one the server has now, so it must not renew, clear or record anything (it could pin another certificate).
                 return null;
             }
+            if (before.lastCheckedAt() != null && now.isBefore(before.lastCheckedAt())) {
+                // A look that began before the one already stored (the loop's, overtaken by a refresh): what it saw is older than what
+                // the server is known to serve now, so it must not put the earlier status back.
+                return null;
+            }
             ServerConfig.Connection connection = before.connection();
             if (seen.renewed() != null && connection != null) {
                 ServerCertificate leaf = seen.renewed();
