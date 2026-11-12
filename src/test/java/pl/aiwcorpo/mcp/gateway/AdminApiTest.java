@@ -7,6 +7,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URI;
+import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
@@ -108,6 +109,22 @@ class AdminApiTest extends GatewayTestBase {
         try (SSLSocket socket = withoutCertificate("DELETE /admin/v1/servers/x", "application/x-www-form-urlencoded", 1024 * 1024)) {
             assertThat(new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII)).readLine())
                     .startsWith("HTTP/1.1 401");
+        }
+    }
+
+    @Test
+    void aPooledClientIsToldThatARefusedRequestEndsItsConnection() throws Exception {
+        // The BFF keeps one client for all its calls. A connection that closes after an answer with no warning would fail its next
+        // request (the JDK client does not repeat a POST), so the refusal has to carry Connection: close.
+        String token = env.idp.token(ALICE_SUB, "alice", ALICE_GROUPS, "mcp-gateway-admin", "mcp-portal-bff");
+        HttpClient pooled = HttpClient.newBuilder().sslContext(env.bffTls).version(HttpClient.Version.HTTP_1_1).build();
+        HttpRequest refused = HttpRequest.newBuilder(URI.create("https://localhost:" + env.internalPort + "/admin/v1/users/someone/purge"))
+                .header("Authorization", "Bearer " + token).header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"pad\":\"" + "a".repeat(100_000) + "\"}")).build();
+        for (int i = 0; i < 20; i++) {
+            HttpResponse<String> answer = pooled.send(refused, HttpResponse.BodyHandlers.ofString());
+            assertThat(answer.statusCode()).isEqualTo(403);
+            assertThat(answer.headers().firstValue("Connection")).hasValue("close");
         }
     }
 
