@@ -19,6 +19,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -46,9 +47,11 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Saturation of one gateway on a small heap: far more callers than the gateway can serve, against a slow system. The gateway must
- * shed what it cannot serve at once with 503 and Retry-After (fail-closed) and stay alive. Pinned: the process lives, nothing but ok and 503 comes back and the system behind sees no more than the
- * limit; no heap threshold is set. The default run is the production setting (limit 128, the heap of an image under 2 GiB at 60%). The system
+ * Saturation of one gateway on a small heap: far more callers than the gateway can serve. The calls the gateway admits (as many as its
+ * limit) are held at the system behind it for the whole load, so the gateway is full whatever the speed of the machine; every other caller
+ * must be shed with 503 and Retry-After (fail-closed) each time it asks, while the gateway stays alive and answers a request without a token
+ * with 401. Once the system answers, every admitted call is served and the system never saw more calls than the limit. No heap threshold is
+ * set. The default run is the production setting (limit 128, the heap of an image under 2 GiB at 60%). The system
  * properties {@code saturation.limit}, {@code saturation.callers}, {@code saturation.heap} and {@code saturation.seconds} scale the run
  * (for example a limit of 100000 shows what the same load does to a gateway that sheds nothing).
  */
@@ -62,20 +65,7 @@ class SaturationTest {
     private static final Duration LOAD = Duration.ofSeconds(Integer.getInteger("saturation.seconds", 15));
     private static final boolean WITH_LIMIT = Boolean.parseBoolean(System.getProperty("saturation.limited", "true"));
 
-    /**
-     * An admitted call whose check of the definitions of the server failed is refused fail-closed with this result (shedding, 503, is
-     * only for callers that were not admitted). The check is one read per server at a time, so under this load it must not fail: a
-     * count above the bound means the server was unreachable or the reads multiply again, and is shown as such and not as an unknown outcome.
-     */
     private static final String UPSTREAM_UNAVAILABLE = "upstream_unavailable";
-    private static final String CLIENT_TIMEOUT = "io:HttpTimeoutException";
-    /**
-     * A laptop running ~30k requests in 15 s occasionally loses one to a client-side timeout, or has one admitted call refused while the
-     * server is read. A share of this size is noise; a regression moves these counts by orders of magnitude. The counts are in the report.
-     */
-    private static final double TOLERATED_SHARE = 0.0005;
-    /** The credential service of the test is a single process on the same laptop: a slow run (a few thousand requests) refuses about 1% of the admitted calls. */
-    private static final double TOLERATED_UNAVAILABLE_SHARE = 0.02;
 
     private static GatewayTestEnvironment env;
     private static Path dir;
@@ -123,6 +113,10 @@ class SaturationTest {
         p.put("gateway.internal-jwt.keys-file", jwks.toString());
         p.put("gateway.internal-jwt.active-kid", "sat-key-a");
         p.put("gateway.mcp.tools-list-timeout", "5000");
+        // The calls held at the server must outlive the whole load, and the definitions read before they were admitted must too: neither
+        // the timeout of the upstream nor the TTL of the reading may end the hold, however slow the machine is.
+        p.put("gateway.upstream.timeout", "120s");
+        p.put("gateway.registry.definition-check-ttl", "60s");
         // The limits of requests are not what is measured here.
         p.put("gateway.rate-limit.per-user", "1000000");
         p.put("gateway.rate-limit.per-client", "1000000");
@@ -162,45 +156,58 @@ class SaturationTest {
 
     @Test
     void manyMoreCallersThanTheGatewayCanServeAreShedWith503AndTheHeapHolds() throws Exception {
-        jira.slowToolCalls(400);
         HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).executor(Executors.newVirtualThreadPerTaskExecutor()).build();
-        // Wait until the tools of the server are served.
-        String probe = env.idp.token(UUID.randomUUID().toString(), "probe", GROUPS);
-        long ready = System.nanoTime() + Duration.ofSeconds(60).toNanos();
-        while (System.nanoTime() < ready && !call(http, probe).contains("\"isError\":false")) {
-            Thread.sleep(500);
+        int admitted = WITH_LIMIT ? Math.min(LIMIT, CALLERS) : CALLERS;
+        List<String> tokens = new ArrayList<>();
+        for (int i = 0; i < CALLERS; i++) {
+            tokens.add(env.idp.token(UUID.randomUUID().toString(), "u" + i, GROUPS));
         }
 
-        Map<String, AtomicInteger> outcomes = new ConcurrentHashMap<>();
+        // The tools of the server are registered by the gateway after it starts serving; the first call that is served says when.
+        long ready = System.nanoTime() + Duration.ofSeconds(60).toNanos();
+        while (!call(http, tokens.get(0)).contains("\"isError\":false")) {
+            assertThat(System.nanoTime()).as("the tools of the server are served within 60 s of the start").isLessThan(ready);
+            Thread.sleep(500);
+        }
+        // Every caller that will be admitted makes one call on its own first, so that its credential and its session at the server exist and
+        // the reading of the definitions is fresh when the held calls arrive: none of them depends on the speed of the broker or of the server.
+        for (int i = 0; i < admitted; i++) {
+            String outcome = classify(send(http, tokens.get(i)), new ConcurrentHashMap<>());
+            assertThat(outcome).as("the warm-up call of caller %d is served: %s", i, gateway.output()).isEqualTo("ok");
+        }
+
+        // The admitted calls are held at the server, so the gateway is full for as long as the load lasts: what is shed does not depend on
+        // how fast the calls are served.
+        Runnable release = jira.holdToolCalls();
+        ExecutorService heldCalls = Executors.newVirtualThreadPerTaskExecutor();
+        ExecutorService shedCallers = Executors.newVirtualThreadPerTaskExecutor();
         Map<String, AtomicInteger> unavailableMessages = new ConcurrentHashMap<>();
+        List<Future<String>> held = new ArrayList<>();
+        for (int i = 0; i < admitted; i++) {
+            String token = tokens.get(i);
+            held.add(heldCalls.submit(() -> classify(send(http, token), unavailableMessages)));
+        }
+        assertThat(jira.awaitCallsInFlight(admitted, Duration.ofSeconds(60))).as("%d calls are admitted and held at the server", admitted).isTrue();
+
+        Map<String, AtomicInteger> outcomes = new ConcurrentHashMap<>();
         AtomicInteger shedWithRetryAfter = new AtomicInteger();
         AtomicLong slowestShed = new AtomicLong();
         long end = System.nanoTime() + LOAD.toNanos();
-        ExecutorService callers = Executors.newVirtualThreadPerTaskExecutor();
-        for (int i = 0; i < CALLERS; i++) {
-            String token = env.idp.token(UUID.randomUUID().toString(), "u" + i, GROUPS);
-            callers.submit(() -> {
+        for (int i = admitted; i < CALLERS; i++) {
+            String token = tokens.get(i);
+            shedCallers.submit(() -> {
                 while (System.nanoTime() < end) {
                     long started = System.nanoTime();
                     String outcome;
                     try {
                         HttpResponse<String> response = send(http, token);
+                        outcome = classify(response, unavailableMessages);
                         if (response.statusCode() == 503) {
-                            outcome = "503";
                             if (response.headers().firstValue("Retry-After").isPresent()) {
                                 shedWithRetryAfter.incrementAndGet();
                             }
                             slowestShed.accumulateAndGet((System.nanoTime() - started) / 1_000_000, Math::max);
                             Thread.sleep(200);
-                        } else if (response.statusCode() == 200 && response.body().contains("\"isError\":false")) {
-                            outcome = "ok";
-                        } else if (response.statusCode() == 200 && response.body().contains("\"isError\":true")
-                                && response.body().contains("\"error\\\":\\\"upstream_unavailable\\\"")) {
-                            outcome = UPSTREAM_UNAVAILABLE;
-                            java.util.regex.Matcher said = java.util.regex.Pattern.compile("message\\\\\":\\\\\"([^\\\\]*)").matcher(response.body());
-                            unavailableMessages.computeIfAbsent(said.find() ? said.group(1) : "?", k -> new AtomicInteger()).incrementAndGet();
-                        } else {
-                            outcome = response.statusCode() + (response.body().length() > 220 ? response.body().substring(0, 220) : response.body());
                         }
                     } catch (IOException e) {
                         outcome = "io:" + e.getClass().getSimpleName();
@@ -223,42 +230,63 @@ class SaturationTest {
                 }
             }
         }
+        // A request that is still waiting for a place when the calls are released would be served: the last answers are collected while
+        // the gateway is still full.
+        shedCallers.shutdown();
+        boolean finished = shedCallers.awaitTermination(60, TimeUnit.SECONDS);
         histogram = gateway.alive() ? jcmd("GC.class_histogram").lines().limit(14).reduce("", (a, b) -> a + b + "\n") : histogram;
         HttpResponse<String> withoutToken = http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + gateway.port() + "/mcp"))
                 .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString("{}")).build(), HttpResponse.BodyHandlers.ofString());
-        callers.shutdown();
-        callers.awaitTermination(60, TimeUnit.SECONDS);
+        int heldAtTheEnd = jira.callsInFlight();
+        release.run();
+        heldCalls.shutdown();
+        Map<String, Integer> servedWhileHeld = new TreeMap<>();
+        for (Future<String> call : held) {
+            servedWhileHeld.merge(call.get(60, TimeUnit.SECONDS), 1, Integer::sum);
+        }
 
         Map<String, Integer> summary = new TreeMap<>();
         outcomes.forEach((k, v) -> summary.put(k, v.get()));
         String report = "limit=" + (WITH_LIMIT ? LIMIT : "none") + " callers=" + CALLERS + " heap=" + HEAP_MB + "m alive=" + gateway.alive()
-                + "\noutcomes=" + summary + "\nshedWithRetryAfter=" + shedWithRetryAfter + " slowestShedMs=" + slowestShed
+                + "\nadmittedAndHeld=" + admitted + " outcomesOfTheHeldCalls=" + servedWhileHeld
+                + "\noutcomesOfTheOthers=" + summary + "\nshedWithRetryAfter=" + shedWithRetryAfter + " slowestShedMs=" + slowestShed
                 + "\nunavailableMessages=" + unavailableMessages + "\ngateway warnings about the server:\n" + warnings()
                 + "\nmostCallsInFlightAtTheServer=" + jira.mostCallsInFlight() + "\nheap used:\n" + heap + histogram;
         Files.writeString(Path.of(System.getProperty("saturation.report", dir.resolve("report.txt").toString())), report);
         System.out.println(report);
 
         assertThat(gateway.alive()).as("the gateway lives: %s", report).isTrue();
+        assertThat(finished).as("the callers end").isTrue();
+        assertThat(servedWhileHeld).as("every admitted call is served once the server answers: %s", report).isEqualTo(Map.of("ok", admitted));
         if (WITH_LIMIT) {
-            assertThat(summary.getOrDefault("503", 0)).as("callers over the limit are shed").isPositive();
-            assertThat(shedWithRetryAfter.get()).as("every 503 carries Retry-After").isEqualTo(summary.getOrDefault("503", 0));
-            assertThat(summary.getOrDefault("ok", 0)).isPositive();
-            int requests = summary.values().stream().mapToInt(Integer::intValue).sum();
-            int tolerated = (int) Math.ceil(requests * TOLERATED_SHARE);
-            int toleratedUnavailable = (int) Math.ceil(requests * TOLERATED_UNAVAILABLE_SHARE);
-            assertThat(summary.keySet()).as("nothing but ok and 503: %s", report)
-                    .allMatch(k -> k.equals("ok") || k.equals("503") || k.equals(UPSTREAM_UNAVAILABLE) || k.equals(CLIENT_TIMEOUT));
-            assertThat(summary.getOrDefault(UPSTREAM_UNAVAILABLE, 0)).as("admitted calls refused because the server could not be read, at most %d of %d: %s",
-                    toleratedUnavailable, requests, report).isLessThanOrEqualTo(toleratedUnavailable);
-            assertThat(summary.getOrDefault(CLIENT_TIMEOUT, 0)).as("client-side timeouts, at most %d of %d: %s", tolerated, requests, report)
-                    .isLessThanOrEqualTo(tolerated);
-            assertThat(jira.mostCallsInFlight()).as("the system behind sees no more than the limit").isLessThanOrEqualTo(LIMIT);
+            assertThat(heldAtTheEnd).as("the admitted calls were held for the whole load").isEqualTo(admitted);
+            assertThat(summary.keySet()).as("a caller over the limit is shed with 503 every time, nothing else comes back: %s", report)
+                    .containsExactly("503");
+            assertThat(shedWithRetryAfter.get()).as("every 503 carries Retry-After").isEqualTo(summary.get("503"));
+            assertThat(jira.mostCallsInFlight()).as("the system behind sees exactly the limit and no more").isEqualTo(LIMIT);
             assertThat(withoutToken.statusCode()).as("a request without a token is answered 401 even when the gateway is full").isEqualTo(401);
         }
     }
 
+    /** The outcome of one answer: ok, a shed (503), a refusal of an admitted call, or the status and the start of the body of anything else. */
+    private static String classify(HttpResponse<String> response, Map<String, AtomicInteger> unavailableMessages) {
+        if (response.statusCode() == 503) {
+            return "503";
+        }
+        if (response.statusCode() == 200 && response.body().contains("\"isError\":false")) {
+            return "ok";
+        }
+        if (response.statusCode() == 200 && response.body().contains("\"isError\":true")
+                && response.body().contains("\"error\\\":\\\"upstream_unavailable\\\"")) {
+            java.util.regex.Matcher said = java.util.regex.Pattern.compile("message\\\\\":\\\\\"([^\\\\]*)").matcher(response.body());
+            unavailableMessages.computeIfAbsent(said.find() ? said.group(1) : "?", k -> new AtomicInteger()).incrementAndGet();
+            return UPSTREAM_UNAVAILABLE;
+        }
+        return response.statusCode() + (response.body().length() > 220 ? response.body().substring(0, 220) : response.body());
+    }
+
     private static String warnings() throws IOException {
-        return gateway.output().lines().filter(l -> l.contains(" WARN ") && !l.contains("policy-sync")).limit(20)
+        return gateway.output().lines().filter(l -> l.contains(" WARN ") && !l.contains("policy-sync") && !l.contains("ConcurrencyLimitFilter")).limit(20)
                 .reduce("", (a, b) -> a + b + "\n");
     }
 
