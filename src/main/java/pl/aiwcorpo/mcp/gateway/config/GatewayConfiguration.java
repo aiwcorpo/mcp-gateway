@@ -268,7 +268,8 @@ public class GatewayConfiguration {
                             PolicyService policies) {
         ToolStreams streams = new ToolStreams(lists, properties.mcp().sseHeartbeatInterval(), java.time.Duration.ofSeconds(1),
                 System::currentTimeMillis, meters, id -> sessions.find(id).isPresent(), gatewayJson,
-                properties.mcp().maxOpenStreams(), properties.mcp().streamRecomputeParallelism(), java.time.Duration.ofMillis(100));
+                properties.mcp().maxOpenStreams(), properties.mcp().maxOpenStreamsPerUser(), properties.mcp().streamRecomputeParallelism(),
+                java.time.Duration.ofMillis(100));
         registry.onChange(streams::changed);
         killSwitches.onChange(streams::changed);
         guard.onVerdictChange(streams::changed);

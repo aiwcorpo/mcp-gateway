@@ -199,8 +199,14 @@ public record GatewayProperties(
             @DefaultValue("1s") Duration changePollInterval,
             /* The longest an instance trusts what it read of the emergency switches (CC-194, at most 5 s). */
             @DefaultValue("5s") Duration killSwitchCacheTtl,
-            /* The most SSE streams open on one instance, both kinds together (decision of 2026-11-03); more are refused with 503 and Retry-After. No limit per user. */
+            /* The most SSE streams open on one instance, both kinds together (decision of 2026-11-03); more are refused with 503 and Retry-After. */
             @DefaultValue("2000") int maxOpenStreams,
+            /*
+             * The most of them one user (sub) holds on one instance (CC-254), checked first; more get 429 rate_limited with Retry-After.
+             * 20 is 1 % of the default cap: a client needs one stream and a reconnect may hold a second while the closed one waits for its
+             * probe, so 20 covers several clients of one person, and filling an instance takes 100 accounts instead of one token.
+             */
+            @DefaultValue("20") int maxOpenStreamsPerUser,
             /* How many streams compute their list at the same time after a change; the rest wait their turn, so a change does not stop the instance. */
             @DefaultValue("4") int streamRecomputeParallelism) {
 
@@ -208,8 +214,9 @@ public record GatewayProperties(
             if (maxConcurrentRequests < 1 || shedRetryAfterSeconds < 1 || sessionStoreRetryAfterSeconds < 1 || queueWait == null || queueWait.isNegative()) {
                 throw new IllegalArgumentException("gateway.mcp.max-concurrent-requests and shed-retry-after-seconds must be at least 1, queue-wait not negative");
             }
-            if (maxOpenStreams < 1 || streamRecomputeParallelism < 1) {
-                throw new IllegalArgumentException("gateway.mcp.max-open-streams (MCP_MAX_OPEN_STREAMS) and stream-recompute-parallelism must be at least 1");
+            if (maxOpenStreams < 1 || maxOpenStreamsPerUser < 1 || streamRecomputeParallelism < 1) {
+                throw new IllegalArgumentException("gateway.mcp.max-open-streams (MCP_MAX_OPEN_STREAMS), max-open-streams-per-user "
+                        + "(MCP_MAX_OPEN_STREAMS_PER_USER) and stream-recompute-parallelism must be at least 1");
             }
             if (sseHeartbeatInterval == null || sseHeartbeatInterval.compareTo(Duration.ofSeconds(1)) < 0
                     || sseHeartbeatInterval.compareTo(Duration.ofSeconds(60)) > 0) {

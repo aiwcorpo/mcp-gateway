@@ -153,6 +153,16 @@ public class McpGatewayService {
         return limited;
     }
 
+    /** A stream refused because its user holds the share of open streams (CC-254): audited as the limit of the user, throttled the same way. */
+    public void auditStreamShare(GatewayUser user, EndpointFilter filter, String requestId, String clientRequestId) {
+        String reason = RateLimiter.Dimension.USER.reason();
+        if (rateLimitAudit.due(user.sub(), reason)) {
+            audit.emit(AuditEvent.of("policy_decision", requestId, componentId).clientRequestId(clientRequestId).user(user)
+                    .filter(filter.isEmpty() ? null : filter.canonical()).decision("deny", reason).policyRevision(authorizer.policyRevision())
+                    .outcome("denied", "rate_limited"));
+        }
+    }
+
     /**
      * A request the endpoint refused before it reached a method: a filter that does not parse ({@code invalid_filter}, no filter field
      * because nothing could be normalized), a session used on another route or with another filter ({@code filter_mismatch}) or a cursor

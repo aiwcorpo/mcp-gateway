@@ -29,13 +29,21 @@ class ToolStreamsTest {
     private final UserToolLists lists = mock(UserToolLists.class);
 
     private ToolStreams streams(int maxOpen, int parallelism, Duration debounce) {
+        return streams(maxOpen, maxOpen, parallelism, debounce);
+    }
+
+    private ToolStreams streams(int maxOpen, int maxOpenPerUser, int parallelism, Duration debounce) {
         when(lists.of(any())).thenReturn(List.of());
         return new ToolStreams(lists, Duration.ofSeconds(15), Duration.ofSeconds(1), System::currentTimeMillis, meters, id -> true,
-                JsonMapper.builder().build(), maxOpen, parallelism, debounce);
+                JsonMapper.builder().build(), maxOpen, maxOpenPerUser, parallelism, debounce);
     }
 
     private Optional<ToolStreams.Stream> open(ToolStreams streams) {
-        return streams.open(ToolStreams.Kind.SESSION, USER, "session", EndpointFilter.none(), null, null, null, true);
+        return open(streams, USER);
+    }
+
+    private Optional<ToolStreams.Stream> open(ToolStreams streams, GatewayUser user) {
+        return streams.open(ToolStreams.Kind.SESSION, user, "session", EndpointFilter.none(), null, null, null, true).opened();
     }
 
     @Test
@@ -67,7 +75,7 @@ class ToolStreamsTest {
         org.mockito.Mockito.clearInvocations(lists);
 
         ToolStreams.Stream silent = streams.open(ToolStreams.Kind.LISTEN, USER, null, EndpointFilter.none(), null, null,
-                JsonMapper.builder().build().readTree("1"), false).orElseThrow();
+                JsonMapper.builder().build().readTree("1"), false).opened().orElseThrow();
         streams.changed();
 
         org.mockito.Mockito.verify(lists, org.mockito.Mockito.never()).of(any());
@@ -87,6 +95,53 @@ class ToolStreamsTest {
 
         first.release();
         assertThat(open(streams)).as("a place is free again").isPresent();
+    }
+
+    @Test
+    void oneUserHoldsAtMostItsShareAndTheOthersStillGetAPlace() {
+        ToolStreams streams = streams(10, 2, 4, Duration.ZERO);
+        GatewayUser other = new GatewayUser("sub-2", "v", "claude-code", List.of("mcp-jira-read"), "t");
+        ToolStreams.Stream first = open(streams).orElseThrow();
+        open(streams).orElseThrow();
+
+        assertThat(streams.open(ToolStreams.Kind.SESSION, USER, "session", EndpointFilter.none(), null, null, null, true).refusal())
+                .as("the third stream of one user").isEqualTo(ToolStreams.Refusal.USER_SHARE);
+        assertThat(meters.get("mcp_gateway_streams_refused_total").counter().count()).isEqualTo(1.0);
+        assertThat(streams.openCount()).isEqualTo(2);
+        assertThat(open(streams, other)).as("another user is not refused").isPresent();
+
+        first.release();
+        first.release();
+        assertThat(open(streams)).as("a released stream frees the share of its user, once").isPresent();
+        assertThat(open(streams)).isEmpty();
+    }
+
+    @Test
+    void theShareIsCheckedBeforeTheInstanceAndARefusalByTheInstanceKeepsNoShare() {
+        ToolStreams streams = streams(2, 1, 4, Duration.ZERO);
+        GatewayUser second = new GatewayUser("sub-2", "v", "claude-code", List.of("mcp-jira-read"), "t");
+        GatewayUser third = new GatewayUser("sub-3", "w", "claude-code", List.of("mcp-jira-read"), "t");
+        open(streams).orElseThrow();
+        ToolStreams.Stream secondStream = open(streams, second).orElseThrow();
+
+        assertThat(streams.open(ToolStreams.Kind.SESSION, USER, "session", EndpointFilter.none(), null, null, null, true).refusal())
+                .as("a full instance does not hide that the user is over its share").isEqualTo(ToolStreams.Refusal.USER_SHARE);
+        assertThat(streams.open(ToolStreams.Kind.SESSION, third, "session", EndpointFilter.none(), null, null, null, true).refusal())
+                .isEqualTo(ToolStreams.Refusal.INSTANCE);
+
+        secondStream.release();
+        assertThat(open(streams, third)).as("the refusal by the instance left no share behind").isPresent();
+    }
+
+    @Test
+    void aStreamWhoseListCannotBeComputedDoesNotKeepTheShareOfItsUser() {
+        ToolStreams streams = streams(10, 1, 4, Duration.ZERO);
+        when(lists.of(any())).thenThrow(new IllegalStateException("policy"));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, () -> open(streams));
+
+        org.mockito.Mockito.reset(lists);
+        when(lists.of(any())).thenReturn(List.of());
+        assertThat(open(streams)).isPresent();
     }
 
     @Test

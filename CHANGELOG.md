@@ -18,6 +18,11 @@ integration builds tag the image `m6-<short sha>`.
   adds `confirmation_code` to the input schema of these tools. A model steered by text a server returned can no longer write with the
   user's credential without the user typing a code. UPDATE confirmations follow the per-user limit of pending confirmations (3) and do
   not replace or block a pending `DESTRUCTIVE` one. Users who call UPDATE tools need a registered authenticator.
+- One user holds at most `MCP_MAX_OPEN_STREAMS_PER_USER` (20) open streams on an instance, both kinds together (CC-254). A further one is
+  refused with `429 rate_limited` and `Retry-After` (`MCP_SHED_RETRY_AFTER_SECONDS`), audited as `rate_limited_user` and counted in
+  `mcp_gateway_streams_refused_total`; the share is checked before the instance limit, whose `503` is unchanged. Before, one token could take
+  every place of `MCP_MAX_OPEN_STREAMS` until it expired. Before upgrading, check that no single account (a shared service account of several
+  clients) needs more.
 - A tool call is checked against the emergency switches and the registry again right before it is sent, after every wait on the server (the
   definitions read, a new session, a push of the policy data): a switch, a disable or a removal made while the call waited holds for it too
   (`tool_disabled`, audited as `kill_switch` or `tool_disabled`).

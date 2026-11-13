@@ -234,15 +234,16 @@ public class McpEndpoint {
         if (refused != null) {
             return refused;
         }
-        // Opening a stream is a request like the others for the limits of the user and of the client (CC-135); the stream itself is not limited per user.
+        // Opening a stream is a request like the others for the limits of the user and of the client (CC-135); open streams have a share per user (CC-254).
         Optional<RateLimiter.Limited> limited = service.limitRequest(user, filter, requestId, clientRequestId);
         if (limited.isPresent()) {
             return limited.get().unavailable() ? RateLimitResponse.unavailable(requestId, limited.get().retryAfterSeconds())
                     : RateLimitResponse.of(requestId, limited.get().retryAfterSeconds());
         }
-        Optional<ToolStreams.Stream> opened = streams.open(ToolStreams.Kind.SESSION, user, sessionId, filter, target.routeSystem(), token.getExpiresAt(), null, true);
+        ToolStreams.Opening opening = streams.open(ToolStreams.Kind.SESSION, user, sessionId, filter, target.routeSystem(), token.getExpiresAt(), null, true);
+        Optional<ToolStreams.Stream> opened = opening.opened();
         if (opened.isEmpty()) {
-            return RateLimitResponse.overloaded(requestId, shedRetryAfter);
+            return refusedStream(opening.refusal(), user, filter, requestId, clientRequestId);
         }
         count("GET", false);
         try {
@@ -262,9 +263,10 @@ public class McpEndpoint {
     private ResponseEntity<String> listen(HttpServletRequest request, HttpServletResponse response, Jwt token, GatewayUser user,
                                           Target target, EndpointFilter filter, JsonNode message, JsonNode id, String requestId) {
         boolean tools = message.path("params").path("notifications").path("toolsListChanged").asBoolean(false);
-        Optional<ToolStreams.Stream> opened = streams.open(ToolStreams.Kind.LISTEN, user, null, filter, target.routeSystem(), token.getExpiresAt(), id, tools);
+        ToolStreams.Opening opening = streams.open(ToolStreams.Kind.LISTEN, user, null, filter, target.routeSystem(), token.getExpiresAt(), id, tools);
+        Optional<ToolStreams.Stream> opened = opening.opened();
         if (opened.isEmpty()) {
-            return RateLimitResponse.overloaded(requestId, shedRetryAfter);
+            return refusedStream(opening.refusal(), user, filter, requestId, request.getHeader("X-Request-Id"));
         }
         if (request.getAttribute(ConcurrencyLimitFilter.RELEASE_ATTRIBUTE) instanceof Runnable release) {
             release.run();
@@ -278,6 +280,16 @@ public class McpEndpoint {
             opened.get().release();
         }
         return null;
+    }
+
+    /** Over the share of the user: 429 like any request over a limit of the user (CC-254); over the limit of the instance: the busy 503. */
+    private ResponseEntity<String> refusedStream(ToolStreams.Refusal refusal, GatewayUser user, EndpointFilter filter, String requestId,
+                                                 String clientRequestId) {
+        if (refusal == ToolStreams.Refusal.USER_SHARE) {
+            service.auditStreamShare(user, filter, requestId, clientRequestId);
+            return RateLimitResponse.of(requestId, shedRetryAfter);
+        }
+        return RateLimitResponse.overloaded(requestId, shedRetryAfter);
     }
 
     private static void startEventStream(HttpServletResponse response, String requestId) throws IOException {
