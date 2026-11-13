@@ -739,7 +739,7 @@ public class McpGatewayService {
     private static final java.util.regex.Pattern CODE = java.util.regex.Pattern.compile("^[0-9]{6}$");
 
     /**
-     * The confirmation gate of a DESTRUCTIVE tool (C11): without a code a pending call is created and the call stops;
+     * The confirmation gate of an UPDATE or DESTRUCTIVE tool (C11): without a code a pending call is created and the call stops;
      * with a code the broker judges it and the call goes on only when it was right. The code never reaches the server.
      */
     private Confirmed confirm(CallContext ctx, McpServer server, ToolDefinition tool, JsonNode arguments, long started,
@@ -758,12 +758,12 @@ public class McpGatewayService {
         }
         if (!OperationDescription.listsEveryArgument(withoutCode)) {
             return new Confirmed(finish(ctx, server, tool, null, started, argsLength, "allow", null, "invalid_argument",
-                    errors.error("invalid_argument", "A destructive call takes at most " + OperationDescription.MAX_ARGUMENTS
+                    errors.error("invalid_argument", "A call that needs confirmation takes at most " + OperationDescription.MAX_ARGUMENTS
                             + " arguments, so that the confirmation can show all of them.")), null, null);
         }
         if (!OperationDescription.hashedExactly(withoutCode)) {
             return new Confirmed(finish(ctx, server, tool, null, started, argsLength, "allow", null, "invalid_argument",
-                    errors.error("invalid_argument", "An integer in the arguments of a destructive call must lie between "
+                    errors.error("invalid_argument", "An integer in the arguments of a call that needs confirmation must lie between "
                             + "-9007199254740991 and 9007199254740991.")), null, null);
         }
         ConfirmationRules.Operation operation = new ConfirmationRules.Operation(server.serverId(), tool.name(),

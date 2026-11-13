@@ -400,7 +400,7 @@ class HighAvailabilityTest {
         AtomicInteger retries = new AtomicInteger();
         AtomicInteger done = new AtomicInteger();
         List<String> failures = java.util.Collections.synchronizedList(new ArrayList<>());
-        long updatesBefore = jira.requests().stream().filter(r -> "tools/call".equals(r.rpcMethod()) && "add_comment".equals(r.toolName())).count();
+        long readsBefore = jira.requests().stream().filter(r -> "tools/call".equals(r.rpcMethod()) && "get_issue".equals(r.toolName())).count();
 
         // The DESTRUCTIVE operation: one pending call, one code, four callers that retry it at once on both instances.
         String sub = UUID.randomUUID().toString();
@@ -425,7 +425,8 @@ class HighAvailabilityTest {
                         // A balancer that meets a dead node tries the other one.
                         GatewayProcess instance = balancer[Math.floorMod(start + attempt, 2)];
                         try {
-                            HttpResponse<String> response = callTool(instance, token, "jira__add_comment", "{\"issueKey\":\"ABC-1\"}");
+                            // A read: every UPDATE call would need a confirmation code of its own.
+                            HttpResponse<String> response = callTool(instance, token, "jira__get_issue", "{\"issueKey\":\"ABC-1\"}");
                             if (response.statusCode() == 200 && !toolError(response).has("error")) {
                                 succeeded = true;
                             } else if (response.statusCode() >= 500 && !instance.alive()) {
@@ -486,9 +487,9 @@ class HighAvailabilityTest {
         assertThat(a.alive()).isFalse();
         assertThat(retries.get()).as("the dead instance was met at least once").isPositive();
 
-        long updates = jira.requests().stream().filter(r -> "tools/call".equals(r.rpcMethod()) && "add_comment".equals(r.toolName())).count()
-                - updatesBefore;
-        assertThat(updates).as("an UPDATE is at-least-once: every call ran, a call retried after the kill may have run twice")
+        long reads = jira.requests().stream().filter(r -> "tools/call".equals(r.rpcMethod()) && "get_issue".equals(r.toolName())).count()
+                - readsBefore;
+        assertThat(reads).as("every call ran, a call retried after the kill may have run twice")
                 .isGreaterThanOrEqualTo(done.get()).isLessThanOrEqualTo(done.get() + retries.get());
         assertThat(deletesAtTheServer() - deletesBefore).as("a code is spent once, whatever instance and however many retries").isEqualTo(1);
         assertThat(deleteSucceeded.get()).isLessThanOrEqualTo(1);

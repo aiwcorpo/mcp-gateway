@@ -73,7 +73,7 @@ cursor keys; a change reaches the other instances within `MCP_CHANGE_POLL_INTERV
 - Fail closed: no policy data, an unreachable broker, an unreadable kill switch state or an unknown tool means refusal.
 - A tool that does not exist and one the user may not use get the same answer, `not_found_or_denied`.
 - A tool definition is pinned by hash; a different one hides the tool (`definition_changed`).
-- `DESTRUCTIVE` actions need a one-time TOTP confirmation bound to user, tool and arguments.
+- `UPDATE` and `DESTRUCTIVE` actions need a one-time TOTP confirmation bound to user, tool and arguments.
 - Secret values do not reach logs or audit events; audit records `argsLength`, not argument values.
 - The admin API is on the internal port only and needs a client certificate with an allowed CN and a token with
   `aud=mcp-gateway-admin`.
