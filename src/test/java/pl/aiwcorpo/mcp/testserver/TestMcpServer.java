@@ -234,6 +234,8 @@ public final class TestMcpServer implements AutoCloseable {
     private volatile long toolCallDelayMillis;
     private final java.util.concurrent.atomic.AtomicInteger callsInFlight = new java.util.concurrent.atomic.AtomicInteger();
     private final java.util.concurrent.atomic.AtomicInteger mostCallsInFlight = new java.util.concurrent.atomic.AtomicInteger();
+    private final Object callsInFlightChanged = new Object();
+    private volatile java.util.concurrent.CountDownLatch toolCallGate;
     private volatile int extraTools;
     private volatile int fillerNumbers;
     private volatile boolean driftedPolicies;
@@ -264,9 +266,42 @@ public final class TestMcpServer implements AutoCloseable {
         toolCallDelayMillis = millis;
     }
 
+    /**
+     * From now on a {@code tools/call} is held, once it counts as in flight, until the returned action is run: the calls a test admitted stay
+     * admitted for exactly as long as it wants, whatever the speed of the machine. A call held for more than two minutes is let go.
+     */
+    public Runnable holdToolCalls() {
+        java.util.concurrent.CountDownLatch gate = new java.util.concurrent.CountDownLatch(1);
+        toolCallGate = gate;
+        return () -> {
+            toolCallGate = null;
+            gate.countDown();
+        };
+    }
+
+    /** Returns when this many {@code tools/call} requests are in flight at once; false if they are not there after the timeout. */
+    public boolean awaitCallsInFlight(int count, Duration timeout) throws InterruptedException {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        synchronized (callsInFlightChanged) {
+            while (callsInFlight.get() < count) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) {
+                    return false;
+                }
+                callsInFlightChanged.wait(remaining / 1_000_000, (int) (remaining % 1_000_000));
+            }
+        }
+        return true;
+    }
+
     /** Every {@code tools/call} answer carries a {@code structuredContent} array of this many numbers: a long answer of few bytes per token. */
     public void answerWithNumbers(int count) {
         fillerNumbers = count;
+    }
+
+    /** The {@code tools/call} requests this server has in flight now. */
+    public int callsInFlight() {
+        return callsInFlight.get();
     }
 
     /** The most {@code tools/call} requests this server has had in flight at once since the start. */
@@ -617,8 +652,19 @@ public final class TestMcpServer implements AutoCloseable {
                 record(exchange, headers, body, method, toolName, 200, null, sub, sessionId);
                 int inFlight = callsInFlight.incrementAndGet();
                 mostCallsInFlight.accumulateAndGet(inFlight, Math::max);
+                synchronized (callsInFlightChanged) {
+                    callsInFlightChanged.notifyAll();
+                }
                 ObjectNode result;
                 try {
+                    java.util.concurrent.CountDownLatch gate = toolCallGate;
+                    if (gate != null) {
+                        try {
+                            gate.await(2, java.util.concurrent.TimeUnit.MINUTES);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
                     if (toolCallDelayMillis > 0) {
                         try {
                             Thread.sleep(toolCallDelayMillis);
