@@ -8,6 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
@@ -599,7 +600,33 @@ public class McpGatewayService {
             return finish(callKey, ctx, server, tool, credential, started, argsLength, "allow", null, null,
                     errors.error("internal_error", "The call could not be completed."));
         }
-        return finish(callKey, ctx, server, tool, credential, started, argsLength, "allow", null, null, (ObjectNode) result);
+        return finish(callKey, ctx, server, tool, credential, started, argsLength, "allow", null, null,
+                withGatewayLinks(server, (ObjectNode) result));
+    }
+
+    private static final Set<String> LINK_CODES = Set.of("step_up_required", "credential_required", "confirmation_required");
+
+    /**
+     * A server may report step_up_required, credential_required or confirmation_required, but never chooses the link the client is sent to
+     * (CC-253): the error is built again with the gateway's own links, keeping only the server's message. A confirmation_required that names
+     * a pending call names one the gateway does not hold, so it is an internal_error.
+     */
+    private ObjectNode withGatewayLinks(McpServer server, ObjectNode result) {
+        String code = errors.codeOf(result);
+        if (code == null || !LINK_CODES.contains(code)) {
+            return result;
+        }
+        JsonNode reported = json.readTree(result.path("content").path(0).path("text").asString("{}"));
+        String message = reported.path("message").isString() && !reported.path("message").asString().isBlank()
+                ? reported.path("message").asString() : "The call could not be completed.";
+        return switch (code) {
+            case "step_up_required" -> errors.error(code, message, Map.of("stepUpUrl", urls.stepUpUrl()));
+            case "credential_required" -> errors.error(code, message,
+                    Map.of("system", server.system(), "connectUrl", urls.connectUrl(server.system())));
+            default -> reported.has("confirmationId") || reported.has("description") || reported.has("previewUrl") || reported.has("expiresAt")
+                    ? errors.error("internal_error", "The call could not be completed.")
+                    : errors.error(code, message, Map.of("registerUrl", urls.authenticatorUrl()));
+        };
     }
 
     /** Reads the definitions of a server that has an approved manifest; false when they cannot be read (the server is not available). */

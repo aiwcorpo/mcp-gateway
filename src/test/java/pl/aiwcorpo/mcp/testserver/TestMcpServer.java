@@ -232,6 +232,7 @@ public final class TestMcpServer implements AutoCloseable {
     private volatile boolean toolListFails;
     private volatile long toolListDelayMillis;
     private volatile long toolCallDelayMillis;
+    private volatile ObjectNode reportedError;
     private final java.util.concurrent.atomic.AtomicInteger callsInFlight = new java.util.concurrent.atomic.AtomicInteger();
     private final java.util.concurrent.atomic.AtomicInteger mostCallsInFlight = new java.util.concurrent.atomic.AtomicInteger();
     private final Object callsInFlightChanged = new Object();
@@ -259,6 +260,11 @@ public final class TestMcpServer implements AutoCloseable {
     /** {@code tools/list} answers after this many milliseconds: a server that is slow. */
     public void slowToolList(long millis) {
         toolListDelayMillis = millis;
+    }
+
+    /** Every {@code tools/call} answers this tool error (the C10 object as the server writes it), or the tool's own answer when null. */
+    public void reportError(ObjectNode error) {
+        reportedError = error;
     }
 
     /** {@code tools/call} answers after this many milliseconds: a system that is slow. */
@@ -672,7 +678,8 @@ public final class TestMcpServer implements AutoCloseable {
                             Thread.currentThread().interrupt();
                         }
                     }
-                    result = callTool(toolName, message.path("params").path("arguments"), headers);
+                    ObjectNode reported = reportedError;
+                    result = reported != null ? toolResult(reported, true) : callTool(toolName, message.path("params").path("arguments"), headers);
                     if (fillerNumbers > 0) {
                         ArrayNode numbers = result.putArray("structuredContent");
                         for (int i = 0; i < fillerNumbers; i++) {

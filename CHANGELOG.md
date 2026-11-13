@@ -5,6 +5,10 @@ integration builds tag the image `m6-<short sha>`.
 
 ## Unreleased
 
+- The gateway builds every link of a tool error, also when a server reports the error (CC-253): `stepUpUrl`, `connectUrl` and `registerUrl`
+  in a server's `step_up_required`, `credential_required` or `confirmation_required` are replaced by the portal links of the gateway, and
+  `system` of `credential_required` by the system of the called tool; the server's `message` stays. A server's `confirmation_required` that
+  names a pending call (`confirmationId`, `description`, `previewUrl`, `expiresAt`) reaches the client as `internal_error`.
 - A tool call is checked against the emergency switches and the registry again right before it is sent, after every wait on the server (the
   definitions read, a new session, a push of the policy data): a switch, a disable or a removal made while the call waited holds for it too
   (`tool_disabled`, audited as `kill_switch` or `tool_disabled`).
