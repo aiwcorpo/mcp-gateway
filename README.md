@@ -1,5 +1,7 @@
 # mcp-gateway
 
+Part of [MCP Platform](https://github.com/aiwcorpo/mcp-platform), a self-hosted MCP gateway for companies. Documentation: [mcp.aiwcorpo.pl](https://mcp.aiwcorpo.pl/).
+
 The single entry point for AI clients on the aiwcorpo MCP platform: it signs the user in with the identity provider token, takes the user's credential from the credential broker and forwards the call to the MCP server.
 
 ## Quick start
