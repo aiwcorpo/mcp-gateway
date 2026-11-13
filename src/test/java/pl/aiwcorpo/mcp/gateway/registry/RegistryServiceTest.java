@@ -154,6 +154,15 @@ class RegistryServiceTest extends GatewayTestBase {
         return service.registered(SERVER).orElseThrow().tools().get(name);
     }
 
+    /** Every stored row of the server under test, whole, so that any write to it (a column or a new row) shows. */
+    private List<String> rowsOfTheServer() {
+        return List.of("registry_tools", "registry_servers", "registry_risk_floor", "registry_policies", "registry_namespaces", "kill_switches",
+                "servers").stream()
+                .flatMap(table -> jdbc.sql("SELECT t::text FROM " + table + " t WHERE t.server_id = ? ORDER BY t::text").param(SERVER)
+                        .query(String.class).list().stream())
+                .toList();
+    }
+
     private static GatewayUser admin() {
         return new GatewayUser(ADMIN_SUB, "a.admin", "mcp-portal-bff", List.of("mcp-platform-admin"), "unused");
     }
@@ -189,13 +198,14 @@ class RegistryServiceTest extends GatewayTestBase {
     void aPullOfTheSameManifestAgainChangesNothingAndLeavesNoEvent(CapturedOutput output) {
         ObjectNode manifest = manifest("1.4.0", Tool.readOnly("get_issue"));
         register(manifest);
-        long counter = jdbc.sql("SELECT version FROM registry_changes WHERE id = 1").query(Long.class).single();
+        List<String> rows = rowsOfTheServer();
         requestId = pl.aiwcorpo.mcp.gateway.jwt.UuidV7.next();
 
         pull(manifest);
 
-        assertThat(jdbc.sql("SELECT version FROM registry_changes WHERE id = 1").query(Long.class).single())
-                .as("a pull that changes nothing moves no counter: the instances read nothing again").isEqualTo(counter);
+        // Not the global registry_changes counter: the checks of the other servers of the shared context raise it at any moment.
+        assertThat(rowsOfTheServer()).as("a pull that changes nothing writes no row of the server: the instances read nothing again")
+                .isEqualTo(rows);
         assertThat(server().tools()).containsOnlyKeys("get_issue");
         assertThat(auditReasons(output, requestId)).doesNotContain("definition_submitted", "tool_removed");
     }
