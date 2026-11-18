@@ -6,14 +6,19 @@ import static org.awaitility.Awaitility.await;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.system.CapturedOutput;
 
+import pl.aiwcorpo.mcp.gateway.policy.PolicyService;
 import pl.aiwcorpo.mcp.testserver.TestMcpServer;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
@@ -25,6 +30,11 @@ class PolicyApprovalTest extends GatewayTestBase {
 
     private static final String SERVER = "/admin/v1/registry/servers/mcp-pinned";
     private static final List<String> GROUPS = List.of("mcp-pinned-read");
+
+    private static final String MAPPING = "/admin/v1/policy/scope-mapping";
+
+    @Autowired
+    PolicyService policies;
 
     private TestMcpServer pinned;
     private ObjectNode manifest;
@@ -139,6 +149,48 @@ class PolicyApprovalTest extends GatewayTestBase {
         await().atMost(Duration.ofSeconds(15)).pollInterval(Duration.ofMillis(500)).untilAsserted(() ->
                 assertThat(listed(token)).contains("pinned__get_issue"));
         assertThat(call(token).statusCode()).isEqualTo(200);
+    }
+
+    /** Approves what waits once the gateway has seen the server present it. */
+    private JsonNode approveWhatWaits() throws Exception {
+        String[] waiting = new String[1];
+        String token = env.idp.token(UUID.randomUUID().toString(), "pia", GROUPS);
+        await().atMost(Duration.ofSeconds(15)).pollInterval(Duration.ofMillis(500)).untilAsserted(() -> {
+            // A listing makes the gateway compare what the live server presents with what is approved.
+            listed(token);
+            JsonNode entry = registryEntry();
+            assertThat(entry.path("policiesStatus").asString()).isEqualTo("pending_approval");
+            waiting[0] = entry.path("pendingPoliciesHash").asString();
+        });
+        HttpResponse<String> approved = adminCall("POST", SERVER + "/policies/approve", "{\"policiesHash\":\"" + waiting[0] + "\"}");
+        assertThat(approved.statusCode()).as(approved.body()).isEqualTo(200);
+        assertThat(pl.aiwcorpo.mcp.gateway.support.Contracts.gatewayAdminErrors("ApprovePoliciesResult", JSON.readTree(approved.body()))).isEmpty();
+        return JSON.readTree(approved.body());
+    }
+
+    @Test
+    void aScopeThatAnApprovalMadeInvalidIsRemovedAndDoesNotGrantWhenThePatternIsWidenedAgain(CapturedOutput output) throws Exception {
+        assertThat(adminCall("POST", SERVER + "/policies/approve", "{\"policiesHash\":\"" + hash() + "\"}").statusCode()).isEqualTo(200);
+        HttpResponse<String> current = adminCall("GET", MAPPING, null);
+        ArrayNode entries = (ArrayNode) JSON.readTree(current.body()).path("scopeMapping").deepCopy();
+        entries.addObject().put("group", "mcp-pinned-proj-PROJ").putArray("scopes").add("Pinned::Project/PROJ");
+        HttpResponse<String> put = adminCall("PUT", MAPPING, "{\"scopeMapping\":" + entries + "}", Map.of("If-Match", etag(current)));
+        assertThat(put.statusCode()).as(put.body()).isEqualTo(200);
+        assertThat(policies.snapshot().mapping().scopesOf("mcp-pinned-proj-PROJ")).containsExactly("Pinned::Project/PROJ");
+
+        pinned.narrowProjectScopes(true);
+        JsonNode narrowed = approveWhatWaits();
+        assertThat(narrowed.path("ignoredMappingEntries")).hasSize(1);
+        assertThat(narrowed.path("ignoredMappingEntries").get(0).path("scope").asString()).isEqualTo("Pinned::Project/PROJ");
+        assertThat(narrowed.path("ignoredMappingEntries").get(0).path("reason").asString()).isEqualTo("invalid_scope");
+        assertThat(adminCall("GET", MAPPING, null).body()).as("removed from the stored mapping").doesNotContain("Pinned::Project/PROJ");
+        assertThat(output.getOut().lines().filter(line -> line.contains("\"reason\":\"scope_mapping_entry_removed\""))
+                .anyMatch(line -> line.contains("\"group\":\"mcp-pinned-proj-PROJ\""))).as("the removal is audited").isTrue();
+
+        pinned.narrowProjectScopes(false);
+        JsonNode widened = approveWhatWaits();
+        assertThat(widened.path("ignoredMappingEntries")).isEmpty();
+        assertThat(policies.snapshot().mapping().scopesOf("mcp-pinned-proj-PROJ")).as("the scope does not come back by itself").isEmpty();
     }
 
     @Test

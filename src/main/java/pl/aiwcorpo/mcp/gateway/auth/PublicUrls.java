@@ -46,6 +46,11 @@ public final class PublicUrls {
         return base + "/confirm/" + confirmationId;
     }
 
+    /** Portal login that re-authenticates with MFA and returns to the start page (C10 step_up_required, stepUpUrl). */
+    public String stepUpUrl() {
+        return base + "/api/v1/auth/login?stepUp=true&returnPath=/";
+    }
+
     /** Portal page where the user registers the authenticator (C10 confirmation_required, registerUrl). */
     public String authenticatorUrl() {
         return base + "/authenticator";

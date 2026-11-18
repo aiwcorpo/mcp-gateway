@@ -5,6 +5,14 @@ integration builds tag the image `m6-<short sha>`.
 
 ## Unreleased
 
+- Approving the policies of a server removes from the stored scope mapping the scopes of its namespace that the approved declarations no
+  longer accept (a type that is gone, a narrower `scopePattern`), audits each as `scope_mapping_entry_removed` and lists them in
+  `ignoredMappingEntries` (CC-252). Before, they were only skipped and granted again, without an audit event, once a later approval declared
+  the type again or widened the pattern. A removed scope has to be written again with `PUT /admin/v1/policy/scope-mapping`.
+- The gateway builds every link of a tool error, also when a server reports the error (CC-253): `stepUpUrl`, `connectUrl` and `registerUrl`
+  in a server's `step_up_required`, `credential_required` or `confirmation_required` are replaced by the portal links of the gateway, and
+  `system` of `credential_required` by the system of the called tool; the server's `message` stays. A server's `confirmation_required` that
+  names a pending call (`confirmationId`, `description`, `previewUrl`, `expiresAt`) reaches the client as `internal_error`.
 - A tool of risk `UPDATE` needs a confirmation with the code of the authenticator app on every call, as a `DESTRUCTIVE` one does: the first
   call answers `confirmation_required` and nothing is sent to the server until the call is repeated with `confirmation_code`. `tools/list`
   adds `confirmation_code` to the input schema of these tools. A model steered by text a server returned can no longer write with the
