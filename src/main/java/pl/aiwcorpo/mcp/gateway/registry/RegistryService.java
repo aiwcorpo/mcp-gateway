@@ -495,16 +495,17 @@ public final class RegistryService {
 
     /**
      * Approves the pending policies whose hash is {@code hash}. The approval sets the hash the server is served as approved, raises the
-     * revision of the policy data and may make entries of the scope mapping invalid (a narrower pattern, a type that is gone); evaluation
-     * skips them, and the answer lists them. The overrides aimed at the server are checked against the new fragment.
+     * revision of the policy data and removes the scopes of the server's namespace that the approved declarations no longer accept (a
+     * narrower pattern, a type that is gone; CC-252); the answer lists them. The overrides aimed at the server are checked against the
+     * new fragment.
      */
     public PoliciesApproval approvePolicies(String requestId, String serverId, String hash, GatewayUser administrator) {
         Optional<McpServer> server = servers.find(serverId);
         if (server.isEmpty() || server.get().adapter()) {
             return new PoliciesApproval.NotFound();
         }
-        String[] namespaces = new String[2];
-        List<MappingCleanup.Removed> freedScopes = new java.util.ArrayList<>();
+        List<MappingCleanup.Removed> removedScopes = new java.util.ArrayList<>();
+        List<ScopeMapping.Ignored> invalidScopes = new java.util.ArrayList<>();
         long[] revision = {0};
         PoliciesApproval stored = store.locked(serverId, tx -> {
             if (tx.config().isEmpty()) {
@@ -522,19 +523,25 @@ public final class RegistryService {
             // the name next does not inherit the grants (as when the server is deleted).
             java.util.Set<String> freed = new java.util.TreeSet<>(tx.namespaces());
             freed.remove(namespace);
+            JsonNode mapping = tx.lockPolicyState().scopeMapping();
             if (!freed.isEmpty()) {
-                MappingCleanup.Result cleaned = MappingCleanup.strip(json, tx.lockPolicyState().scopeMapping(), freed);
-                freedScopes.addAll(cleaned.removed());
-                if (!freedScopes.isEmpty()) {
-                    tx.saveScopeMapping(cleaned.mapping());
-                }
+                MappingCleanup.Result cleaned = MappingCleanup.strip(json, mapping, freed);
+                removedScopes.addAll(cleaned.removed());
+                mapping = cleaned.mapping();
+            }
+            // Skipped instead of removed, a scope would grant again as soon as a later approval declares its type again or widens the
+            // pattern, with nobody writing it and nothing in the audit (CC-252).
+            MappingCleanup.Invalid invalid = MappingCleanup.stripInvalid(json, mapping, namespace,
+                    pl.aiwcorpo.mcp.cedar.entities.ResourceTypes.fromJson(json.writeValueAsString(current.pendingResourceTypes())));
+            removedScopes.addAll(invalid.result().removed());
+            invalidScopes.addAll(invalid.entries());
+            if (!removedScopes.isEmpty()) {
+                tx.saveScopeMapping(invalid.result().mapping());
             }
             tx.releaseNamespacesExcept(namespace);
             tx.savePolicies(new StoredPolicies(current.pendingHash(), current.pendingPolicies(), current.pendingResourceTypes(),
                     current.pendingVersion(), null, null, null, null, null));
             revision[0] = tx.raiseRevision();
-            namespaces[0] = namespace;
-            namespaces[1] = current.approved() ? current.approvedPolicies().path("namespace").asString() : namespace;
             return new PoliciesApproval.Approved(List.of(), List.of());
         });
         if (!(stored instanceof PoliciesApproval.Approved)) {
@@ -546,16 +553,14 @@ public final class RegistryService {
         // The decision of the administrator is on record before anything is read back or revalidated.
         audit.emit(AuditEvent.of("admin_change", requestId, componentId).userWithoutClient(administrator).server(serverId)
                 .reason("policies_approved").definitionHash(hash).outcome("ok").policyRevision(revision[0]));
-        freedScopes.forEach(removed -> audit.emit(AuditEvent.of("admin_change", requestId, componentId).userWithoutClient(administrator)
+        removedScopes.forEach(removed -> audit.emit(AuditEvent.of("admin_change", requestId, componentId).userWithoutClient(administrator)
                 .server(serverId).reason("scope_mapping_entry_removed").outcome("ok").group(removed.group())
                 .resource(new pl.aiwcorpo.mcp.gateway.confirm.PendingCall.Resource(removed.type(), removed.local(), null))));
         take(serverId);
         policies.reload();
-        List<ScopeMapping.Ignored> ignored = policies.snapshot().mapping().ignored().stream()
-                .filter(entry -> entry.scope().startsWith(namespaces[0] + "::") || entry.scope().startsWith(namespaces[1] + "::")).toList();
         // The contract's answer has no place for them: the overrides that no longer validate are in the audit (override_invalid).
         List<String> invalidOverrides = policies.revalidateOverrides(requestId, serverId);
-        return new PoliciesApproval.Approved(ignored, invalidOverrides);
+        return new PoliciesApproval.Approved(List.copyOf(invalidScopes), invalidOverrides);
     }
 
     /** The highest risk ever reported or classified per tool of a server (ordinals), as the approval compares with it. */

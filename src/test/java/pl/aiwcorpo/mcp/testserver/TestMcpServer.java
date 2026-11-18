@@ -240,6 +240,7 @@ public final class TestMcpServer implements AutoCloseable {
     private volatile int extraTools;
     private volatile int fillerNumbers;
     private volatile boolean driftedPolicies;
+    private volatile boolean narrowedProjectScopes;
     private volatile Map<String, String> additionalGroups = Map.of();
     private volatile boolean updateTool;
     private volatile boolean updateToolInManifest;
@@ -347,6 +348,14 @@ public final class TestMcpServer implements AutoCloseable {
     /** From now on the manifest this server serves has one more policy file: a server whose policies changed after they were approved. */
     public void driftPolicies(boolean drifted) {
         driftedPolicies = drifted;
+    }
+
+    /**
+     * From now on the manifest declares a narrower {@code scopePattern} for {@code <System>::Project}: project keys of two or three
+     * characters only, so a granted scope such as {@code <System>::Project/PROJ} no longer fits.
+     */
+    public void narrowProjectScopes(boolean narrowed) {
+        narrowedProjectScopes = narrowed;
     }
 
     /** The {@code serverInfo.version} of the next {@code initialize} (a value the server controls). */
@@ -458,6 +467,15 @@ public final class TestMcpServer implements AutoCloseable {
         manifest.set("credential", credential);
         pl.aiwcorpo.mcp.gateway.support.Fragments.apply(manifest, system);
         String namespace = pl.aiwcorpo.mcp.gateway.support.Fragments.namespace(system);
+        if (narrowedProjectScopes) {
+            for (JsonNode type : manifest.get("resourceTypes")) {
+                if ((namespace + "::Project").equals(type.path("type").asString())) {
+                    ((ObjectNode) type).put("scopePattern", "^[A-Z][A-Z0-9_]{1,2}$");
+                }
+            }
+            manifest.put("policiesHash", pl.aiwcorpo.mcp.gateway.support.Fragments.hash((ObjectNode) manifest.get("policies"),
+                    (ArrayNode) manifest.get("resourceTypes")));
+        }
         if (driftedPolicies) {
             ObjectNode policies = (ObjectNode) manifest.get("policies");
             policies.withArray("files").addObject().put("name", "zz-drift.cedar").put("text", "@id(\"" + system + "-drift\") forbid (principal, "
