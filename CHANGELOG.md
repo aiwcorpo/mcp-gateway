@@ -13,6 +13,11 @@ integration builds tag the image `m6-<short sha>`.
   in a server's `step_up_required`, `credential_required` or `confirmation_required` are replaced by the portal links of the gateway, and
   `system` of `credential_required` by the system of the called tool; the server's `message` stays. A server's `confirmation_required` that
   names a pending call (`confirmationId`, `description`, `previewUrl`, `expiresAt`) reaches the client as `internal_error`.
+- A tool of risk `UPDATE` needs a confirmation with the code of the authenticator app on every call, as a `DESTRUCTIVE` one does: the first
+  call answers `confirmation_required` and nothing is sent to the server until the call is repeated with `confirmation_code`. `tools/list`
+  adds `confirmation_code` to the input schema of these tools. A model steered by text a server returned can no longer write with the
+  user's credential without the user typing a code. UPDATE confirmations follow the per-user limit of pending confirmations (3) and do
+  not replace or block a pending `DESTRUCTIVE` one. Users who call UPDATE tools need a registered authenticator.
 - A tool call is checked against the emergency switches and the registry again right before it is sent, after every wait on the server (the
   definitions read, a new session, a push of the policy data): a switch, a disable or a removal made while the call waited holds for it too
   (`tool_disabled`, audited as `kill_switch` or `tool_disabled`).

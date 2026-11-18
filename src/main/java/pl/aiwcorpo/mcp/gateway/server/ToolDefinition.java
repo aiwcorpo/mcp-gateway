@@ -26,8 +26,12 @@ public record ToolDefinition(String name, Risk risk, String action, String title
         this(name, risk, action, title, description, disabled, resourceRefs, null, null, null);
     }
 
-    /** DESTRUCTIVE tools need a confirmation on every call (C11). */
+    /**
+     * Every tool that changes something needs a confirmation on every call (C11). UPDATE is included because a model steered by
+     * text the server returned can otherwise write with the user's credential without the user knowing; DESTRUCTIVE keeps the
+     * stricter rules of the confirmation flow (one pending operation, the preview block), UPDATE gets the per-user pending limit.
+     */
     public boolean requiresConfirmation() {
-        return risk == Risk.DESTRUCTIVE;
+        return risk != Risk.READ_ONLY;
     }
 }

@@ -140,7 +140,7 @@ class ConfirmationFlowTest extends GatewayTestBase {
     }
 
     @Test
-    void toolsListOffersTheCodeFieldForDestructiveToolsOnly() throws Exception {
+    void toolsListOffersTheCodeFieldForToolsThatChangeSomethingOnly() throws Exception {
         Person p = enrolled();
         HttpResponse<String> list = sendModern(token(p), "tools/list", null, "{}");
         JsonNode tools = JSON.readTree(list.body()).path("result").path("tools");
@@ -157,6 +157,50 @@ class ConfirmationFlowTest extends GatewayTestBase {
             }
         }
         assertThat(seen).isTrue();
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    pl.aiwcorpo.mcp.gateway.registry.DefinitionGuard definitions;
+
+    private long commentsAtTheServer() {
+        return env.jira.requests().stream().filter(r -> "tools/call".equals(r.rpcMethod()) && "add_comment".equals(r.toolName())).count();
+    }
+
+    private HttpResponse<String> comment(Person p, String key, String code) throws Exception {
+        return sendModern(token(p), "tools/call", "jira__add_comment", "{\"name\":\"jira__add_comment\",\"arguments\":{\"issueKey\":\""
+                + key + "\"" + (code == null ? "" : ",\"confirmation_code\":\"" + code + "\"") + "}}");
+    }
+
+    @Test
+    void anUpdateToolIsNotSentWithoutTheCodeEither() throws Exception {
+        env.jira.updateTool(true);
+        definitions.forget("mcp-jira");
+        try {
+            Person p = enrolled();
+            long before = commentsAtTheServer();
+
+            JsonNode listed = null;
+            for (JsonNode tool : JSON.readTree(sendModern(token(p), "tools/list", null, "{}").body()).path("result").path("tools")) {
+                if ("jira__add_comment".equals(tool.path("name").asString())) {
+                    listed = tool;
+                }
+            }
+            assertThat(listed).as("the UPDATE tool is listed").isNotNull();
+            assertThat(listed.path("inputSchema").path("properties").has("confirmation_code")).isTrue();
+
+            JsonNode pending = error(comment(p, "ABC-80", null));
+            assertThat(pending.path("error").asString()).isEqualTo("confirmation_required");
+            assertThat(pending.path("confirmationId").asString()).startsWith("cnf_");
+            assertThat(commentsAtTheServer()).as("nothing is sent before the code").isEqualTo(before);
+
+            HttpResponse<String> done = comment(p, "ABC-80", code());
+            assertThat(JSON.readTree(done.body()).path("result").path("isError").asBoolean()).as(done.body()).isFalse();
+            assertThat(commentsAtTheServer()).isEqualTo(before + 1);
+            assertThat(lastToolCall(env.jira).body()).doesNotContain("confirmation_code");
+        } finally {
+            env.jira.updateTool(false);
+            definitions.forget("mcp-jira");
+        }
     }
 
     @Test

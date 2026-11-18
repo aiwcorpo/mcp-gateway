@@ -299,13 +299,13 @@ class SaturationTest {
     }
 
     private static HttpResponse<String> send(HttpClient http, String token) throws IOException, InterruptedException {
-        String body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"jira__add_comment\","
+        String body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"jira__get_issue\","
                 + "\"arguments\":{\"issueKey\":\"ABC-1\"},\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\","
                 + "\"io.modelcontextprotocol/clientCapabilities\":{}}}}";
         HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + gateway.port() + "/mcp")).timeout(Duration.ofSeconds(60))
                 .header("Content-Type", "application/json").header("Accept", "application/json, text/event-stream")
                 .header("Authorization", "Bearer " + token).header("MCP-Protocol-Version", "2026-07-28").header("Mcp-Method", "tools/call")
-                .header("Mcp-Name", "jira__add_comment").POST(HttpRequest.BodyPublishers.ofString(body)).build();
+                .header("Mcp-Name", "jira__get_issue").POST(HttpRequest.BodyPublishers.ofString(body)).build();
         return http.send(request, HttpResponse.BodyHandlers.ofString());
     }
 }
