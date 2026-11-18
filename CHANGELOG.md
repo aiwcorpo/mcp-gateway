@@ -5,6 +5,10 @@ integration builds tag the image `m6-<short sha>`.
 
 ## Unreleased
 
+- Approving the policies of a server removes from the stored scope mapping the scopes of its namespace that the approved declarations no
+  longer accept (a type that is gone, a narrower `scopePattern`), audits each as `scope_mapping_entry_removed` and lists them in
+  `ignoredMappingEntries` (CC-252). Before, they were only skipped and granted again, without an audit event, once a later approval declared
+  the type again or widened the pattern. A removed scope has to be written again with `PUT /admin/v1/policy/scope-mapping`.
 - A tool call is checked against the emergency switches and the registry again right before it is sent, after every wait on the server (the
   definitions read, a new session, a push of the policy data): a switch, a disable or a removal made while the call waited holds for it too
   (`tool_disabled`, audited as `kill_switch` or `tool_disabled`).
