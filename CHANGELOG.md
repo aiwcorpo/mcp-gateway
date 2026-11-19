@@ -3,7 +3,10 @@
 The gateway ships as a container image (`ghcr.io/aiwcorpo/mcp-gateway`); the version in `pom.xml` follows SemVer. Local and
 integration builds tag the image `m6-<short sha>`.
 
-## Unreleased
+## 2.1.0 - 2026-11-19
+
+Built on `mcp-contracts` 7.2.0. Carries the audit fixes merged since 2.0.1: UPDATE tools need a confirmation code, one user's open
+streams are capped, tool-error links are built by the gateway, and scope mapping entries a policy approval invalidates are removed.
 
 - Approving the policies of a server removes from the stored scope mapping the scopes of its namespace that the approved declarations no
   longer accept (a type that is gone, a narrower `scopePattern`), audits each as `scope_mapping_entry_removed` and lists them in
