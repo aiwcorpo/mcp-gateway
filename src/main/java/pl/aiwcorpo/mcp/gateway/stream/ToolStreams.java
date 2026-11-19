@@ -32,7 +32,7 @@ import tools.jackson.databind.node.ObjectNode;
  * response: it waits for a change, a heartbeat or the end of the token, so a slow client holds nobody else. A change (the registry, an
  * emergency switch, the policies, the definitions a server presents) wakes every stream; each computes the list of its user again and
  * tells its client when it differs from the one before. No stream counts for the limit of requests in flight; the number of open ones
- * is a metric, and one instance holds at most {@code maxOpen} of them. A stream ends when its token expires, when its session is deleted, when its user is purged and when the process stops;
+ * is a metric, and one instance holds at most {@code maxOpen} of them and at most {@code maxOpenPerUser} of one user (CC-254). A stream ends when its token expires, when its session is deleted, when its user is purged and when the process stops;
  * nothing is replayed (Last-Event-ID is ignored), because a client lists the tools again after it reconnects and every call is checked anyway.
  */
 public final class ToolStreams implements ApplicationListener<ContextClosedEvent> {
@@ -50,6 +50,16 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
 
     public enum Kind { SESSION, LISTEN }
 
+    /** Why no stream was opened: the user holds its share (the caller answers 429) or the instance is full (503). */
+    public enum Refusal { USER_SHARE, INSTANCE }
+
+    /** The result of {@link #open}: a stream, or the refusal. */
+    public record Opening(Stream stream, Refusal refusal) {
+        public java.util.Optional<Stream> opened() {
+            return java.util.Optional.ofNullable(stream);
+        }
+    }
+
     private final UserToolLists lists;
     private final Duration heartbeat;
     private final long windowMillis;
@@ -61,6 +71,9 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
     private final AtomicInteger openCount = new AtomicInteger();
     private final java.util.concurrent.atomic.AtomicLong changes = new java.util.concurrent.atomic.AtomicLong();
     private final int maxOpen;
+    private final int maxOpenPerUser;
+    /** Open streams per {@code sub}; an entry goes when its count reaches zero. */
+    private final java.util.concurrent.ConcurrentHashMap<String, Integer> openPerUser = new java.util.concurrent.ConcurrentHashMap<>();
     private final Semaphore computing;
     private final long debounceMillis;
 
@@ -69,8 +82,10 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
      *                      store does not answer, which ends the stream too (fail-closed)
      */
     public ToolStreams(UserToolLists lists, Duration heartbeat, Duration window, LongSupplier millis, MeterRegistry meters,
-                       Predicate<String> sessionExists, JsonMapper json, int maxOpen, int recomputeParallelism, Duration debounce) {
+                       Predicate<String> sessionExists, JsonMapper json, int maxOpen, int maxOpenPerUser, int recomputeParallelism,
+                       Duration debounce) {
         this.maxOpen = maxOpen;
+        this.maxOpenPerUser = maxOpenPerUser;
         this.computing = new Semaphore(recomputeParallelism);
         this.debounceMillis = debounce.toMillis();
         this.lists = lists;
@@ -85,23 +100,40 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
     }
 
     /**
-     * Opens a stream for a user, or answers empty when this instance already holds {@code maxOpen} of them (the caller refuses with 503). The
+     * Opens a stream for a user, or refuses it when the user already holds {@code maxOpenPerUser} streams here or this instance already holds
+     * {@code maxOpen}; the share is checked first (CC-254). Without the share one token could hold every place until it expires, since only
+     * the rate of opening is limited per user. The
      * list of the user at this moment is the reference of the first comparison (CC-207); {@code subscriptionId} is the id of the
      * {@code subscriptions/listen} request, null for the stream of a session. The caller must {@link Stream#release()} the stream
      * whatever happens after this (serving it does).
      */
-    public java.util.Optional<Stream> open(Kind kind, GatewayUser user, String sessionId, EndpointFilter filter, String routeSystem,
+    public Opening open(Kind kind, GatewayUser user, String sessionId, EndpointFilter filter, String routeSystem,
                                            java.time.Instant tokenExpiresAt, JsonNode subscriptionId, boolean toolsListChanged) {
+        String sub = user.sub();
+        boolean[] taken = {false};
+        openPerUser.compute(sub, (key, count) -> {
+            int held = count == null ? 0 : count;
+            if (held >= maxOpenPerUser) {
+                return count;
+            }
+            taken[0] = true;
+            return held + 1;
+        });
+        if (!taken[0]) {
+            meters.counter("mcp_gateway_streams_refused_total").increment();
+            return new Opening(null, Refusal.USER_SHARE);
+        }
         if (openCount.incrementAndGet() > maxOpen) {
             openCount.decrementAndGet();
+            releaseShare(sub);
             meters.counter("mcp_gateway_streams_refused_total").increment();
-            return java.util.Optional.empty();
+            return new Opening(null, Refusal.INSTANCE);
         }
         try {
             long before = changes.get();
             // A stream that announces nothing needs no reference and no list: it costs nothing at a change (and keeps its place for the limit).
             ListChangeTracker tracker = toolsListChanged ? new ListChangeTracker(filter, routeSystem, listOf(user), windowMillis) : null;
-            Stream stream = new Stream(kind, user, sessionId, tracker, tokenExpiresAt == null ? Long.MAX_VALUE
+            Stream stream = new Stream(kind, user, sub, sessionId, tracker, tokenExpiresAt == null ? Long.MAX_VALUE
                     : millis.getAsLong() + Math.max(0, Duration.between(java.time.Instant.now(), tokenExpiresAt).toMillis()), subscriptionId,
                     toolsListChanged);
             open.add(stream);
@@ -110,11 +142,16 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
                 stream.wake();
             }
             meters.counter("mcp_gateway_streams_opened_total", "kind", kind.name().toLowerCase()).increment();
-            return java.util.Optional.of(stream);
+            return new Opening(stream, null);
         } catch (RuntimeException failure) {
             openCount.decrementAndGet();
+            releaseShare(sub);
             throw failure;
         }
+    }
+
+    private void releaseShare(String sub) {
+        openPerUser.computeIfPresent(sub, (key, count) -> count <= 1 ? null : count - 1);
     }
 
     /** At most a few lists are computed at a time: after a change every stream wants one, and each costs a decision of Cedar per tool. */
@@ -172,6 +209,8 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
     public final class Stream {
         private final Kind kind;
         private volatile GatewayUser user;
+        /** The {@code sub} the stream was counted for; {@link #user} may be replaced (CC-176), the share it holds may not. */
+        private final String sub;
         private final String sessionId;
         private final ListChangeTracker tracker;
         private final long expiresAtMillis;
@@ -182,10 +221,11 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
         private volatile String closeReason;
         private final java.util.concurrent.atomic.AtomicBoolean released = new java.util.concurrent.atomic.AtomicBoolean();
 
-        private Stream(Kind kind, GatewayUser user, String sessionId, ListChangeTracker tracker, long expiresAtMillis, JsonNode subscriptionId,
+        private Stream(Kind kind, GatewayUser user, String sub, String sessionId, ListChangeTracker tracker, long expiresAtMillis, JsonNode subscriptionId,
                        boolean toolsListChanged) {
             this.kind = kind;
             this.user = user;
+            this.sub = sub;
             this.sessionId = sessionId;
             this.tracker = tracker;
             this.expiresAtMillis = expiresAtMillis;
@@ -198,6 +238,7 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
             if (released.compareAndSet(false, true)) {
                 open.remove(this);
                 openCount.decrementAndGet();
+                releaseShare(sub);
             }
         }
 

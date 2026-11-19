@@ -31,7 +31,7 @@ class GatewayAuthenticationVectorsTest {
     @TestFactory
     List<DynamicTest> everyVector() {
         List<Vectors.Vector> vectors = Vectors.of("gateway-authentication");
-        assertThat(vectors).hasSize(21);
+        assertThat(vectors).hasSize(22);
         return vectors.stream().map(v -> DynamicTest.dynamicTest(v.name(), () -> check(v.document()))).toList();
     }
 
@@ -59,6 +59,8 @@ class GatewayAuthenticationVectorsTest {
             write(response, RateLimitResponse.overloaded("0192d1b2-7c3a-7d4e-8f10-2a3b4c5d6e7f", 2));
         } else if ("session_store_unavailable".equals(input.path("reason").asString())) {
             write(response, RateLimitResponse.sessionStoreUnavailable("0192d1b2-7c3a-7d4e-8f10-2a3b4c5d6e7f", 10));
+        } else if ("user_streams_limit_reached".equals(input.path("reason").asString())) {
+            write(response, RateLimitResponse.of("0192d1b2-7c3a-7d4e-8f10-2a3b4c5d6e7f", 2));
         } else if ("rate_limited".equals(input.path("reason").asString())) {
             // The wait is a decimal in a vector (0.2 s): the limiter rounds up to whole seconds, at least one.
             int seconds = (int) Math.max(1, Math.ceil(input.path("retryAfterSeconds").asDouble()));

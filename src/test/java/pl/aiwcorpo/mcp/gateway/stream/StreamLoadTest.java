@@ -75,7 +75,7 @@ class StreamLoadTest extends GatewayTestBase {
         when(guard.lastKnownIntact(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any())).thenReturn(true);
         UserToolLists listsOfStreams = new UserToolLists(registry, access, switches, guard);
         ToolStreams streams = new ToolStreams(listsOfStreams, Duration.ofSeconds(15), Duration.ofSeconds(1), System::currentTimeMillis,
-                new SimpleMeterRegistry(), id -> true, JsonMapper.builder().build(), total + 10, 4, Duration.ofMillis(100));
+                new SimpleMeterRegistry(), id -> true, JsonMapper.builder().build(), total + 10, total + 10, 4, Duration.ofMillis(100));
         switches.onChange(streams::changed);
 
         AtomicInteger notified = new AtomicInteger();
@@ -92,7 +92,7 @@ class StreamLoadTest extends GatewayTestBase {
         for (GatewayUser user : users) {
             openers.add(Thread.ofVirtual().start(() -> {
                 for (int k = 0; k < perIdentity; k++) {
-                    ToolStreams.Stream stream = streams.open(ToolStreams.Kind.SESSION, user, "s", EndpointFilter.none(), null, null, null, true).orElseThrow();
+                    ToolStreams.Stream stream = streams.open(ToolStreams.Kind.SESSION, user, "s", EndpointFilter.none(), null, null, null, true).opened().orElseThrow();
                     synchronized (lock) {
                         open.add(stream);
                     }
