@@ -51,6 +51,37 @@ Required, in `deploy/gateway.env`. The Compose files set the database, Redis and
 
 Optional settings (allowed AI clients, rate limits, own certificate on the public port, refused server addresses) are listed in `src/main/resources/application.yml`.
 
+## Tracing
+
+Off by default; no collector is needed. Set `MCP_OTLP_ENDPOINT` to the OTLP/HTTP traces URL of your collector, with the path, for example
+`http://collector:4318/v1/traces`, and restart. Spans are exported under the service name `mcp-gateway`.
+
+- A W3C `traceparent` (and `tracestate`) from the client is continued: the gateway's request span is a child of the client's span. The
+  credential broker and the MCP server get a `traceparent` with the same trace id and a span id of the gateway's own call to them
+  (`tracestate` is passed on as received). Without a header from the client the gateway starts a trace and sends it on in the same way.
+  Baggage is not read or sent.
+- Of the traces that start at the gateway 10 % are sampled; change it with `MANAGEMENT_TRACING_SAMPLING_PROBABILITY` (0.0 to 1.0). A trace
+  whose `traceparent` the client marked as sampled is kept, and one marked unsampled stays unsampled on every hop. The gateway does not
+  tell a trusted client from any other: a caller of the public port can force sampling of its requests, and chooses the trace id. Treat the
+  collector as accepting that load, or keep the exposed port behind a proxy that rewrites or drops `traceparent`. Spring Boot propagates the trace context only while span export is on, so
+  `MANAGEMENT_TRACING_EXPORT_ENABLED=false` also stops the headers.
+- Calls the gateway makes outside a client request (start-up check of the broker, manifest and policy data pushes to servers, the identity
+  provider) start no span and carry no `traceparent`.
+- `MANAGEMENT_OPENTELEMETRY_ENABLED=false` (the SDK and exporter) or `MANAGEMENT_TRACING_EXPORT_ENABLED=false` (the spans and the headers)
+  switches tracing off even when `MCP_OTLP_ENDPOINT` is set. `management.tracing.enabled` has no effect in Spring Boot 4. Other exporter settings (headers for the
+  collector, TLS bundle, timeouts, gRPC) are the Spring Boot properties under `management.opentelemetry.tracing.export.otlp.*`.
+
+Recorded on the spans, and nothing else:
+
+| Span | Attributes |
+| --- | --- |
+| request (server) | HTTP method, route template (`/s/{serverId}/mcp`, never the path with the real ids), status, outcome, exception class |
+| call to the broker or to an MCP server (client) | `peer.service` (`mcp-credential-broker` or `mcp-server`), HTTP method, `server.address`, `server.port`, status, `error.type` on a failure |
+
+No token, header, request or response body, tool name, tool argument or result, user id or URL path is recorded. The client span ends when
+the response headers arrive. Spring Security, Redis and scheduled-task spans are switched off. A request that ends in an exception no handler
+answers has it recorded on its span as Spring Boot does (type, message, stack); exception messages are held to the same rule as log lines.
+
 ## Build
 
 ```bash

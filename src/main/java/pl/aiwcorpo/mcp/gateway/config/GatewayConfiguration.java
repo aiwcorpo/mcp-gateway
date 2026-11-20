@@ -6,6 +6,7 @@ import java.time.Clock;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -18,6 +19,8 @@ import org.springframework.transaction.PlatformTransactionManager;
 import io.lettuce.core.RedisURI;
 import jakarta.servlet.DispatcherType;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.propagation.Propagator;
 import pl.aiwcorpo.mcp.gateway.admin.AdminController;
 import pl.aiwcorpo.mcp.gateway.admin.ClientCertificateVerifier;
 import pl.aiwcorpo.mcp.gateway.activity.ActivityAggregator;
@@ -61,6 +64,8 @@ import pl.aiwcorpo.mcp.gateway.registry.ServerAdmin;
 import pl.aiwcorpo.mcp.gateway.registry.ServerChecks;
 import pl.aiwcorpo.mcp.gateway.link.PolicyDataPusher;
 import pl.aiwcorpo.mcp.gateway.link.ServerLinks;
+import pl.aiwcorpo.mcp.gateway.tracing.OutboundTracing;
+import pl.aiwcorpo.mcp.gateway.tracing.RequestUrlFilter;
 import pl.aiwcorpo.mcp.gateway.net.AddressPolicy;
 import pl.aiwcorpo.mcp.gateway.tls.ServerTls;
 import pl.aiwcorpo.mcp.gateway.authz.ToolAccess;
@@ -340,13 +345,24 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    BrokerClient brokerClient(GatewayProperties properties, InternalTls tls, InternalTokenIssuer tokens, JsonMapper gatewayJson) {
+    RequestUrlFilter requestUrlFilter() {
+        return new RequestUrlFilter();
+    }
+
+    @Bean
+    OutboundTracing outboundTracing(ObjectProvider<Tracer> tracer, ObjectProvider<Propagator> propagator) {
+        return new OutboundTracing(tracer.getIfAvailable(() -> Tracer.NOOP), propagator.getIfAvailable(() -> Propagator.NOOP));
+    }
+
+    @Bean
+    BrokerClient brokerClient(GatewayProperties properties, InternalTls tls, InternalTokenIssuer tokens, JsonMapper gatewayJson,
+                              OutboundTracing tracing) {
         GatewayProperties.Broker broker = properties.broker();
         if (!"https".equals(broker.url().getScheme())) {
             throw new IllegalStateException("gateway.broker.url must be https (mTLS, C4)");
         }
-        return new BrokerClient(broker.url(), tls.clientFor(broker.tlsName(), broker.timeout()), tokens, gatewayJson,
-                broker.timeout());
+        return new BrokerClient(broker.url(), tracing.wrap(tls.clientFor(broker.tlsName(), broker.timeout()), OutboundTracing.BROKER),
+                tokens, gatewayJson, broker.timeout());
     }
 
     @Bean
@@ -447,10 +463,11 @@ public class GatewayConfiguration {
 
     @Bean
     UpstreamSessions upstreamSessions(GatewayProperties properties, ServerLinks links, PolicyDataPusher policyData,
-                                      InternalTokenIssuer tokens, JsonMapper gatewayJson, Clock clock) {
+                                      InternalTokenIssuer tokens, JsonMapper gatewayJson, Clock clock, OutboundTracing tracing) {
         GatewayProperties.Upstream upstream = properties.upstream();
         return new UpstreamSessions(server -> new StreamableHttpClient(server.internalUrl(),
-                links.client(server.connection().tlsMode(), server.connection().fingerprint()), gatewayJson, upstream.timeout(),
+                tracing.wrap(links.client(server.connection().tlsMode(), server.connection().fingerprint()), OutboundTracing.MCP_SERVER),
+                gatewayJson, upstream.timeout(),
                 upstream.maxResponseBytes(), () -> links.checkAddress(server.internalUrl()).map(refusal -> refusal.message())),
                 policyData::push, tokens, gatewayJson, properties.sessions().upstreamIdleTimeout(), clock, properties.componentId(),
                 properties.version());
