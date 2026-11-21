@@ -1,17 +1,31 @@
 package pl.aiwcorpo.mcp.gateway.tracing;
 
+import java.util.Set;
+
+import io.micrometer.common.KeyValue;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationFilter;
 
 /**
  * Spring Boot records the literal request path as {@code http.url}. Paths here carry identifiers (a user's {@code sub}, a confirmation
- * id), so only the route template ({@code /s/{serverId}/mcp}, tag {@code uri}) stays on the span.
+ * id), so only the route template ({@code /s/{serverId}/mcp}, tag {@code uri}) stays on the span, and {@link UriLabel} keeps that tag
+ * free of a query and of credentials.
  */
 public final class RequestUrlFilter implements ObservationFilter {
 
+    private static final Set<String> URL_KEYS = Set.of("http.url", "url.full", "http.target", "url.query", "url.path");
+
     @Override
     public Observation.Context map(Observation.Context context) {
-        context.removeHighCardinalityKeyValue("http.url");
+        URL_KEYS.forEach(context::removeHighCardinalityKeyValue);
+        URL_KEYS.forEach(context::removeLowCardinalityKeyValue);
+        KeyValue uri = context.getLowCardinalityKeyValues().stream().filter(kv -> "uri".equals(kv.getKey())).findFirst().orElse(null);
+        if (uri != null) {
+            String label = UriLabel.of(uri.getValue());
+            if (!uri.getValue().equals(label)) {
+                context.addLowCardinalityKeyValue(KeyValue.of("uri", label));
+            }
+        }
         return context;
     }
 }

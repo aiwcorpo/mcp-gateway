@@ -2,6 +2,9 @@ package pl.aiwcorpo.mcp.gateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -10,6 +13,7 @@ import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 
 import pl.aiwcorpo.mcp.gateway.support.BrokerStub;
+import pl.aiwcorpo.mcp.gateway.support.RecordedSpansConfiguration;
 
 class TracePropagationTest extends GatewayTestBase {
 
@@ -39,32 +43,63 @@ class TracePropagationTest extends GatewayTestBase {
     }
 
     @Test
-    void theTraceOfTheClientContinuesToTheBrokerAndToTheServer() throws Exception {
-        HttpResponse<String> response = callWithTraceparent("00-" + CLIENT_TRACE_ID + "-" + CLIENT_SPAN_ID + "-01", Map.of());
+    void aPublicRequestStartsANewTraceAndTheClientsContextIsOnlyALink() throws Exception {
+        HttpResponse<String> response = callWithTraceparent("00-" + CLIENT_TRACE_ID + "-" + CLIENT_SPAN_ID + "-01",
+                Map.of("tracestate", "vendor=client-value", "baggage", "user=secret-user"));
         assertThat(response.statusCode()).isEqualTo(200);
         assertThat(toolError(response).isEmpty()).as(response.body()).isTrue();
 
         BrokerStub.Received resolve = env.broker.received().stream().filter(r -> r.path().equals("/v1/credentials/resolve"))
-                .findFirst().orElseThrow();
+                .reduce((first, second) -> second).orElseThrow();
         Matcher atBroker = parsed(resolve.traceparent());
-        Matcher atServer = parsed(lastToolCall(env.jira).header("traceparent"));
-        assertThat(atBroker.group(1)).isEqualTo(CLIENT_TRACE_ID);
-        assertThat(atServer.group(1)).isEqualTo(CLIENT_TRACE_ID);
-        assertThat(atBroker.group(2)).isNotEqualTo(CLIENT_SPAN_ID).isNotEqualTo(atServer.group(2));
-        assertThat(atServer.group(2)).isNotEqualTo(CLIENT_SPAN_ID);
+        var atServerRequest = lastToolCall(env.jira);
+        Matcher atServer = parsed(atServerRequest.header("traceparent"));
+        assertThat(atBroker.group(1)).isNotEqualTo(CLIENT_TRACE_ID);
+        assertThat(atServer.group(1)).isEqualTo(atBroker.group(1)).isNotEqualTo(CLIENT_TRACE_ID);
+        assertThat(resolve.tracestate()).isNull();
+        assertThat(atServerRequest.header("tracestate")).isNull();
+        assertThat(atServerRequest.header("baggage")).isNull();
+
+        String gatewayTrace = atBroker.group(1);
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(15)).untilAsserted(() -> assertThat(
+                RecordedSpansConfiguration.spans().stream().anyMatch(span -> span.getTraceId().equals(gatewayTrace)
+                        && span.getKind() == io.opentelemetry.api.trace.SpanKind.SERVER)).isTrue());
+        var request = RecordedSpansConfiguration.spans().stream().filter(span -> span.getTraceId().equals(gatewayTrace)
+                && span.getKind() == io.opentelemetry.api.trace.SpanKind.SERVER).findFirst().orElseThrow();
+        assertThat(request.getParentSpanContext().isValid()).isFalse();
+        assertThat(request.getLinks()).hasSize(1);
+        assertThat(request.getLinks().getFirst().getSpanContext().getTraceId()).isEqualTo(CLIENT_TRACE_ID);
+        assertThat(request.getLinks().getFirst().getSpanContext().getSpanId()).isEqualTo(CLIENT_SPAN_ID);
+        assertThat(request.getSpanContext().getTraceState().isEmpty()).isTrue();
     }
 
     @Test
-    void anUnsampledTraceOfTheClientReachesTheBrokerAndTheServerAsUnsampled() throws Exception {
+    void aClientSayingUnsampledDoesNotDecideWhetherThePublicRequestIsSampled() throws Exception {
         assertThat(callWithTraceparent("00-" + CLIENT_TRACE_ID + "-" + CLIENT_SPAN_ID + "-00", Map.of()).statusCode()).isEqualTo(200);
         BrokerStub.Received resolve = env.broker.received().stream().filter(r -> r.path().equals("/v1/credentials/resolve"))
                 .reduce((first, second) -> second).orElseThrow();
         Matcher atBroker = parsed(resolve.traceparent());
         Matcher atServer = parsed(lastToolCall(env.jira).header("traceparent"));
-        assertThat(atBroker.group(1)).isEqualTo(CLIENT_TRACE_ID);
-        assertThat(atServer.group(1)).isEqualTo(CLIENT_TRACE_ID);
-        assertThat(Integer.parseInt(atBroker.group(3), 16) & 1).as("broker flags " + atBroker.group(3)).isZero();
-        assertThat(Integer.parseInt(atServer.group(3), 16) & 1).as("server flags " + atServer.group(3)).isZero();
+        assertThat(atBroker.group(1)).isNotEqualTo(CLIENT_TRACE_ID);
+        assertThat(atServer.group(1)).isEqualTo(atBroker.group(1));
+        assertThat(Integer.parseInt(atBroker.group(3), 16) & 1).as("the sampler of the test context keeps every trace").isEqualTo(1);
+    }
+
+    @Test
+    void aRequestOnTheInternalPortKeepsTheTraceOfItsCaller() throws Exception {
+        String traceId = "0af7651916cd43dd8448eb211c80319c";
+        String spanId = "b7ad6b7169203331";
+        HttpRequest request = HttpRequest.newBuilder(URI.create("https://localhost:" + env.internalPort + "/actuator/health"))
+                .header("traceparent", "00-" + traceId + "-" + spanId + "-01").GET().build();
+        HttpResponse<String> response = HttpClient.newBuilder().sslContext(env.bffTls).build().send(request,
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(response.statusCode()).isEqualTo(200);
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(15)).untilAsserted(() -> assertThat(
+                RecordedSpansConfiguration.spans().stream().anyMatch(span -> span.getTraceId().equals(traceId))).isTrue());
+        var inherited = RecordedSpansConfiguration.spans().stream().filter(span -> span.getTraceId().equals(traceId)).findFirst()
+                .orElseThrow();
+        assertThat(inherited.getParentSpanId()).isEqualTo(spanId);
+        assertThat(inherited.getLinks()).isEmpty();
     }
 
     @Test
@@ -79,15 +114,6 @@ class TracePropagationTest extends GatewayTestBase {
         assertThat(callWithTraceparent("not-a-trace", Map.of()).statusCode()).isEqualTo(200);
         Matcher atServer = parsed(lastToolCall(env.jira).header("traceparent"));
         assertThat(atServer.group(1)).isNotEqualTo("not");
-    }
-
-    @Test
-    void theTracestateOfTheClientContinuesAndItsBaggageIsNotCopied() throws Exception {
-        callWithTraceparent("00-" + CLIENT_TRACE_ID + "-" + CLIENT_SPAN_ID + "-01",
-                Map.of("tracestate", "vendor=client-value", "baggage", "user=secret-user"));
-        var request = lastToolCall(env.jira);
-        assertThat(request.header("tracestate")).isEqualTo("vendor=client-value");
-        assertThat(request.header("baggage")).isNull();
     }
 
     @Test

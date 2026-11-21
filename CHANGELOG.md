@@ -6,10 +6,12 @@ integration builds tag the image `m6-<short sha>`.
 ## Unreleased
 
 - OpenTelemetry tracing, off by default. Set `MCP_OTLP_ENDPOINT` (the OTLP/HTTP traces URL of a collector, with the path) and restart to
-  export spans. The gateway continues a W3C `traceparent` / `tracestate` from the client and sends it, with a span id of its own, to the
-  credential broker and to MCP servers. A broker or server on a version with tracing continues the trace; an older one ignores the extra
-  header. Spans carry method, route template, status and the peer's name only, never tokens, headers, bodies, tool arguments or results
-  (README, "Tracing"). Nothing changes while the variable is unset.
+  export spans. A request on the public port always starts a new trace that the gateway's sampler decides about; the client's
+  `traceparent` is kept only as a span link, and its `tracestate` and `baggage` are dropped. A request on the internal port (8443)
+  continues the caller's trace. The gateway sends a `traceparent` with a span id of its own to the credential broker and to MCP servers. A
+  broker or server on a version with tracing continues the trace; an older one ignores the extra header. Spans carry method, route
+  template, status, exception class and the peer's name only, never tokens, headers, bodies, tool arguments or results, exception messages
+  or stack traces (README, "Tracing"). Nothing changes while the variable is unset.
 
 ## 2.1.0 - 2026-11-19
 

@@ -30,7 +30,7 @@ import pl.aiwcorpo.mcp.testserver.AuthenticatorEndpoints;
 public final class BrokerStub implements AutoCloseable {
 
     public record Received(String method, String path, String body, String requestId, String rejectReason, String tool,
-                           String traceparent) {
+                           String traceparent, String tracestate) {
     }
 
     public enum Mode { GRANT, REQUIRED, UNAVAILABLE, DROP, REJECT, BAD_BODY, EXCHANGE_DENIED, SYSTEM_NOT_CONFIGURED, EXCHANGED_WITHOUT_EXPIRY, OTHER_TYPE, UNKNOWN_TYPE }
@@ -129,14 +129,15 @@ public final class BrokerStub implements AutoCloseable {
             String rid = exchange.getRequestHeaders().getFirst("X-Request-Id");
             if (!"mcp-gateway".equals(commonName(exchange))) {
                 received.add(new Received(method, path, body, rid, "client_cn", null,
-                        exchange.getRequestHeaders().getFirst("traceparent")));
+                        exchange.getRequestHeaders().getFirst("traceparent"), exchange.getRequestHeaders().getFirst("tracestate")));
                 send(exchange, 403, "{\"error\":\"forbidden\"}");
                 return;
             }
             InternalJwtVerifier.Result auth = verifier.verify(exchange.getRequestHeaders().getFirst("Authorization"), rid,
                     InternalJwtVerifier.RequestRule.forHttp(method, path));
             Received entry = new Received(method, path, body, rid, auth.reason(),
-                    auth.valid() ? (String) auth.claims().get("tool") : null, exchange.getRequestHeaders().getFirst("traceparent"));
+                    auth.valid() ? (String) auth.claims().get("tool") : null, exchange.getRequestHeaders().getFirst("traceparent"),
+                    exchange.getRequestHeaders().getFirst("tracestate"));
             received.add(entry);
             if ("/v1/systems".equals(path)) {
                 systemsCalls.add(entry);

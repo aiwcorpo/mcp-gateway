@@ -10,6 +10,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.context.annotation.Primary;
 import org.springframework.core.Ordered;
@@ -64,7 +65,10 @@ import pl.aiwcorpo.mcp.gateway.registry.ServerAdmin;
 import pl.aiwcorpo.mcp.gateway.registry.ServerChecks;
 import pl.aiwcorpo.mcp.gateway.link.PolicyDataPusher;
 import pl.aiwcorpo.mcp.gateway.link.ServerLinks;
+import pl.aiwcorpo.mcp.gateway.tracing.ClientLinkingReceiverHandler;
 import pl.aiwcorpo.mcp.gateway.tracing.OutboundTracing;
+import pl.aiwcorpo.mcp.gateway.tracing.PublicEdgeTraceFilter;
+import pl.aiwcorpo.mcp.gateway.tracing.RedactingSpanExporters;
 import pl.aiwcorpo.mcp.gateway.tracing.RequestUrlFilter;
 import pl.aiwcorpo.mcp.gateway.net.AddressPolicy;
 import pl.aiwcorpo.mcp.gateway.tls.ServerTls;
@@ -347,6 +351,26 @@ public class GatewayConfiguration {
     @Bean
     RequestUrlFilter requestUrlFilter() {
         return new RequestUrlFilter();
+    }
+
+    @Bean
+    static RedactingSpanExporters redactingSpanExporters() {
+        return new RedactingSpanExporters();
+    }
+
+    @Bean
+    FilterRegistrationBean<PublicEdgeTraceFilter> publicEdgeTraceFilter(GatewayProperties properties) {
+        FilterRegistrationBean<PublicEdgeTraceFilter> registration =
+                new FilterRegistrationBean<>(new PublicEdgeTraceFilter(properties.internalEndpoint().port()));
+        registration.setOrder(Ordered.HIGHEST_PRECEDENCE);
+        return registration;
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "management.tracing.export.enabled", havingValue = "true")
+    @Order(500)
+    ClientLinkingReceiverHandler clientLinkingReceiverHandler(Tracer tracer, Propagator propagator) {
+        return new ClientLinkingReceiverHandler(tracer, propagator);
     }
 
     @Bean
