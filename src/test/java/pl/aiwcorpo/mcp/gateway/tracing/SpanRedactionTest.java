@@ -83,6 +83,16 @@ class SpanRedactionTest {
     }
 
     @Test
+    void aCallToAnotherSystemKeepsItsUriTagOnlyWhenItIsATemplate() {
+        io.micrometer.observation.transport.SenderContext<Object> concatenated = new io.micrometer.observation.transport.SenderContext<>((c, k, v) -> { });
+        concatenated.addLowCardinalityKeyValue(KeyValue.of("uri", "/rest/api/2/issue/PROJ-7431"));
+        io.micrometer.observation.transport.SenderContext<Object> template = new io.micrometer.observation.transport.SenderContext<>((c, k, v) -> { });
+        template.addLowCardinalityKeyValue(KeyValue.of("uri", "/rest/api/2/issue/{key}"));
+        assertThat(new RequestUrlFilter().map(concatenated).getLowCardinalityKeyValue("uri").getValue()).isEqualTo(UriLabel.UNKNOWN);
+        assertThat(new RequestUrlFilter().map(template).getLowCardinalityKeyValue("uri").getValue()).isEqualTo("/rest/api/2/issue/{key}");
+    }
+
+    @Test
     void aTemplateKeepsItsPathAndLosesItsQueryVariables() {
         assertThat(UriLabel.of("/users/{id}/issues?state={state}&page={page}")).isEqualTo("/users/{id}/issues");
         assertThat(UriLabel.of("https://{user}:{password}@backend/items/{id}")).isEqualTo("https://backend/items/{id}");

@@ -82,7 +82,7 @@ No token, header, request or response body, tool name, tool argument or result, 
 the response headers arrive. Spring Security, Redis and scheduled-task spans are switched off. A span of a failed call has the exception
 class only: the message and stack trace, which can hold a response body or a URL, are removed before export, as are the status description
 and any attribute that holds a URL (`http.url`, `url.full`, `http.target`, `url.query`). The `uri` tag keeps a route template without
-query or credentials; a value that is not a template (literal query or user info) becomes `unknown`.
+query or credentials; a value that is not a template (literal query or user info) becomes `unknown`; on a call to another system the tag is kept only if it contains a template variable.
 
 ## Build
 
