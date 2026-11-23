@@ -68,6 +68,7 @@ import pl.aiwcorpo.mcp.gateway.link.ServerLinks;
 import pl.aiwcorpo.mcp.gateway.tracing.ClientLinkingReceiverHandler;
 import pl.aiwcorpo.mcp.gateway.tracing.OutboundTracing;
 import pl.aiwcorpo.mcp.gateway.tracing.PublicEdgeTraceFilter;
+import pl.aiwcorpo.mcp.gateway.tracing.HealthProbeSpans;
 import pl.aiwcorpo.mcp.gateway.tracing.RedactingSpanExporters;
 import pl.aiwcorpo.mcp.gateway.tracing.RequestUrlFilter;
 import pl.aiwcorpo.mcp.gateway.net.AddressPolicy;
@@ -346,6 +347,11 @@ public class GatewayConfiguration {
     InternalTls internalTls(GatewayProperties properties) {
         GatewayProperties.Tls tls = properties.tls();
         return new InternalTls(Path.of(tls.keystore()), Path.of(tls.truststore()), tls.storePassword().toCharArray());
+    }
+
+    @Bean
+    HealthProbeSpans healthProbeSpans() {
+        return new HealthProbeSpans();
     }
 
     @Bean

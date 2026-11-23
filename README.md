@@ -65,6 +65,8 @@ Off by default; no collector is needed. Set `MCP_OTLP_ENDPOINT` to the OTLP/HTTP
 - A request on the internal port (8443: the admin API, the JWKS, the actuator) comes from a caller authenticated by mTLS and continues the
   `traceparent` it carries, as a child of the caller's span. The gateway tells the two apart by the local port of the connection.
   Spring Boot propagates the trace context only while span export is on, so `MANAGEMENT_TRACING_EXPORT_ENABLED=false` also stops the headers.
+- Requests for `/actuator/health` and `/actuator/health/**` export no span, so container and Kubernetes probes do not fill the collector. The
+  `http.server.requests` metric still counts them. The match is on the request path, nothing else (`/actuator/healthx` is traced).
 - Calls the gateway makes outside a client request (start-up check of the broker, manifest and policy data pushes to servers, the identity
   provider) start no span and carry no `traceparent`.
 - `MANAGEMENT_OPENTELEMETRY_ENABLED=false` (the SDK and exporter) or `MANAGEMENT_TRACING_EXPORT_ENABLED=false` (the spans and the headers)

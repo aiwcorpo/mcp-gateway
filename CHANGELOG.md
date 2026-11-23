@@ -11,7 +11,8 @@ integration builds tag the image `m6-<short sha>`.
   continues the caller's trace. The gateway sends a `traceparent` with a span id of its own to the credential broker and to MCP servers. A
   broker or server on a version with tracing continues the trace; an older one ignores the extra header. Spans carry method, route
   template, status, exception class and the peer's name only, never tokens, headers, bodies, tool arguments or results, exception messages
-  or stack traces (README, "Tracing"). Nothing changes while the variable is unset.
+  or stack traces (README, "Tracing"). Requests for `/actuator/health` export no span (the metric stays). Nothing changes while the
+  variable is unset.
 
 ## 2.1.0 - 2026-11-19
 
