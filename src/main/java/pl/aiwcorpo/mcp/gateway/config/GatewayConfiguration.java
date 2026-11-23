@@ -191,6 +191,8 @@ public class GatewayConfiguration {
     FilterRegistrationBean<InternalPortFilter> internalPortFilter(GatewayProperties properties) {
         FilterRegistrationBean<InternalPortFilter> registration =
                 new FilterRegistrationBean<>(new InternalPortFilter(properties.internalEndpoint().port()));
+        // Same order as Boot's observation filter and it runs first, so a request it refuses (the actuator on the public port, any
+        // path not served on 8443) is never observed: no span and no metric. Tracing tests rely on this.
         registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 1);
         return registration;
     }

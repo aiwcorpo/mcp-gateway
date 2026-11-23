@@ -19,7 +19,11 @@ class HealthProbeSpansTest {
     private final HealthProbeSpans spans = new HealthProbeSpans();
 
     private boolean marked(String servletPath) {
-        MockHttpServletRequest request = new MockHttpServletRequest("GET", servletPath);
+        return marked(servletPath, servletPath);
+    }
+
+    private boolean marked(String requestUri, String servletPath) {
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", requestUri);
         request.setServletPath(servletPath);
         Observation.Context context = spans.map(new ServerRequestObservationContext(request, new MockHttpServletResponse()));
         return context.getHighCardinalityKeyValues().stream().anyMatch(kv -> kv.getKey().equals(HealthProbeSpans.MARK));
@@ -44,6 +48,17 @@ class HealthProbeSpansTest {
                 "/s/x/mcp/actuator/health", "/actuator/prometheus", "/health", "/"}) {
             assertThat(marked(path)).as(path).isFalse();
         }
+    }
+
+    @Test
+    void aPathThatOnlyNormalisesToTheHealthPathIsNotMarked() {
+        String health = "/actuator/health";
+        for (String uri : new String[] {"//actuator/health", "/actuator//health", "/x/../actuator/health", "/x/..;/actuator/health",
+                "/actuator/./health", "/actuator/health;a=b", "/actuator/%68ealth", "/actuator/%2e/health", "/actuator/health/",
+                "/v1/../actuator/health", "/s/x/mcp/../../../actuator/health"}) {
+            assertThat(marked(uri, health)).as(uri).isFalse();
+        }
+        assertThat(marked("/actuator/health/liveness;a=b", "/actuator/health/liveness")).isFalse();
     }
 
     @Test

@@ -66,8 +66,8 @@ class HealthProbeTracingTest extends GatewayTestBase {
         assertThat(exported(span)).isFalse();
     }
 
-    private double requests() {
-        return meters.find("http.server.requests").timers().stream().mapToDouble(Timer::count).sum();
+    private long healthRequests() {
+        return meters.find("http.server.requests").tag("uri", "/actuator/health").timers().stream().mapToLong(Timer::count).sum();
     }
 
     private String internal(String path) {
@@ -80,11 +80,10 @@ class HealthProbeTracingTest extends GatewayTestBase {
 
     @Test
     void theHealthProbeOnTheInternalPortIsNotExportedButIsCountedByTheMetric() throws Exception {
-        double before = requests();
+        long before = healthRequests();
         SpanData span = requestSpan(internal("/actuator/health"), env.bffTls);
         assertThat(span.getAttributes().get(PROBE)).isEqualTo("true");
-        assertThat(meters.find("http.server.requests").tag("uri", "/actuator/health").timers()).isNotEmpty();
-        await().atMost(Duration.ofSeconds(10)).until(() -> requests() > before);
+        await().atMost(Duration.ofSeconds(10)).until(() -> healthRequests() > before);
         assertExportedLater(span, false);
     }
 
@@ -103,14 +102,24 @@ class HealthProbeTracingTest extends GatewayTestBase {
     }
 
     @Test
-    void aHealthPathOnThePublicPortLeavesNoSpanToExport() throws Exception {
+    void aHealthPathOnThePublicPortIsRefusedBeforeAnySpanStarts() throws Exception {
         int before = RecordedSpansConfiguration.spans().size();
         for (String path : List.of("/actuator/health", "/actuator/health/liveness")) {
             HttpClient.newHttpClient().send(HttpRequest.newBuilder(URI.create(publicUrl(path))).GET().build(),
                     java.net.http.HttpResponse.BodyHandlers.ofString());
         }
         Thread.sleep(1000);
-        assertThat(serverSpansSince(before)).allSatisfy(span -> assertThat(span.getAttributes().get(PROBE)).isEqualTo("true"));
+        assertThat(serverSpansSince(before)).isEmpty();
+    }
+
+    @Test
+    void aPathThatOnlyNormalisesToTheHealthPathIsStillExported() throws Exception {
+        for (String path : List.of("//actuator/health", "/actuator//health", "/x/../actuator/health", "/x/..;/actuator/health",
+                "/actuator/./health", "/actuator/health;a=b", "/actuator/%68ealth", "/actuator/%2e/health", "/v1/../actuator/health")) {
+            SpanData span = requestSpan(internal(path), env.bffTls);
+            assertThat(span.getAttributes().get(PROBE)).as(path).isNull();
+            assertExportedLater(span, true);
+        }
     }
 
     @Test
