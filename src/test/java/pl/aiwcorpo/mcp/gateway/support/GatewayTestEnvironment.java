@@ -49,6 +49,7 @@ public final class GatewayTestEnvironment {
     public final int internalPort;
     public final TestIdp idp;
     public final BrokerStub broker;
+    public final TraceCollectorStub collector;
     public final TestMcpServer jira;
     public final TestMcpServer gitlab;
     /** The server behind mcp-confluence: its certificate is not the one that the approved connection of that server pins. */
@@ -115,6 +116,7 @@ public final class GatewayTestEnvironment {
                 URI.create("https://localhost:" + internalPort + "/.well-known/jwks.json"), trustOnly, Duration.ZERO);
 
         idp = new TestIdp();
+        collector = new TraceCollectorStub();
         broker = new BrokerStub(Tls.fromPkcs12(brokerKeystore, pki.truststore(), TestPki.PASSWORD), gatewayKeys);
         jira = new TestMcpServer(new TestMcpServer.Config("mcp-jira", "/mcp", "https://mcp-gateway.internal", false, null,
                 gatewayKeys), Tls.fromPkcs12(jiraKeystore, pki.truststore(), TestPki.PASSWORD),
@@ -373,6 +375,13 @@ public final class GatewayTestEnvironment {
         // The tests relax production rules (test keys, http, a manifest taken from the server): the devstack profile with its two acknowledgements.
         // The variable MCP_DEVSTACK_ACKNOWLEDGED is a real environment variable of the test JVM (surefire, gateway/pom.xml).
         registry.add("aiwcorpo.mcp.platform.devstack.acknowledged", () -> "true");
+        // Tracing on for the whole suite so the hops carry traceparent (TracePropagationTest). Spring Boot propagates the trace context only
+        // while span export is on, so the spans go to a stub collector.
+        registry.add("management.tracing.export.enabled", () -> "true");
+        registry.add("management.opentelemetry.enabled", () -> "true");
+        registry.add("management.tracing.sampling.probability", () -> "1.0");
+        registry.add("management.opentelemetry.tracing.export.otlp.endpoint", collector::endpoint);
+        registry.add("management.opentelemetry.tracing.export.schedule-delay", () -> "200ms");
         registry.add("gateway.oidc.jwks-retry-interval", () -> "1s");
         registry.add("gateway.audit.certificate-rejection-interval", () -> "1s");
         registry.add("gateway.oidc.client-id", () -> "mcp-gateway");

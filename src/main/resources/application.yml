@@ -56,6 +56,23 @@ spring:
     locations: classpath:db/migration
 
 management:
+  logging:
+    export:
+      otlp:
+        # Only traces are exported (MCP_OTLP_ENDPOINT); the OpenTelemetry starter would otherwise also try to export logs.
+        enabled: false
+  observations:
+    enable:
+      # Spring Security would add about a dozen spans per request, one per filter, and the type names of the credentials it handled.
+      spring:
+        security: false
+      # Redis commands and scheduled tasks have no trace of a request to join; they would only add spans of their own.
+      lettuce: false
+      tasks: false
+  tracing:
+    baggage:
+      # Only the W3C trace context crosses a hop, never baggage a client sends.
+      enabled: false
   endpoints:
     web:
       exposure:

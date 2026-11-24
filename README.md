@@ -51,6 +51,44 @@ Required, in `deploy/gateway.env`. The Compose files set the database, Redis and
 
 Optional settings (allowed AI clients, rate limits, own certificate on the public port, refused server addresses) are listed in `src/main/resources/application.yml`.
 
+## Tracing
+
+Off by default; no collector is needed. Set `MCP_OTLP_ENDPOINT` to the OTLP/HTTP traces URL of your collector, with the path, for example
+`http://collector:4318/v1/traces`, and restart. Spans are exported under the service name `mcp-gateway`.
+
+- A request on the public port always starts a new trace, and the gateway's sampler decides about it (10 % by default; change it with
+  `MANAGEMENT_TRACING_SAMPLING_PROBABILITY`, 0.0 to 1.0). A client's `traceparent` is not continued and its sampled flag is not
+  honoured: the request span carries it only as a span link, so a client can find its own trace from the gateway's trace but cannot
+  choose the gateway's trace id or force sampling. A `tracestate` and `baggage` from the client are dropped and never reach the credential
+  broker or an MCP server. The credential broker and the MCP server get a `traceparent` with the gateway's trace id and a span id of the
+  gateway's own call to them, and no `tracestate`.
+- A request on the internal port (8443: the admin API, the JWKS, the actuator) comes from a caller authenticated by mTLS and continues the
+  `traceparent` it carries, as a child of the caller's span. The gateway tells the two apart by the local port of the connection.
+  Spring Boot propagates the trace context only while span export is on, so `MANAGEMENT_TRACING_EXPORT_ENABLED=false` also stops the headers.
+- An HTTP probe of `/actuator/health` (the Helm startup and readiness probes, on port 8443) exports no span; the `http.server.requests`
+  metric still counts it. Only the canonical path `/actuator/health` or `/actuator/health/...` matches; a path with `//`, `..`, `;` or
+  percent-encoding in it is traced like any request. The Compose health checks are TCP connects and create no span. Other requests to the
+  public port, such as `/.well-known/oauth-protected-resource` that a health check may call, are traced. The public port serves no actuator:
+  a request to `/actuator/*` there is refused before the observation starts, so it has neither span nor metric.
+- Calls the gateway makes outside a client request (start-up check of the broker, manifest and policy data pushes to servers, the identity
+  provider) start no span and carry no `traceparent`.
+- `MANAGEMENT_OPENTELEMETRY_ENABLED=false` (the SDK and exporter) or `MANAGEMENT_TRACING_EXPORT_ENABLED=false` (the spans and the headers)
+  switches tracing off even when `MCP_OTLP_ENDPOINT` is set. `management.tracing.enabled` has no effect in Spring Boot 4. Other exporter settings (headers for the
+  collector, TLS bundle, timeouts, gRPC) are the Spring Boot properties under `management.opentelemetry.tracing.export.otlp.*`.
+
+Recorded on the spans, and nothing else:
+
+| Span | Attributes |
+| --- | --- |
+| request (server) | HTTP method, route template (`/s/{serverId}/mcp`, never the path with the real ids), status, outcome, exception class; on the public port a link to the client's trace context |
+| call to the broker or to an MCP server (client) | `peer.service` (`mcp-credential-broker` or `mcp-server`), HTTP method, `server.address`, `server.port`, status, `error.type` on a failure |
+
+No token, header, request or response body, tool name, tool argument or result, user id or URL path is recorded. The client span ends when
+the response headers arrive. Spring Security, Redis and scheduled-task spans are switched off. A span of a failed call has the exception
+class only: the message and stack trace, which can hold a response body or a URL, are removed before export, as are the status description
+and any attribute that holds a URL (`http.url`, `url.full`, `http.target`, `url.query`). The `uri` tag keeps a route template without
+query or credentials; a value that is not a template (literal query or user info) becomes `unknown`; on a call to another system the tag is kept only if it contains a template variable.
+
 ## Build
 
 ```bash

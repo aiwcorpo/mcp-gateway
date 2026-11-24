@@ -3,6 +3,17 @@
 The gateway ships as a container image (`ghcr.io/aiwcorpo/mcp-gateway`); the version in `pom.xml` follows SemVer. Local and
 integration builds tag the image `m6-<short sha>`.
 
+## Unreleased
+
+- OpenTelemetry tracing, off by default. Set `MCP_OTLP_ENDPOINT` (the OTLP/HTTP traces URL of a collector, with the path) and restart to
+  export spans. A request on the public port always starts a new trace that the gateway's sampler decides about; the client's
+  `traceparent` is kept only as a span link, and its `tracestate` and `baggage` are dropped. A request on the internal port (8443)
+  continues the caller's trace. The gateway sends a `traceparent` with a span id of its own to the credential broker and to MCP servers. A
+  broker or server on a version with tracing continues the trace; an older one ignores the extra header. Spans carry method, route
+  template, status, exception class and the peer's name only, never tokens, headers, bodies, tool arguments or results, exception messages
+  or stack traces (README, "Tracing"). Requests for `/actuator/health` export no span (the metric stays). Nothing changes while the
+  variable is unset.
+
 ## 2.1.0 - 2026-11-19
 
 Built on `mcp-contracts` 7.2.0. Carries the audit fixes merged since 2.0.1: UPDATE tools need a confirmation code, one user's open
