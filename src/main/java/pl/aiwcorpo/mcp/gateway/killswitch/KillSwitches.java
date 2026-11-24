@@ -68,6 +68,24 @@ public final class KillSwitches {
         return current.keys().contains(key(serverId, null)) || current.keys().contains(key(serverId, tool)) ? Status.ON : Status.OFF;
     }
 
+    /** Whether the resource or template of that name is switched off, by its own switch or by the one of its server (CC-265). */
+    public Status statusOfResource(String serverId, String name) {
+        return statusOfNamed(serverId, "resource", name);
+    }
+
+    /** Whether the prompt is switched off, by its own switch or by the one of its server. A switch of a resource does not touch it. */
+    public Status statusOfPrompt(String serverId, String name) {
+        return statusOfNamed(serverId, "prompt", name);
+    }
+
+    private Status statusOfNamed(String serverId, String kind, String name) {
+        Snapshot current = fresh();
+        if (current == null) {
+            return Status.UNREADABLE;
+        }
+        return current.keys().contains(key(serverId, null)) || current.keys().contains(namedKey(serverId, kind, name)) ? Status.ON : Status.OFF;
+    }
+
     /** The switches as they are now, or empty when they cannot be read. */
     public Optional<List<KillSwitchStore.Entry>> entries() {
         Snapshot current = fresh();
@@ -89,7 +107,7 @@ public final class KillSwitches {
             try {
                 List<KillSwitchStore.Entry> entries = reader.get();
                 Set<String> keys = new HashSet<>();
-                entries.forEach(entry -> keys.add(key(entry.serverId(), entry.tool())));
+                entries.forEach(entry -> keys.add(keyOf(entry)));
                 snapshot = new Snapshot(List.copyOf(entries), Set.copyOf(keys), startedNanos);
                 failed = false;
                 changed = before == null || !before.keys().equals(keys);
@@ -143,5 +161,17 @@ public final class KillSwitches {
 
     private static String key(String serverId, String tool) {
         return serverId + "\u0000" + (tool == null ? "" : tool);
+    }
+
+    /** Three parts against the two of a tool key, so a resource named like a tool cannot be taken for its switch. */
+    private static String namedKey(String serverId, String kind, String name) {
+        return serverId + "\u0000" + kind + "\u0000" + name;
+    }
+
+    private static String keyOf(KillSwitchStore.Entry entry) {
+        if (entry.resource() != null) {
+            return namedKey(entry.serverId(), "resource", entry.resource());
+        }
+        return entry.prompt() != null ? namedKey(entry.serverId(), "prompt", entry.prompt()) : key(entry.serverId(), entry.tool());
     }
 }

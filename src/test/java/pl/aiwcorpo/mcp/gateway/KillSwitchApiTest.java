@@ -47,7 +47,15 @@ class KillSwitchApiTest extends GatewayTestBase {
     void liftEverything() {
         env.jira.updateTool(false);
         definitions.forget("mcp-jira");
-        store.all().forEach(entry -> store.delete(entry.serverId(), entry.tool()));
+        store.all().forEach(entry -> {
+            if (entry.resource() != null) {
+                store.deleteNamed(entry.serverId(), "resource", entry.resource());
+            } else if (entry.prompt() != null) {
+                store.deleteNamed(entry.serverId(), "prompt", entry.prompt());
+            } else {
+                store.delete(entry.serverId(), entry.tool());
+            }
+        });
         switches.refresh();
     }
 
@@ -249,5 +257,39 @@ class KillSwitchApiTest extends GatewayTestBase {
             assertThat(left).as(vector.name()).isEqualTo(want);
         }
         assertThat(events).contains("lift-tool", "lift-server", "approve", "register");
+    }
+
+    @Test
+    void theVectorsThatLiftTheSwitchOfAResourceOrAPrompt() {
+        int lifted = 0;
+        for (Vectors.Vector vector : Vectors.of("kill-switch")) {
+            JsonNode input = vector.document().path("input");
+            if (!"primitive-switch".equals(vector.document().path("kind").asString()) || !"lift".equals(input.path("event").asString())) {
+                continue;
+            }
+            liftEverything();
+            input.path("switches").forEach(s -> {
+                String server = s.path("serverId").asString();
+                switch (s.path("scope").asString()) {
+                    case "resource" -> store.putNamed(server, "resource", s.path("resource").asString(), "admin", "from the vector");
+                    case "prompt" -> store.putNamed(server, "prompt", s.path("prompt").asString(), "admin", "from the vector");
+                    default -> store.put(server, null, "admin", "from the vector");
+                }
+            });
+            JsonNode target = input.path("target");
+            store.deleteNamed(target.path("serverId").asString(), target.path("kind").asString(), target.path("name").asString());
+            Set<String> left = new TreeSet<>();
+            store.all().forEach(e -> left.add(e.scope() + " " + e.serverId() + " " + (e.resource() != null ? e.resource() : e.prompt())));
+            Set<String> want = new TreeSet<>();
+            vector.document().path("expected").path("switches").forEach(s -> want.add(s.path("scope").asString() + " " + s.path("serverId").asString()
+                    + " " + switch (s.path("scope").asString()) {
+                        case "resource" -> s.path("resource").asString();
+                        case "prompt" -> s.path("prompt").asString();
+                        default -> "null";
+                    }));
+            assertThat(left).as(vector.name()).isEqualTo(want);
+            lifted++;
+        }
+        assertThat(lifted).isEqualTo(1);
     }
 }

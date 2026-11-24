@@ -260,9 +260,11 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    KillSwitchController killSwitchController(KillSwitchStore store, KillSwitches killSwitches, ServerRegistry servers, AuditLog audit,
-                                              GatewayProperties properties, JsonMapper gatewayJson, FreshMfa mfa) {
-        return new KillSwitchController(store, killSwitches, servers, audit, properties.componentId(), gatewayJson, killSwitches::refresh, mfa);
+    KillSwitchController killSwitchController(KillSwitchStore store, KillSwitches killSwitches, ServerRegistry servers,
+                                              RegistryService registryService, AuditLog audit, GatewayProperties properties,
+                                              JsonMapper gatewayJson, FreshMfa mfa) {
+        return new KillSwitchController(store, killSwitches, servers, registryService, audit, properties.componentId(), gatewayJson,
+                killSwitches::refresh, mfa);
     }
 
     @Bean

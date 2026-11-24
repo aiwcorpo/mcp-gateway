@@ -42,7 +42,11 @@ public final class AdminOperations {
                 Rule.of("PUT", "/admin/v1/registry/servers/{serverId}/kill-switch", portalBff),
                 Rule.of("DELETE", "/admin/v1/registry/servers/{serverId}/kill-switch", portalBff),
                 Rule.of("PUT", "/admin/v1/registry/servers/{serverId}/tools/{tool}/kill-switch", portalBff),
-                Rule.of("DELETE", "/admin/v1/registry/servers/{serverId}/tools/{tool}/kill-switch", portalBff));
+                Rule.of("DELETE", "/admin/v1/registry/servers/{serverId}/tools/{tool}/kill-switch", portalBff),
+                Rule.of("PUT", "/admin/v1/registry/servers/{serverId}/resources/{name}/kill-switch", portalBff),
+                Rule.of("DELETE", "/admin/v1/registry/servers/{serverId}/resources/{name}/kill-switch", portalBff),
+                Rule.of("PUT", "/admin/v1/registry/servers/{serverId}/prompts/{name}/kill-switch", portalBff),
+                Rule.of("DELETE", "/admin/v1/registry/servers/{serverId}/prompts/{name}/kill-switch", portalBff));
     }
 
     /** The operations that have no user token: the offboarding process (CC-155). */
