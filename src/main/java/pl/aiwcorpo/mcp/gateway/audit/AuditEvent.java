@@ -111,6 +111,22 @@ public final class AuditEvent {
         return this;
     }
 
+    /** Name of the static resource or resource template an admin_change concerns (CC-264); the server-side name of the manifest, never a URI. */
+    public AuditEvent resourceTemplate(String name) {
+        if (name != null && name.length() <= 64 && TOOL_NAME.matcher(name).matches()) {
+            fields.put("resourceTemplate", name);
+        }
+        return this;
+    }
+
+    /** Server-side name of the prompt an admin_change concerns (CC-264). */
+    public AuditEvent prompt(String name) {
+        if (name != null && name.length() <= 64 && TOOL_NAME.matcher(name).matches()) {
+            fields.put("prompt", name);
+        }
+        return this;
+    }
+
     public AuditEvent risk(String risk) {
         return put("risk", risk);
     }

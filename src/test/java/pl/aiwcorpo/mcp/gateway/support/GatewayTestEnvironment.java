@@ -336,7 +336,7 @@ public final class GatewayTestEnvironment {
      */
     public void forgetRegistryOf(String serverId) throws Exception {
         try (java.sql.Connection connection = connection()) {
-            for (String table : List.of("registry_tools", "registry_servers", "registry_policies", "registry_namespaces", "registry_risk_floor")) {
+            for (String table : List.of("registry_tools", "registry_primitives", "kill_switches_primitive", "registry_servers", "registry_policies", "registry_namespaces", "registry_risk_floor")) {
                 try (java.sql.PreparedStatement delete = connection.prepareStatement("DELETE FROM " + table + " WHERE server_id = ?")) {
                     delete.setString(1, serverId);
                     delete.executeUpdate();

@@ -28,7 +28,7 @@ import tools.jackson.databind.node.ObjectNode;
  */
 public class RegistryStore {
 
-    public record StoredServer(String serverId, JsonNode manifest, String source) {
+    public record StoredServer(String serverId, JsonNode manifest, String source, String contractsVersion) {
     }
 
     /**
@@ -176,8 +176,8 @@ public class RegistryStore {
          */
         public void deleteAll() {
             wrote = true;
-            for (String table : List.of("registry_tools", "kill_switches", "registry_policies", "registry_namespaces", "registry_servers",
-                    "servers")) {
+            for (String table : List.of("registry_tools", "registry_primitives", "kill_switches", "kill_switches_primitive", "registry_policies",
+                    "registry_namespaces", "registry_servers", "servers")) {
                 jdbc.sql("DELETE FROM " + table + " WHERE server_id = ?").param(serverId).update();
             }
         }
@@ -187,6 +187,12 @@ public class RegistryStore {
             return jdbc.sql("SELECT tool FROM kill_switches WHERE server_id = ? ORDER BY tool").param(serverId).query(String.class).list();
         }
 
+        /** Switches of the resources and prompts of the server as (kind, name), for the audit of its removal. */
+        public List<String[]> primitiveSwitches() {
+            return jdbc.sql("SELECT kind, name FROM kill_switches_primitive WHERE server_id = ? ORDER BY kind, name").param(serverId)
+                    .query((rs, row) -> new String[] {rs.getString("kind"), rs.getString("name")}).list();
+        }
+
         /**
          * Before a server is added: what an earlier removal or a race left under its id is purged (tools, manifests, policies, namespaces and
          * switches; the risk floors stay). Nothing is adopted: the id comes from a manifest that anyone who answers at an address can write,
@@ -194,7 +200,8 @@ public class RegistryStore {
          */
         public void purgeLeftovers() {
             wrote = true;
-            for (String table : List.of("registry_tools", "kill_switches", "registry_policies", "registry_namespaces", "registry_servers")) {
+            for (String table : List.of("registry_tools", "registry_primitives", "kill_switches", "kill_switches_primitive", "registry_policies",
+                    "registry_namespaces", "registry_servers")) {
                 jdbc.sql("DELETE FROM " + table + " WHERE server_id = ?").param(serverId).update();
             }
         }
@@ -227,10 +234,10 @@ public class RegistryStore {
 
         public void saveServer(JsonNode manifest, String source) {
             wrote = true;
-            jdbc.sql("INSERT INTO registry_servers (server_id, manifest, source) VALUES (?, ?::jsonb, ?) "
+            jdbc.sql("INSERT INTO registry_servers (server_id, manifest, source, contracts_version) VALUES (?, ?::jsonb, ?, ?) "
                             + "ON CONFLICT (server_id) DO UPDATE SET manifest = EXCLUDED.manifest, source = EXCLUDED.source, "
-                            + "registered_at = now()")
-                    .params(serverId, json.writeValueAsString(manifest), source).update();
+                            + "contracts_version = EXCLUDED.contracts_version, registered_at = now()")
+                    .params(serverId, json.writeValueAsString(manifest), source, manifest.path("contractsVersion").asString(null)).update();
         }
 
         public void saveTool(RegisteredTool tool) {
@@ -255,6 +262,35 @@ public class RegistryStore {
                             p == null ? null : p.version(), p == null ? null : p.change(), p == null ? null : p.source(),
                             p == null ? null : p.credentialJson(), p != null && p.riskLowered(),
                             a == null ? null : a.classifiedBy(), a == null || a.classifiedAt() == null ? null : java.sql.Timestamp.from(a.classifiedAt()))
+                    .update();
+        }
+
+        public Map<PrimitiveKind, Map<String, RegisteredEntry>> entries() {
+            return RegistryStore.this.entries(serverId);
+        }
+
+        public void saveEntry(RegisteredEntry entry) {
+            wrote = true;
+            RegisteredEntry.Approved a = entry.approved();
+            RegisteredEntry.Pending p = entry.pending();
+            jdbc.sql("INSERT INTO registry_primitives (server_id, kind, name, approved_entry, approved_hash, approved_version, "
+                            + "pending_entry, pending_hash, pending_version, pending_change, pending_source) "
+                            + "VALUES (?, ?, ?, ?::jsonb, ?, ?, ?::jsonb, ?, ?, ?, ?) "
+                            + "ON CONFLICT (server_id, kind, name) DO UPDATE SET approved_entry = EXCLUDED.approved_entry, "
+                            + "approved_hash = EXCLUDED.approved_hash, approved_version = EXCLUDED.approved_version, "
+                            + "pending_entry = EXCLUDED.pending_entry, pending_hash = EXCLUDED.pending_hash, "
+                            + "pending_version = EXCLUDED.pending_version, pending_change = EXCLUDED.pending_change, "
+                            + "pending_source = EXCLUDED.pending_source")
+                    .params(serverId, entry.kind().column(), entry.name(),
+                            a == null ? null : json.writeValueAsString(a.entry()), a == null ? null : a.hash(), a == null ? null : a.version(),
+                            p == null ? null : json.writeValueAsString(p.entry()), p == null ? null : p.hash(), p == null ? null : p.version(),
+                            p == null ? null : p.change(), p == null ? null : p.source())
+                    .update();
+        }
+
+        public void deleteEntry(PrimitiveKind kind, String name) {
+            wrote = true;
+            jdbc.sql("DELETE FROM registry_primitives WHERE server_id = ? AND kind = ? AND name = ?").params(serverId, kind.column(), name)
                     .update();
         }
 
@@ -517,12 +553,12 @@ public class RegistryStore {
     }
 
     public Optional<StoredServer> findServer(String serverId) {
-        return jdbc.sql("SELECT server_id, manifest::text AS manifest, source FROM registry_servers WHERE server_id = ?")
+        return jdbc.sql("SELECT server_id, manifest::text AS manifest, source, contracts_version FROM registry_servers WHERE server_id = ?")
                 .param(serverId).query(this::server).optional();
     }
 
     public List<StoredServer> servers() {
-        return jdbc.sql("SELECT server_id, manifest::text AS manifest, source FROM registry_servers ORDER BY server_id")
+        return jdbc.sql("SELECT server_id, manifest::text AS manifest, source, contracts_version FROM registry_servers ORDER BY server_id")
                 .query(this::server).list();
     }
 
@@ -534,6 +570,32 @@ public class RegistryStore {
                         + "pending_risk_lowered, classified_by, classified_at FROM registry_tools WHERE server_id = ? ORDER BY tool")
                 .param(serverId).query((rs, row) -> tools.put(rs.getString("tool"), tool(rs))).list();
         return tools;
+    }
+
+    /** The resources, resource templates and prompts of a server, approved and pending, by kind and name. */
+    public Map<PrimitiveKind, Map<String, RegisteredEntry>> entries(String serverId) {
+        Map<PrimitiveKind, Map<String, RegisteredEntry>> entries = new java.util.EnumMap<>(PrimitiveKind.class);
+        for (PrimitiveKind kind : PrimitiveKind.values()) {
+            entries.put(kind, new LinkedHashMap<>());
+        }
+        jdbc.sql("SELECT kind, name, approved_entry::text AS approved_entry, approved_hash, approved_version, pending_entry::text AS pending_entry, "
+                        + "pending_hash, pending_version, pending_change, pending_source FROM registry_primitives WHERE server_id = ? "
+                        + "ORDER BY kind, name")
+                .param(serverId).query((rs, row) -> {
+                    PrimitiveKind kind = PrimitiveKind.ofColumn(rs.getString("kind"));
+                    return entries.get(kind).put(rs.getString("name"), entry(kind, rs));
+                }).list();
+        return entries;
+    }
+
+    private RegisteredEntry entry(PrimitiveKind kind, ResultSet rs) throws SQLException {
+        RegisteredEntry.Approved approved = rs.getString("approved_entry") == null ? null
+                : new RegisteredEntry.Approved(json.readTree(rs.getString("approved_entry")), rs.getString("approved_hash"),
+                        rs.getString("approved_version"));
+        RegisteredEntry.Pending pending = rs.getString("pending_entry") == null ? null
+                : new RegisteredEntry.Pending(json.readTree(rs.getString("pending_entry")), rs.getString("pending_hash"),
+                        rs.getString("pending_version"), rs.getString("pending_change"), rs.getString("pending_source"));
+        return new RegisteredEntry(kind, rs.getString("name"), approved, pending);
     }
 
     /** Raises the floors to the risks of a manifest that is already stored (also one that is no longer acceptable). */
@@ -559,7 +621,8 @@ public class RegistryStore {
     }
 
     private StoredServer server(ResultSet rs, int row) throws SQLException {
-        return new StoredServer(rs.getString("server_id"), json.readTree(rs.getString("manifest")), rs.getString("source"));
+        return new StoredServer(rs.getString("server_id"), json.readTree(rs.getString("manifest")), rs.getString("source"),
+                rs.getString("contracts_version"));
     }
 
     private RegisteredTool tool(ResultSet rs) throws SQLException {

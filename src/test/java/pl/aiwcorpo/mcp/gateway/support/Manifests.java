@@ -132,4 +132,85 @@ public final class Manifests {
         }
         throw new AssertionError("no tool " + name);
     }
+
+    /**
+     * Resources, templates and prompts of a test manifest (CC-258), with the hash of their kind. Each call replaces the entry of that name,
+     * so a test changes one by calling it again with another text. The scheme of the URI is the system, as the manifest rules want.
+     */
+    public static ObjectNode addResource(ObjectNode manifest, String name, String description) {
+        ObjectNode definition = JSON.createObjectNode();
+        definition.put("name", name);
+        definition.put("title", name);
+        definition.put("description", description);
+        boolean adapter = "adapter".equals(manifest.path("source").asString(null));
+        definition.put("uri", manifest.path("system").asString() + (adapter ? "+file:///docs/" : "://docs/") + name);
+        definition.put("mimeType", "text/markdown");
+        return put(manifest, "resources", "resource", name, definition, null);
+    }
+
+    /** A template with one variable of the type {@code <System>::Project} that {@link Fragments} declares. */
+    public static ObjectNode addProjectTemplate(ObjectNode manifest, String name, String description) {
+        String system = manifest.path("system").asString();
+        ObjectNode definition = JSON.createObjectNode();
+        definition.put("name", name);
+        definition.put("title", name);
+        definition.put("description", description);
+        definition.put("uriTemplate", system + "://projects/{project}");
+        ObjectNode extra = JSON.createObjectNode();
+        extra.putArray("variables").addObject().put("name", "project").put("type", Fragments.namespace(system) + "::Project");
+        return put(manifest, "resourceTemplates", "resourceTemplate", name, definition, extra);
+    }
+
+    /** A template of an adapter: no resource types, so the variable carries its own bound and pattern. */
+    public static ObjectNode addAdapterTemplate(ObjectNode manifest, String name, String description) {
+        String system = manifest.path("system").asString();
+        ObjectNode definition = JSON.createObjectNode();
+        definition.put("name", name);
+        definition.put("title", name);
+        definition.put("description", description);
+        definition.put("uriTemplate", system + "+file:///issues/{issueKey}");
+        ObjectNode extra = JSON.createObjectNode();
+        extra.putArray("variables").addObject().put("name", "issueKey").put("maxLength", 32).put("pattern", "^[A-Z][A-Z0-9]+-[0-9]+$");
+        return put(manifest, "resourceTemplates", "resourceTemplate", name, definition, extra);
+    }
+
+    public static ObjectNode addPrompt(ObjectNode manifest, String name, String messageText) {
+        ObjectNode definition = JSON.createObjectNode();
+        definition.put("name", name);
+        definition.put("title", name);
+        definition.put("description", "Prompt " + name + ".");
+        definition.putArray("arguments").addObject().put("name", "ticketId").put("required", true);
+        ObjectNode extra = JSON.createObjectNode();
+        extra.putArray("argumentRules").addObject().put("name", "ticketId").put("maxLength", 32).put("pattern", "^[A-Z]{2,8}-[0-9]{1,6}$");
+        extra.putArray("messages").addObject().put("role", "user").put("text", messageText + " <ticket_id>{{ticketId}}</ticket_id>");
+        return put(manifest, "prompts", "prompt", name, definition, extra);
+    }
+
+    private static ObjectNode put(ObjectNode manifest, String field, String kind, String name, ObjectNode definition, ObjectNode extra) {
+        ObjectNode entry = JSON.createObjectNode();
+        entry.put("name", name);
+        entry.set("definition", definition);
+        if (extra != null) {
+            extra.properties().forEach(member -> entry.set(member.getKey(), member.getValue()));
+        }
+        entry.put("definitionHash", DefinitionHash.computePrimitive(kind, JSON.writeValueAsString(definition), JSON.writeValueAsString(entry),
+                manifest.path("system").asString(), JSON.writeValueAsString(manifest.path("credential"))));
+        ArrayNode list = manifest.has(field) ? (ArrayNode) manifest.get(field) : manifest.putArray(field);
+        for (int i = list.size() - 1; i >= 0; i--) {
+            if (name.equals(list.get(i).path("name").asString())) {
+                list.remove(i);
+            }
+        }
+        list.add(entry);
+        return manifest;
+    }
+
+    public static String entryHash(ObjectNode manifest, String field, String name) {
+        for (JsonNode entry : manifest.path(field)) {
+            if (name.equals(entry.path("name").asString())) {
+                return entry.path("definitionHash").asString();
+            }
+        }
+        throw new AssertionError("no " + field + " entry " + name);
+    }
 }
