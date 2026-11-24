@@ -269,7 +269,8 @@ class KillSwitchApiTest extends GatewayTestBase {
             }
             liftEverything();
             input.path("switches").forEach(s -> {
-                String server = s.path("serverId").asString();
+                // The table references servers: the vectors name servicedesk, which this gateway does not have, so jira stands in for it.
+                String server = "mcp-jira";
                 switch (s.path("scope").asString()) {
                     case "resource" -> store.putNamed(server, "resource", s.path("resource").asString(), "admin", "from the vector");
                     case "prompt" -> store.putNamed(server, "prompt", s.path("prompt").asString(), "admin", "from the vector");
@@ -277,11 +278,11 @@ class KillSwitchApiTest extends GatewayTestBase {
                 }
             });
             JsonNode target = input.path("target");
-            store.deleteNamed(target.path("serverId").asString(), target.path("kind").asString(), target.path("name").asString());
+            store.deleteNamed("mcp-jira", target.path("kind").asString(), target.path("name").asString());
             Set<String> left = new TreeSet<>();
             store.all().forEach(e -> left.add(e.scope() + " " + e.serverId() + " " + (e.resource() != null ? e.resource() : e.prompt())));
             Set<String> want = new TreeSet<>();
-            vector.document().path("expected").path("switches").forEach(s -> want.add(s.path("scope").asString() + " " + s.path("serverId").asString()
+            vector.document().path("expected").path("switches").forEach(s -> want.add(s.path("scope").asString() + " mcp-jira"
                     + " " + switch (s.path("scope").asString()) {
                         case "resource" -> s.path("resource").asString();
                         case "prompt" -> s.path("prompt").asString();

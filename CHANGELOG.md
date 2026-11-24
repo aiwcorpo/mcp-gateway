@@ -9,10 +9,12 @@ integration builds tag the image `m6-<short sha>`.
   entries and lets an administrator approve them, and still serves and emits what it did before. `tools/list`, `tools/call`, the
   capabilities of `initialize` and `server/discover` and the claims of the internal token are unchanged; `resources/*` and `prompts/*` still
   answer as an unknown method. Before upgrading, read the items below.
-- Flyway migration `V17__registry_primitives.sql` adds the tables `registry_primitives` and `kill_switches_primitive` and the column
-  `registry_servers.contracts_version`. It only adds; it approves and hides nothing, and it needs no downtime. An instance of 2.1.x that
-  runs next to a new one during a rolling upgrade ignores the new tables, but it refuses a manifest that has the new fields. Upgrade every
-  instance before a server publishes `resources`, `resourceTemplates`, `prompts` or `contractsVersion`.
+- Flyway migration `V17__registry_primitives.sql` adds the tables `registry_primitives` and `kill_switches_primitive` (both removed with the
+  row of their server) and the column `registry_servers.contracts_version`. It only adds; it approves and hides nothing, and it needs no
+  downtime. An instance of 2.1.x that runs next to a new one ignores the new tables, but it does more than refuse a new manifest: the
+  manifest a new instance stored is checked again by the periodic reload of the old one, which does not know the new fields, and it then
+  disables the whole server on that instance, so its tools fail for the clients routed there. Upgrade every instance before any server
+  publishes `resources`, `resourceTemplates`, `prompts` or `contractsVersion`.
 - A manifest may carry `resources`, `resourceTemplates`, `prompts` (up to 100 each), `contractsVersion` and resource types with
   `valueOnly: true` (CC-258), and `tools` may be empty when another list is not. The gateway checks them with the rules and the hash per
   kind of `mcp-manifest` 8.0.0. Every new or changed entry is `pending_approval`, a pulled manifest approves none, an entry that leaves the
