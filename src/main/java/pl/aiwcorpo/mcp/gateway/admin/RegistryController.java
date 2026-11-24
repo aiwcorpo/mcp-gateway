@@ -21,6 +21,8 @@ import org.springframework.web.bind.annotation.RestController;
 import jakarta.servlet.http.HttpServletRequest;
 import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
 import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
+import pl.aiwcorpo.mcp.gateway.registry.PrimitiveKind;
+import pl.aiwcorpo.mcp.gateway.registry.RegisteredEntry;
 import pl.aiwcorpo.mcp.gateway.registry.RegisteredServer;
 import pl.aiwcorpo.mcp.gateway.registry.RegisteredTool;
 import pl.aiwcorpo.mcp.gateway.registry.RegistryService;
@@ -273,6 +275,113 @@ public class RegistryController {
                     "risk_lowered", lowered.message());
             case RegistryService.Approval.Rejected rejected -> error(HttpStatus.UNPROCESSABLE_ENTITY, requestId, "manifest_rejected",
                     rejected.reason(), rejected.message());
+        };
+    }
+
+    @GetMapping("/{serverId}/resources/{name}/pending")
+    public ResponseEntity<String> pendingResource(@PathVariable String serverId, @PathVariable String name,
+                                                  @AuthenticationPrincipal Jwt token, HttpServletRequest request) {
+        return pendingEntry(PrimitiveKind.RESOURCE, serverId, name, token, request);
+    }
+
+    @GetMapping("/{serverId}/resource-templates/{name}/pending")
+    public ResponseEntity<String> pendingResourceTemplate(@PathVariable String serverId, @PathVariable String name,
+                                                          @AuthenticationPrincipal Jwt token, HttpServletRequest request) {
+        return pendingEntry(PrimitiveKind.RESOURCE_TEMPLATE, serverId, name, token, request);
+    }
+
+    @GetMapping("/{serverId}/prompts/{name}/pending")
+    public ResponseEntity<String> pendingPrompt(@PathVariable String serverId, @PathVariable String name,
+                                                @AuthenticationPrincipal Jwt token, HttpServletRequest request) {
+        return pendingEntry(PrimitiveKind.PROMPT, serverId, name, token, request);
+    }
+
+    @PostMapping("/{serverId}/resources/{name}/approve")
+    public ResponseEntity<String> approveResource(@PathVariable String serverId, @PathVariable String name,
+                                                  @AuthenticationPrincipal Jwt token, HttpServletRequest request) throws IOException {
+        return approveEntry(PrimitiveKind.RESOURCE, serverId, name, token, request);
+    }
+
+    @PostMapping("/{serverId}/resource-templates/{name}/approve")
+    public ResponseEntity<String> approveResourceTemplate(@PathVariable String serverId, @PathVariable String name,
+                                                          @AuthenticationPrincipal Jwt token, HttpServletRequest request) throws IOException {
+        return approveEntry(PrimitiveKind.RESOURCE_TEMPLATE, serverId, name, token, request);
+    }
+
+    @PostMapping("/{serverId}/prompts/{name}/approve")
+    public ResponseEntity<String> approvePrompt(@PathVariable String serverId, @PathVariable String name,
+                                                @AuthenticationPrincipal Jwt token, HttpServletRequest request) throws IOException {
+        return approveEntry(PrimitiveKind.PROMPT, serverId, name, token, request);
+    }
+
+    private ResponseEntity<String> pendingEntry(PrimitiveKind kind, String serverId, String name, Jwt token, HttpServletRequest request) {
+        String requestId = requestId(request);
+        if (!administrator(token)) {
+            return error(HttpStatus.FORBIDDEN, requestId, "access_denied", null, null);
+        }
+        if (!SERVER_ID.matcher(serverId).matches() || !TOOL_NAME.matcher(name).matches() || name.length() > 64) {
+            return error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
+        }
+        Optional<RegistryService.EntryView> pending = registry.pendingEntry(serverId, kind, name);
+        if (pending.isEmpty()) {
+            return error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
+        }
+        RegisteredEntry.Approved approved = pending.get().approved();
+        RegisteredEntry.Pending waiting = pending.get().pending();
+        ObjectNode body = json.createObjectNode();
+        if (approved == null) {
+            body.putNull("approvedEntry");
+            body.putNull("approvedInVersion");
+        } else {
+            body.set("approvedEntry", approved.entry());
+            body.put("approvedInVersion", approved.version());
+        }
+        body.set("pendingEntry", waiting.entry());
+        body.put("pendingHash", waiting.hash());
+        body.put("pendingVersion", waiting.version());
+        body.put("source", waiting.source());
+        return ok(requestId, body);
+    }
+
+    /**
+     * The body is the hash and nothing else that makes sense: risk, action and acceptRiskLowering are valid fields of the shared request
+     * schema, so they are read and refused as {@code classification_not_allowed} (CC-265) instead of as a malformed body. Fields outside that
+     * schema are still a 400.
+     */
+    private ResponseEntity<String> approveEntry(PrimitiveKind kind, String serverId, String name, Jwt token, HttpServletRequest request)
+            throws IOException {
+        String requestId = requestId(request);
+        if (!administrator(token)) {
+            return error(HttpStatus.FORBIDDEN, requestId, "access_denied", null, null);
+        }
+        byte[] raw = request.getInputStream().readNBytes(4097);
+        String hash;
+        boolean classificationSent = false;
+        try {
+            JsonNode body = raw.length > 4096 ? null : json.readTree(raw);
+            boolean shape = body != null && body.isObject() && body.has("definitionHash")
+                    && body.propertyNames().stream().allMatch(field -> APPROVE_FIELDS.contains(field))
+                    && (!body.has("acceptRiskLowering") || body.path("acceptRiskLowering").isBoolean())
+                    && (!body.has("risk") || RISKS.contains(body.path("risk").asString("")))
+                    && (!body.has("action") || ACTIONS.contains(body.path("action").asString("")));
+            hash = shape ? body.path("definitionHash").asString(null) : null;
+            classificationSent = shape && (body.has("risk") || body.has("action") || body.path("acceptRiskLowering").asBoolean(false));
+        } catch (JacksonException e) {
+            hash = null;
+        }
+        if (hash == null || !DEFINITION_HASH.matcher(hash).matches()
+                || !SERVER_ID.matcher(serverId).matches() || !TOOL_NAME.matcher(name).matches() || name.length() > 64) {
+            return error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
+        }
+        return switch (registry.approveEntry(requestId, serverId, kind, name, hash, classificationSent, GatewayUser.from(token))) {
+            case RegistryService.Approval.Approved approved -> ResponseEntity.noContent().header("X-Request-Id", requestId)
+                    .cacheControl(CacheControl.noStore()).build();
+            case RegistryService.Approval.NotFound notFound -> error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
+            case RegistryService.Approval.HashMismatch mismatch -> error(HttpStatus.CONFLICT, requestId, "hash_mismatch", null, null);
+            case RegistryService.Approval.Rejected rejected -> error(HttpStatus.UNPROCESSABLE_ENTITY, requestId, "manifest_rejected",
+                    rejected.reason(), rejected.message());
+            case RegistryService.Approval.RiskLowered lowered -> error(HttpStatus.UNPROCESSABLE_ENTITY, requestId, "manifest_rejected",
+                    "risk_lowered", lowered.message());
         };
     }
 

@@ -1,5 +1,6 @@
 package pl.aiwcorpo.mcp.gateway.admin;
 
+import java.util.List;
 import java.util.regex.Pattern;
 
 import org.springframework.http.CacheControl;
@@ -19,6 +20,9 @@ import pl.aiwcorpo.mcp.gateway.authz.ToolDecision;
 import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
 import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitches;
 import pl.aiwcorpo.mcp.gateway.registry.DefinitionGuard;
+import pl.aiwcorpo.mcp.gateway.registry.PrimitiveKind;
+import pl.aiwcorpo.mcp.gateway.registry.RegisteredEntry;
+import pl.aiwcorpo.mcp.gateway.registry.RegistryService;
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
 import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
 import pl.aiwcorpo.mcp.gateway.server.ToolDefinition;
@@ -44,9 +48,11 @@ public class AdminController {
     private final String componentId;
     private final DefinitionGuard definitionGuard;
     private final KillSwitches killSwitches;
+    private final RegistryService registered;
 
     public AdminController(ServerRegistry registry, ToolAuthorizer authorizer, JsonMapper json, String componentId,
-                           DefinitionGuard definitionGuard, KillSwitches killSwitches) {
+                           DefinitionGuard definitionGuard, KillSwitches killSwitches, RegistryService registered) {
+        this.registered = registered;
         this.registry = registry;
         this.authorizer = authorizer;
         this.json = json;
@@ -95,8 +101,50 @@ public class AdminController {
                 }
                 item.put("requiresConfirmation", tool.requiresConfirmation());
             }
+            catalogEntries(server, entry);
         }
         return respond(HttpStatus.OK, requestId(request), body);
+    }
+
+    /**
+     * The approved resources, templates and prompts of a server (CC-265). Cedar does not yet evaluate {@code read_resource} and
+     * {@code get_prompt}, and the gateway serves neither method, so no user can read or get any of them: {@code access} is {@code denied}
+     * for everybody and no group is named. When the evaluation arrives these two fields come from the policy, as for tools.
+     */
+    private void catalogEntries(McpServer server, ObjectNode serverNode) {
+        registered.registered(server.serverId()).ifPresent(state -> {
+            for (PrimitiveKind kind : PrimitiveKind.values()) {
+                List<RegisteredEntry> approved = state.entries(kind).values().stream().filter(e -> e.approved() != null).toList();
+                if (approved.isEmpty()) {
+                    continue;
+                }
+                ArrayNode list = serverNode.putArray(kind.field());
+                for (RegisteredEntry entry : approved) {
+                    JsonNode definition = entry.approved().entry().path("definition");
+                    ObjectNode item = list.addObject();
+                    item.put("name", kind == PrimitiveKind.PROMPT ? server.system() + "__" + entry.name() : entry.name());
+                    if (definition.path("title").isString()) {
+                        item.put("title", definition.path("title").asString());
+                    }
+                    item.put("description", definition.path("description").asString());
+                    if (kind == PrimitiveKind.RESOURCE) {
+                        item.put("uri", definition.path("uri").asString());
+                    } else if (kind == PrimitiveKind.RESOURCE_TEMPLATE) {
+                        item.put("uriTemplate", definition.path("uriTemplate").asString());
+                    }
+                    item.put("access", "denied");
+                    item.putArray("requiredEntitlements");
+                    KillSwitches.Status status = kind == PrimitiveKind.PROMPT ? killSwitches.statusOfPrompt(server.serverId(), entry.name())
+                            : killSwitches.statusOfResource(server.serverId(), entry.name());
+                    String disabledBy = status == KillSwitches.Status.ON ? "kill_switch" : entry.pending() != null ? "approval"
+                            : !server.enabled() ? "configuration" : null;
+                    item.put("disabled", disabledBy != null);
+                    if (disabledBy != null) {
+                        item.put("disabledBy", disabledBy);
+                    }
+                }
+            }
+        });
     }
 
     /** The revision of the policy data in force on this instance (C5 getPolicyStatus); other instances report themselves. */

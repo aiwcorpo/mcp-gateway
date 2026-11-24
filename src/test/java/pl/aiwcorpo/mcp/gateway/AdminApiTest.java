@@ -272,7 +272,8 @@ class AdminApiTest extends GatewayTestBase {
                 org.mockito.Mockito.mock(pl.aiwcorpo.mcp.gateway.server.ServerRegistry.class),
                 org.mockito.Mockito.mock(pl.aiwcorpo.mcp.gateway.authz.ToolAuthorizer.class), JSON, "mcp-gateway",
                 org.mockito.Mockito.mock(pl.aiwcorpo.mcp.gateway.registry.DefinitionGuard.class),
-                org.mockito.Mockito.mock(pl.aiwcorpo.mcp.gateway.killswitch.KillSwitches.class));
+                org.mockito.Mockito.mock(pl.aiwcorpo.mcp.gateway.killswitch.KillSwitches.class),
+                org.mockito.Mockito.mock(pl.aiwcorpo.mcp.gateway.registry.RegistryService.class));
         org.springframework.security.oauth2.jwt.Jwt token = org.springframework.security.oauth2.jwt.Jwt.withTokenValue("t").header("alg", "none")
                 .subject("s").claim("groups", List.of()).issuedAt(java.time.Instant.now()).expiresAt(java.time.Instant.now().plusSeconds(60)).build();
 

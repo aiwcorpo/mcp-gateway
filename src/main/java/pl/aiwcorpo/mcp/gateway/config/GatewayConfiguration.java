@@ -235,8 +235,9 @@ public class GatewayConfiguration {
 
     @Bean
     AdminController adminController(ServerRegistry registry, ToolAuthorizer authorizer, JsonMapper gatewayJson,
-                                    GatewayProperties properties, DefinitionGuard definitionGuard, KillSwitches killSwitches) {
-        return new AdminController(registry, authorizer, gatewayJson, properties.componentId(), definitionGuard, killSwitches);
+                                    GatewayProperties properties, DefinitionGuard definitionGuard, KillSwitches killSwitches,
+                                    RegistryService registryService) {
+        return new AdminController(registry, authorizer, gatewayJson, properties.componentId(), definitionGuard, killSwitches, registryService);
     }
 
     @Bean
