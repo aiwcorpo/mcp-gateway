@@ -36,6 +36,11 @@ public final class AuditEvent {
         put("sub", user.sub());
         put("username", user.username());
         put("client", user.client());
+        if (user.isAgent()) {
+            // A human is never written (CC-264): a receiver that has not learned the field yet sees it only after the first agent exists.
+            put("principalType", user.principalType());
+            put("agentOwner", user.agent().ownerSub());
+        }
         return this;
     }
 

@@ -80,7 +80,7 @@ cursor keys; a change reaches the other instances within `MCP_CHANGE_POLL_INTERV
 
 ## Source layout
 
-Packages under `pl.aiwcorpo.mcp.gateway`: `admin`, `auth`, `authz`, `policy`, `confirm`, `activity`, `registry`, `killswitch`,
+Packages under `pl.aiwcorpo.mcp.gateway`: `admin`, `agent` (registry of agents, who is an agent), `auth`, `authz`, `policy`, `confirm`, `activity`, `registry`, `killswitch`,
 `stream`, `edge`, `audit`, `broker`, `config`, `jwt`, `link` (manifest pull and policy data push), `mcp`, `net` (address rules),
 `server`, `tls`, `upstream`.
 

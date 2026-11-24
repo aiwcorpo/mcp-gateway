@@ -150,6 +150,9 @@ gateway:
     per-client: ${MCP_RATE_LIMIT_PER_CLIENT:300}
     per-tool: ${MCP_RATE_LIMIT_PER_TOOL:120}
     destructive-per-tool: ${MCP_RATE_LIMIT_DESTRUCTIVE_PER_TOOL:10}
+    # An autonomous agent (CC-266) has its own two limits: per agent and per (agent, tool).
+    per-agent: ${MCP_RATE_LIMIT_PER_AGENT:120}
+    per-agent-tool: ${MCP_RATE_LIMIT_PER_AGENT_TOOL:30}
     audit-interval: ${MCP_RATE_LIMIT_AUDIT_INTERVAL:10s}
   audit:
     # Live keys (user, reason, target) per user and reason in the audit of repeatable refusals; the interval is MCP_RATE_LIMIT_AUDIT_INTERVAL (CC-191).

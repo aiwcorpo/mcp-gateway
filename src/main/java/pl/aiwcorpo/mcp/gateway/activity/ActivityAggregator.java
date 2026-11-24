@@ -36,7 +36,11 @@ public final class ActivityAggregator {
             Map.entry("credential_required", "credential_required"), Map.entry("rate_limited", "rate_limited"),
             Map.entry("rate_limited_user", "rate_limited"), Map.entry("rate_limited_client", "rate_limited"),
             Map.entry("rate_limited_tool", "rate_limited"), Map.entry("step_up_required", "step_up_required"),
-            Map.entry("exchange_denied", "denied_not_granted"), Map.entry("kill_switch", "tool_disabled"));
+            Map.entry("exchange_denied", "denied_not_granted"), Map.entry("kill_switch", "tool_disabled"),
+            // The refusals of an autonomous agent by the registry (CC-266, CC-261) are no grant of the agent, the way the portal reads them.
+            Map.entry("agent_max_risk", "denied_not_granted"), Map.entry("agent_suspended", "denied_not_granted"),
+            Map.entry("agent_not_registered", "denied_not_granted"), Map.entry("principal_not_eligible", "denied_not_granted"),
+            Map.entry("rate_limited_agent", "rate_limited"));
     private static final Map<String, String> CONFIRMATION_RESULTS = Map.of("superseded", "superseded",
             "attempts_exhausted", "confirmation_failed", "pending_exists", "blocked_by_pending", "cancelled_by_owner", "cancelled");
 

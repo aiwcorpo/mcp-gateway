@@ -44,6 +44,9 @@ public final class AuthenticationAudit {
             if (cause instanceof ClientTokenUnavailable) {
                 return ClientTokenUnavailable.REASON;
             }
+            if (cause instanceof AgentRegistryUnavailable) {
+                return AgentRegistryUnavailable.REASON;
+            }
         }
         if (failure instanceof AuthenticationCredentialsNotFoundException || failure instanceof InsufficientAuthenticationException) {
             return "missing_token";
@@ -57,11 +60,15 @@ public final class AuthenticationAudit {
             if (cause instanceof ClientTokenUnavailable unavailable) {
                 return unavailable.retryAfterSeconds();
             }
+            if (cause instanceof AgentRegistryUnavailable) {
+                return AgentRegistryUnavailable.RETRY_AFTER_SECONDS;
+            }
         }
         return -1;
     }
 
     public static String errorCodeOf(String reason) {
-        return ClientTokenUnavailable.REASON.equals(reason) ? "upstream_unavailable" : "unauthenticated";
+        return ClientTokenUnavailable.REASON.equals(reason) || AgentRegistryUnavailable.REASON.equals(reason) ? "upstream_unavailable"
+                : "unauthenticated";
     }
 }

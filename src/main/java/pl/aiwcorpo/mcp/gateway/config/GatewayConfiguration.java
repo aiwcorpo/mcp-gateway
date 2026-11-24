@@ -41,6 +41,7 @@ import pl.aiwcorpo.mcp.gateway.registry.DefinitionCheck;
 import pl.aiwcorpo.mcp.gateway.agent.AgentAdmin;
 import pl.aiwcorpo.mcp.gateway.agent.AgentRegistry;
 import pl.aiwcorpo.mcp.gateway.agent.AgentStore;
+import pl.aiwcorpo.mcp.gateway.agent.PrincipalClassifier;
 import pl.aiwcorpo.mcp.gateway.admin.AgentClientController;
 import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitchHealth;
 import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitchStore;
@@ -77,6 +78,7 @@ import pl.aiwcorpo.mcp.gateway.tracing.RedactingSpanExporters;
 import pl.aiwcorpo.mcp.gateway.tracing.RequestUrlFilter;
 import pl.aiwcorpo.mcp.gateway.net.AddressPolicy;
 import pl.aiwcorpo.mcp.gateway.tls.ServerTls;
+import pl.aiwcorpo.mcp.gateway.authz.AgentCeilingAuthorizer;
 import pl.aiwcorpo.mcp.gateway.authz.ToolAccess;
 import pl.aiwcorpo.mcp.gateway.authz.ToolAuthorizer;
 import pl.aiwcorpo.mcp.gateway.broker.BrokerClient;
@@ -284,6 +286,11 @@ public class GatewayConfiguration {
     }
 
     @Bean
+    PrincipalClassifier principalClassifier(AgentRegistry agentRegistry) {
+        return new PrincipalClassifier(agentRegistry);
+    }
+
+    @Bean
     AgentAdmin agentAdmin(AgentStore store, RegistryStore registryStore, AuditLog audit, GatewayProperties properties, JsonMapper gatewayJson,
                           Clock clock, AgentRegistry agentRegistry, PolicyService policies) {
         return new AgentAdmin(store, registryStore, audit, properties.componentId(), gatewayJson, clock, () -> {
@@ -309,13 +316,18 @@ public class GatewayConfiguration {
     @Bean
     ToolStreams toolStreams(UserToolLists lists, GatewayProperties properties, MeterRegistry meters, ClientSessionStore sessions,
                             JsonMapper gatewayJson, RegistryService registry, KillSwitches killSwitches, DefinitionGuard guard,
-                            PolicyService policies) {
+                            PolicyService policies, AgentRegistry agentRegistry) {
         ToolStreams streams = new ToolStreams(lists, properties.mcp().sseHeartbeatInterval(), java.time.Duration.ofSeconds(1),
                 System::currentTimeMillis, meters, id -> sessions.find(id).isPresent(), gatewayJson,
                 properties.mcp().maxOpenStreams(), properties.mcp().maxOpenStreamsPerUser(), properties.mcp().streamRecomputeParallelism(),
                 java.time.Duration.ofMillis(100));
         registry.onChange(streams::changed);
         killSwitches.onChange(streams::changed);
+        // The decisions kept per identity do not know that an agent was suspended or got another ceiling, so they are made again.
+        agentRegistry.onChange(() -> {
+            lists.policiesChanged();
+            streams.changed();
+        });
         guard.onVerdictChange(streams::changed);
         policies.onChange(() -> {
             lists.policiesChanged();
@@ -362,8 +374,8 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    ToolAuthorizer toolAuthorizer(PolicyService policies, JsonMapper gatewayJson) {
-        return new CedarToolAuthorizer(policies, gatewayJson);
+    ToolAuthorizer toolAuthorizer(PolicyService policies, JsonMapper gatewayJson, AgentRegistry agentRegistry) {
+        return new AgentCeilingAuthorizer(new CedarToolAuthorizer(policies, gatewayJson), agentRegistry);
     }
 
     @Bean
@@ -680,10 +692,10 @@ public class GatewayConfiguration {
                                         pl.aiwcorpo.mcp.gateway.ratelimit.RateLimiter rateLimiter,
                                         pl.aiwcorpo.mcp.gateway.ratelimit.RateLimitAuditThrottle rateLimitAudit,
                                         EndpointAuditThrottle endpointAudit, ToolsListCursor listCursor, KillSwitches killSwitches,
-                                        ToolAccess toolAccess, Clock clock) {
+                                        ToolAccess toolAccess, Clock clock, AgentRegistry agentRegistry) {
         return new McpGatewayService(registry, urls, upstream, credentials, authorizer, audit, errors, gatewayJson, meters,
                 properties.componentId(), confirmations, registryService, definitionGuard, rateLimiter, rateLimitAudit, endpointAudit, listCursor,
-                killSwitches, toolAccess, properties.mcp().toolsListTimeout(), clock);
+                killSwitches, toolAccess, properties.mcp().toolsListTimeout(), clock, agentRegistry);
     }
 
     @Bean

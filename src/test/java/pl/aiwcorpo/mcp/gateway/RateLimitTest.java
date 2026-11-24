@@ -22,6 +22,9 @@ class RateLimitTest extends GatewayTestBase {
     private static final String SECRET = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
     private static final int BIG = 1_000_000;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    pl.aiwcorpo.mcp.gateway.agent.AgentRegistry agents;
+
     @AfterEach
     void restore() {
         RateLimitTestConfiguration.restore();
@@ -234,5 +237,38 @@ class RateLimitTest extends GatewayTestBase {
 
     private io.micrometer.core.instrument.MeterRegistry meters() {
         return meterRegistry;
+    }
+
+    @Test
+    void anAgentIsLimitedPerAgentAndPerAgentToolWithItsOwnReason(CapturedOutput output) throws Exception {
+        String sub = sub();
+        String client = "agent-limited";
+        jdbc.sql("INSERT INTO agent_clients (client_id, service_account_sub, owner_sub, allowed_groups, created_by) VALUES (?, ?, 'owner-1', ?::jsonb, 'admin-1')")
+                .params(client, sub, "[\"mcp-jira-read\"]").update();
+        agents.refresh();
+        try {
+            java.time.Instant now = java.time.Instant.now();
+            String token = env.idp.sign(env.idp.validClaims(sub, "service-account-" + client).claim("azp", client).claim("principal_type", "agent")
+                    .claim("groups", List.of("mcp-jira-read")).issueTime(java.util.Date.from(now)).expirationTime(java.util.Date.from(now.plusSeconds(300))).build());
+            RateLimitTestConfiguration.use(RateLimitTestConfiguration.agentSettings(3, 2));
+
+            assertThat(getIssue(token).path("error").asString("")).isNotEqualTo("rate_limited");
+            assertThat(getIssue(token).path("error").asString("")).isNotEqualTo("rate_limited");
+            JsonNode perTool = getIssue(token);
+            assertThat(perTool.path("error").asString()).as("the third call of the same tool").isEqualTo("rate_limited");
+            assertThat(events(output, sub, "rate_limited_tool")).isNotEmpty();
+
+            assertThat(ping(token).statusCode()).isEqualTo(200);
+            HttpResponse<String> limited = ping(token);
+            assertThat(limited.statusCode()).as("the budget of the agent: two tool calls and a ping are three requests").isEqualTo(429);
+            JsonNode event = events(output, sub, "rate_limited_agent").getFirst();
+            assertThat(event.path("principalType").asString()).isEqualTo("agent");
+            assertThat(event.path("errorCode").asString()).isEqualTo("rate_limited");
+            assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", event)).isEmpty();
+            assertThat(ping(token(sub(), "claude-code")).statusCode()).as("a human is counted by the limits of users").isEqualTo(200);
+        } finally {
+            jdbc.sql("DELETE FROM agent_clients WHERE client_id = ?").param(client).update();
+            agents.refresh();
+        }
     }
 }

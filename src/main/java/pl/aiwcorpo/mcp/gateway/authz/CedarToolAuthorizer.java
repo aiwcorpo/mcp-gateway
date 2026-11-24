@@ -30,7 +30,7 @@ import tools.jackson.databind.json.JsonMapper;
  * {@code Action::"call"} on the {@code Tool} (C7): the base schema, the platform policies of the contracts and the overrides an administrator
  * aimed at the gateway, with the caller's groups, the scopes the scope mapping gives them and the resources of the arguments named by
  * {@code resourceRefs} (context {@code refs}, always present). The clients that may call ({@code azp}) are checked here, in code, before
- * Cedar. The groups only become members of {@code UserGroup} entities; what they allow is the platform policy. Data that cannot be
+ * Cedar (an agent is accepted by the registry of agents instead). The groups only become members of {@code UserGroup} entities; what they allow is the platform policy. Data that cannot be
  * used, an evaluation error or an argument that does not fit a reference is a deny.
  */
 public final class CedarToolAuthorizer implements ToolAuthorizer {
@@ -74,7 +74,7 @@ public final class CedarToolAuthorizer implements ToolAuthorizer {
     }
 
     private Evaluation evaluate(GatewayUser user, McpServer server, ToolDefinition tool, JsonNode arguments) {
-        Caller caller = Caller.of(user.sub(), user.username(), user.mcpGroups(), user.client());
+        Caller caller = Caller.of(user.sub(), user.username(), user.mcpGroups(), user.client()).withPrincipalType(user.principalType());
         // Without arguments there is nothing a reference could name, so the decision at the level of a tool does not depend on the
         // resource types of the server (a server whose policies wait for approval has none that count yet).
         ToolDescriptor descriptor;
@@ -130,7 +130,8 @@ public final class CedarToolAuthorizer implements ToolAuthorizer {
         if (!snapshot.usable()) {
             return new Evaluation(ToolDecision.deny("policy_error", List.of()), java.util.Set.of());
         }
-        if (!snapshot.allowedClients().contains(caller.client())) {
+        // The registry replaced this list for an agent when its token was accepted (CC-266); a human never takes the azp of an agent from it.
+        if (!"agent".equals(caller.principalType()) && !snapshot.allowedClients().contains(caller.client())) {
             return new Evaluation(ToolDecision.deny("not_granted", List.of()), java.util.Set.of());
         }
         try {

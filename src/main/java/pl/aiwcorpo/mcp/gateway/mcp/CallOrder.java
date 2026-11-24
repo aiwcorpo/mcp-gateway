@@ -24,6 +24,7 @@ public final class CallOrder {
     private static final Verdict PASSES = new Verdict(null, null);
     private static final Verdict NOT_GRANTED = new Verdict("not_found_or_denied", "not_granted");
     private static final Verdict FILTER_SCOPE = new Verdict("not_found_or_denied", "filter_scope");
+    private static final Verdict NOT_ELIGIBLE = new Verdict("access_denied", "principal_not_eligible");
 
     private CallOrder() {
     }
@@ -39,6 +40,15 @@ public final class CallOrder {
      */
     public static Verdict decide(boolean mayCall, boolean visible, Supplier<KillSwitches.Status> killSwitch, BooleanSupplier toolEnabled, BooleanSupplier serverAvailable,
                                  BooleanSupplier definitionIntact, BooleanSupplier connected) {
+        return decide(mayCall, visible, killSwitch, toolEnabled, serverAvailable, definitionIntact, () -> true, connected);
+    }
+
+    /**
+     * @param principalEligible the caller can give the confirmation the tool needs (CC-261): an autonomous agent has no authenticator, so for
+     *                          it a tool that needs a confirmation ends here as {@code access_denied}, before the broker is asked for anything
+     */
+    public static Verdict decide(boolean mayCall, boolean visible, Supplier<KillSwitches.Status> killSwitch, BooleanSupplier toolEnabled, BooleanSupplier serverAvailable,
+                                 BooleanSupplier definitionIntact, BooleanSupplier principalEligible, BooleanSupplier connected) {
         if (!mayCall) {
             return NOT_GRANTED;
         }
@@ -63,6 +73,9 @@ public final class CallOrder {
         }
         if (!definitionIntact.getAsBoolean()) {
             return new Verdict("tool_disabled", "tool_disabled");
+        }
+        if (!principalEligible.getAsBoolean()) {
+            return NOT_ELIGIBLE;
         }
         if (!connected.getAsBoolean()) {
             return new Verdict("credential_required", "credential_required");

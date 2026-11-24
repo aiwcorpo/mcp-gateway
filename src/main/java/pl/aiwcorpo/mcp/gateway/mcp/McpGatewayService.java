@@ -23,10 +23,12 @@ import org.slf4j.LoggerFactory;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import pl.aiwcorpo.mcp.gateway.agent.AgentRegistry;
 import pl.aiwcorpo.mcp.gateway.audit.AuditEvent;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
 import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
 import pl.aiwcorpo.mcp.gateway.auth.PublicUrls;
+import pl.aiwcorpo.mcp.gateway.authz.AgentCeilingAuthorizer;
 import pl.aiwcorpo.mcp.gateway.authz.ToolAccess;
 import pl.aiwcorpo.mcp.gateway.authz.ToolAuthorizer;
 import pl.aiwcorpo.mcp.gateway.authz.ToolDecision;
@@ -91,6 +93,7 @@ public class McpGatewayService {
     private final Duration toolsListTimeout;
     private final Duration readWaitLimit;
     private final Clock clock;
+    private final AgentRegistry agents;
     private final Map<String, CompletableFuture<DefinitionGuard.Reading>> readsInFlight = new ConcurrentHashMap<>();
     private final ExecutorService listReaders = Executors.newVirtualThreadPerTaskExecutor();
 
@@ -102,7 +105,19 @@ public class McpGatewayService {
                              KillSwitches killSwitches, ToolAccess access, Duration toolsListTimeout, Clock clock) {
         this(registry, urls, upstream, credentials, authorizer, audit, errors, json, meters, componentId, confirmations, registryService,
                 definitionGuard, rateLimiter, rateLimitAudit, endpointAudit, listCursor, killSwitches, access, toolsListTimeout, clock,
-                DEFAULT_READ_WAIT_LIMIT);
+                DEFAULT_READ_WAIT_LIMIT, AgentRegistry.empty());
+    }
+
+    /** @param agents the registry of agents (CC-266), asked for the state of the agent behind a call */
+    public McpGatewayService(ServerRegistry registry, PublicUrls urls, UpstreamSessions upstream,
+                             CredentialService credentials, ToolAuthorizer authorizer, AuditLog audit, ToolErrors errors,
+                             JsonMapper json, MeterRegistry meters, String componentId, ConfirmationService confirmations,
+                             RegistryService registryService, DefinitionGuard definitionGuard, RateLimiter rateLimiter,
+                             RateLimitAuditThrottle rateLimitAudit, EndpointAuditThrottle endpointAudit, ToolsListCursor listCursor,
+                             KillSwitches killSwitches, ToolAccess access, Duration toolsListTimeout, Clock clock, AgentRegistry agents) {
+        this(registry, urls, upstream, credentials, authorizer, audit, errors, json, meters, componentId, confirmations, registryService,
+                definitionGuard, rateLimiter, rateLimitAudit, endpointAudit, listCursor, killSwitches, access, toolsListTimeout, clock,
+                DEFAULT_READ_WAIT_LIMIT, agents);
     }
 
     /** @param readWaitLimit the longest a call waits for the definitions read that another call has in flight */
@@ -112,6 +127,19 @@ public class McpGatewayService {
                              RegistryService registryService, DefinitionGuard definitionGuard, RateLimiter rateLimiter,
                              RateLimitAuditThrottle rateLimitAudit, EndpointAuditThrottle endpointAudit, ToolsListCursor listCursor,
                              KillSwitches killSwitches, ToolAccess access, Duration toolsListTimeout, Clock clock, Duration readWaitLimit) {
+        this(registry, urls, upstream, credentials, authorizer, audit, errors, json, meters, componentId, confirmations, registryService,
+                definitionGuard, rateLimiter, rateLimitAudit, endpointAudit, listCursor, killSwitches, access, toolsListTimeout, clock,
+                readWaitLimit, AgentRegistry.empty());
+    }
+
+    private McpGatewayService(ServerRegistry registry, PublicUrls urls, UpstreamSessions upstream,
+                              CredentialService credentials, ToolAuthorizer authorizer, AuditLog audit, ToolErrors errors,
+                              JsonMapper json, MeterRegistry meters, String componentId, ConfirmationService confirmations,
+                              RegistryService registryService, DefinitionGuard definitionGuard, RateLimiter rateLimiter,
+                              RateLimitAuditThrottle rateLimitAudit, EndpointAuditThrottle endpointAudit, ToolsListCursor listCursor,
+                              KillSwitches killSwitches, ToolAccess access, Duration toolsListTimeout, Clock clock, Duration readWaitLimit,
+                              AgentRegistry agents) {
+        this.agents = agents;
         this.readWaitLimit = readWaitLimit;
         this.registry = registry;
         this.urls = urls;
@@ -141,7 +169,7 @@ public class McpGatewayService {
      * go on; a refusal is audited as a policy decision (at most one event per user and reason in an interval) and becomes HTTP 429.
      */
     public Optional<RateLimiter.Limited> limitRequest(GatewayUser user, EndpointFilter filter, String requestId, String clientRequestId) {
-        Optional<RateLimiter.Limited> limited = rateLimiter.check(user.sub(), user.client(), null, null);
+        Optional<RateLimiter.Limited> limited = rateLimiter.check(user.sub(), user.client(), user.isAgent(), null, null);
         limited.ifPresent(l -> {
             meters.counter("mcp.gateway.requests.limited").increment();
             if (rateLimitAudit.due(user.sub(), l.reason())) {
@@ -462,6 +490,8 @@ public class McpGatewayService {
         boolean keepCredential = true;
         /** The refusal at the level of the tool came from a forbid, not from a missing grant: the audit says so (CC-198). */
         boolean forbidden;
+        /** The refusal at the level of the tool came from the ceiling of risk of an agent (CC-266). */
+        boolean aboveMaxRisk;
         Verdict definition;
         Resolution resolution;
         /** The switch and the state of the tool as they were when the call was about to be sent. */
@@ -487,12 +517,18 @@ public class McpGatewayService {
         int argsLength = json.writeValueAsString(arguments).getBytes(StandardCharsets.UTF_8).length;
         Optional<ServerRegistry.Resolved> resolved = registry.resolveForCall(clientName);
         McpServer addressed = ctx.target().server();
+        if (ctx.user().isAgent()) {
+            ObjectNode refusedAgent = refuseAgent(ctx, resolved, clientName, started, argsLength);
+            if (refusedAgent != null) {
+                return refusedAgent;
+            }
+        }
         // What the user may not call is decided before anything is counted for the tool: a limit of the tool that answers differently for
         // a tool that exists and one that does not would tell the user which is which (invariant 8).
         ToolDecision toolLevel = resolved.isEmpty() ? null
                 : authorizer.toolLevel(ctx.user(), resolved.get().server(), resolved.get().tool());
         boolean mayCall = toolLevel != null && toolLevel.allowed();
-        Optional<RateLimiter.Limited> limited = rateLimiter.check(ctx.user().sub(), ctx.user().client(),
+        Optional<RateLimiter.Limited> limited = rateLimiter.check(ctx.user().sub(), ctx.user().client(), ctx.user().isAgent(),
                 mayCall ? resolved.get().server().qualifiedName(resolved.get().tool()) : null,
                 mayCall ? resolved.get().tool().risk() : null);
         if (limited.isPresent()) {
@@ -521,11 +557,14 @@ public class McpGatewayService {
         CallState state = new CallState();
         state.keepCredential = !tool.requiresConfirmation() || arguments.has("confirmation_code");
         state.forbidden = !mayCall && "policy_forbid".equals(toolLevel.reason());
+        state.aboveMaxRisk = !mayCall && AgentCeilingAuthorizer.MAX_RISK.equals(toolLevel.reason());
         CallOrder.Verdict verdict = CallOrder.decide(mayCall, throughEndpoint(ctx, server, tool),
                 () -> killSwitches.status(server.serverId(), tool.name()),
                 () -> server.enabled() && !tool.disabled(),
                 () -> readDefinitions(ctx, server, tool, state),
                 () -> state.definition == null || state.definition == Verdict.INTACT,
+                // An agent has no authenticator to confirm with, and the confirmation is what UPDATE and DESTRUCTIVE tools need (CC-261).
+                () -> !(ctx.user().isAgent() && tool.requiresConfirmation()),
                 () -> resolveCredential(ctx, server, tool, state));
         if (!verdict.passes()) {
             return refuse(ctx, server, tool, verdict, state, started, argsLength);
@@ -683,7 +722,10 @@ public class McpGatewayService {
         if ("not_granted".equals(reason) && state.forbidden) {
             reason = "policy_forbid";
         }
-        if (("not_granted".equals(reason) || "policy_forbid".equals(reason) || "filter_scope".equals(reason))
+        if ("not_granted".equals(reason) && state.aboveMaxRisk) {
+            reason = AgentCeilingAuthorizer.MAX_RISK;
+        }
+        if (("not_granted".equals(reason) || "policy_forbid".equals(reason) || "filter_scope".equals(reason) || AgentCeilingAuthorizer.MAX_RISK.equals(reason))
                 && !endpointAudit.admit(ctx.user(), reason, server.qualifiedName(tool))) {
             count(server, tool, "denied", "not_found_or_denied", System.nanoTime() - started);
             return errors.error("not_found_or_denied", ToolErrors.NOT_FOUND_OR_DENIED_MESSAGE);
@@ -698,6 +740,7 @@ public class McpGatewayService {
         ObjectNode error = switch (verdict.errorCode()) {
             case "tool_disabled" -> errors.error("tool_disabled", "This tool is not available.");
             case "upstream_unavailable" -> errors.error("upstream_unavailable", "The MCP server is unavailable. Try again later.");
+            case "access_denied" -> errors.error("access_denied", "This agent cannot confirm an operation that changes data.");
             default -> errors.error("not_found_or_denied", ToolErrors.NOT_FOUND_OR_DENIED_MESSAGE);
         };
         decisionEvent(ctx, server, tool, "deny", reason, verdict.errorCode());
@@ -749,6 +792,45 @@ public class McpGatewayService {
                         errors.error("internal_error", "The call could not be completed."));
             }
         }
+    }
+
+    /**
+     * An agent that is suspended (or was removed within the time the registry copy lives) is refused whatever it asks for, and whether the tool
+     * exists changes nothing in the answer: {@code access_denied} with the reason {@code agent_suspended} (CC-266). A registry that cannot be read
+     * is {@code upstream_unavailable} (fail-closed). Null when the agent may go on. Nothing is counted against the limits of the agent.
+     */
+    private ObjectNode refuseAgent(CallContext ctx, Optional<ServerRegistry.Resolved> resolved, String clientName, long started, int argsLength) {
+        String reason;
+        ObjectNode error;
+        String code;
+        switch (agents.find(ctx.user().agent().clientId())) {
+            case AgentRegistry.Lookup.Found found when !found.agent().suspended() -> {
+                return null;
+            }
+            case AgentRegistry.Lookup.Found found -> {
+                reason = AgentCeilingAuthorizer.SUSPENDED;
+                code = "access_denied";
+                error = errors.error(code, "This agent is suspended.");
+            }
+            case AgentRegistry.Lookup.Absent absent -> {
+                reason = AgentCeilingAuthorizer.NOT_REGISTERED;
+                code = "access_denied";
+                error = errors.error(code, "This agent is not registered.");
+            }
+            case AgentRegistry.Lookup.Unreadable unreadable -> {
+                reason = "upstream_unavailable";
+                code = "upstream_unavailable";
+                error = errors.error(code, "The service is unavailable. Try again later.");
+            }
+        }
+        McpServer server = resolved.map(ServerRegistry.Resolved::server).orElse(ctx.target().server());
+        ToolDefinition tool = resolved.map(ServerRegistry.Resolved::tool).orElse(null);
+        if (!endpointAudit.admit(ctx.user(), reason, clientName)) {
+            count(server, tool, "denied", code, System.nanoTime() - started);
+            return error;
+        }
+        decisionEvent(ctx, server, tool, "deny", reason, code);
+        return finish(ctx, server, tool, null, started, argsLength, "deny", reason, null, error);
     }
 
     /** The call is refused before anything else happens: no policy, no broker, no server (CC-156). */

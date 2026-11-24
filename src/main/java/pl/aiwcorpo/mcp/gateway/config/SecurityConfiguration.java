@@ -38,8 +38,11 @@ import jakarta.servlet.http.HttpServletResponse;
 import pl.aiwcorpo.mcp.gateway.admin.AdminClientCertificateFilter;
 import pl.aiwcorpo.mcp.gateway.admin.AdminOperations;
 import pl.aiwcorpo.mcp.gateway.admin.ClientCertificateVerifier;
+import pl.aiwcorpo.mcp.gateway.agent.PrincipalClassifier;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
+import pl.aiwcorpo.mcp.gateway.auth.AgentClassifyingDecoder;
 import pl.aiwcorpo.mcp.gateway.auth.AuthenticationAudit;
+import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
 import pl.aiwcorpo.mcp.gateway.auth.AuthenticationEventLimiter;
 import pl.aiwcorpo.mcp.gateway.auth.ClassifyingJwtDecoder;
 import pl.aiwcorpo.mcp.gateway.auth.ClientTokenUnavailable;
@@ -65,9 +68,9 @@ public class SecurityConfiguration {
     }
 
     @Bean
-    JwtDecoder jwtDecoder(GatewayProperties properties, IdpKeySet keys, Clock clock) {
-        return new ClassifyingJwtDecoder(keys,
-                decoder(keys, properties.oidc(), properties.oidc().audience(), properties.admin().audience(), null, clock));
+    JwtDecoder jwtDecoder(GatewayProperties properties, IdpKeySet keys, Clock clock, PrincipalClassifier classifier) {
+        return new AgentClassifyingDecoder(new ClassifyingJwtDecoder(keys,
+                decoder(keys, properties.oidc(), properties.oidc().audience(), properties.admin().audience(), null, clock)), classifier);
     }
 
     /** The BFF's user token exchanged for the admin audience (C5): same issuer, keys and claim rules. */
@@ -109,6 +112,7 @@ public class SecurityConfiguration {
                 : OAuth2TokenValidatorResult.success();
         // The claims are copied into C2 and C8, whose schemas bound them; "system:" is the service variant's sub.
         OAuth2TokenValidator<Jwt> claims = jwt -> bounded(jwt.getSubject()) && !jwt.getSubject().startsWith("system:")
+                && !jwt.hasClaim(GatewayUser.AGENT_CLIENT_CLAIM) && !jwt.hasClaim(GatewayUser.AGENT_OWNER_CLAIM)
                 && bounded(jwt.getClaimAsString("azp")) && bounded(jwt.getClaimAsString("preferred_username"))
                 && jwt.getExpiresAt() != null && jwt.getIssuedAt() != null
                 && !Duration.between(jwt.getIssuedAt(), jwt.getExpiresAt()).minus(oidc.maxTokenLifetime()).isPositive()
