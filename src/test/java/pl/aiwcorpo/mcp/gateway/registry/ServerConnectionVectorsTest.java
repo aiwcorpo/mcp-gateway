@@ -30,7 +30,14 @@ class ServerConnectionVectorsTest {
     @TestFactory
     List<DynamicTest> theVectors() {
         List<DynamicTest> tests = new ArrayList<>();
+        int emission = 0;
         for (Vectors.Vector vector : Vectors.of("server-connection")) {
+            // The kind emission (contracts-version-*, emission-*) is the preflight before the new claims are sent (CC-260, step 5 of the
+            // rollout). This slice only stores contractsVersion and emits nothing; the preflight comes with the slice that emits the claims.
+            if ("emission".equals(vector.document().path("kind").asString())) {
+                emission++;
+                continue;
+            }
             tests.add(DynamicTest.dynamicTest(vector.name(), () -> {
                 JsonNode document = vector.document();
                 switch (document.path("kind").asString()) {
@@ -44,6 +51,7 @@ class ServerConnectionVectorsTest {
             }));
         }
         assertThat(tests).hasSize(28);
+        assertThat(emission).isEqualTo(8);
         return tests;
     }
 

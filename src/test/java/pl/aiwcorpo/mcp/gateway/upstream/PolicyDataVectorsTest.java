@@ -58,12 +58,22 @@ class PolicyDataVectorsTest {
     @TestFactory
     List<DynamicTest> theGateOfTheServer() {
         List<DynamicTest> tests = new ArrayList<>();
+        int agentVectors = 0;
         for (Vectors.Vector vector : Vectors.of("policy-data-gate")) {
+            JsonNode shape = vector.document().path("input");
+            // Left out, for the slice that brings the agent registry (CC-266): the client allow-list of an agent (azp, pty, allowedAgentClients)
+            // and the revision that an agent change raises (nowMs). The gateway neither sends allowedAgentClients nor registers agents yet.
+            if (shape.has("azp") || shape.has("nowMs")) {
+                agentVectors++;
+                continue;
+            }
             tests.add(DynamicTest.dynamicTest(vector.name(), () -> {
                 JsonNode input = vector.document().path("input");
                 JsonNode expected = vector.document().path("expected");
 
-                PolicyDataGate.Decision decision = PolicyDataGate.decide(input.path("ownHash").asString(), data(input.get("held")), prv(input.get("prv")));
+                PolicyDataGate.Decision decision = input.has("method")
+                        ? PolicyDataGate.decide(input.path("ownHash").asString(), data(input.get("held")), prv(input.get("prv")), input.path("method").asString())
+                        : PolicyDataGate.decide(input.path("ownHash").asString(), data(input.get("held")), prv(input.get("prv")));
 
                 assertThat(decision.allowed() ? "continue" : "deny").as(vector.document().path("description").asString())
                         .isEqualTo(expected.path("decision").asString());
@@ -72,7 +82,8 @@ class PolicyDataVectorsTest {
                 }
             }));
         }
-        assertThat(tests).hasSize(10);
+        assertThat(tests).hasSize(15);
+        assertThat(agentVectors).isEqualTo(6);
         return tests;
     }
 

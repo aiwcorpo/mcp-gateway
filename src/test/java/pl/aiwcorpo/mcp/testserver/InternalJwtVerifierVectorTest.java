@@ -33,6 +33,15 @@ class InternalJwtVerifierVectorTest {
     private static final String ROOT = "mcp-contracts/test-vectors/";
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
+    /**
+     * The tokens of 8.0.0 that name a resource (CC-260): the receivers learn the claim resource, and the rule that exactly one of tool and
+     * resource is present, in the third step of the rollout (broker, starter, template, sidecar). This stand-in of a server follows when the
+     * gateway starts to emit the claim; until then no token it verifies carries one.
+     */
+    private static final java.util.Set<String> RESOURCE_CLAIM = java.util.Set.of("broker-resolve-agent-resource.json", "resource-at-tools-call.json",
+            "resource-differs-from-uri.json", "resource-missing-at-resources-read.json", "valid-broker-resolve-resource.json",
+            "valid-list-resources-service.json");
+
     @TestFactory
     Stream<DynamicTest> allJwtVectors() throws Exception {
         List<Path> files;
@@ -46,6 +55,8 @@ class InternalJwtVerifierVectorTest {
             files = stream.filter(p -> p.toString().endsWith(".json")).sorted().toList();
         }
         assertThat(files).hasSizeGreaterThanOrEqualTo(40);
+        assertThat(files.stream().map(f -> f.getFileName().toString())).containsAll(RESOURCE_CLAIM);
+        files = files.stream().filter(f -> !RESOURCE_CLAIM.contains(f.getFileName().toString())).toList();
         return files.stream().map(file -> DynamicTest.dynamicTest(file.getFileName().toString(), () -> check(file)));
     }
 
