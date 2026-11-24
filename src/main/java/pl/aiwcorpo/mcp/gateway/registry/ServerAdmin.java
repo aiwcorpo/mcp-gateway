@@ -467,6 +467,8 @@ public final class ServerAdmin {
         List<pl.aiwcorpo.mcp.gateway.policy.PolicyOverride> removedOverrides = new ArrayList<>();
         List<RegisteredTool> removedTools = new ArrayList<>();
         List<String> removedSwitches = new ArrayList<>();
+        List<RegisteredEntry> removedEntries = new ArrayList<>();
+        List<String[]> removedNamedSwitches = new ArrayList<>();
         List<String> removedNamespaces = new ArrayList<>();
         boolean[] hadPolicies = {false};
         ServerConfig.Connection[] gone = {null};
@@ -484,6 +486,8 @@ public final class ServerAdmin {
             }
             removedTools.addAll(tx.tools().values());
             removedSwitches.addAll(tx.killSwitchTools());
+            removedEntries.addAll(tx.entries().values().stream().flatMap(entries -> entries.values().stream()).toList());
+            removedNamedSwitches.addAll(tx.primitiveSwitches());
             hadPolicies[0] = tx.policies().approved() || tx.policies().pending();
             removedOverrides.addAll(tx.overridesOf());
             tx.deleteOverridesOf();
@@ -502,8 +506,13 @@ public final class ServerAdmin {
                     .override(override.id(), override.target(), override.text(), null).outcome("ok")));
             removedTools.forEach(tool -> audit.emit(base(requestId, administrator, serverId).reason("tool_removed").tool(tool.name())
                     .definitionHash(tool.approved() != null ? tool.approved().hash() : tool.pending().hash()).outcome("ok")));
+            removedEntries.forEach(entry -> audit.emit(entryEvent(base(requestId, administrator, serverId), entry.kind(), entry.name())
+                    .reason(entry.kind() == PrimitiveKind.PROMPT ? "prompt_removed" : "resource_removed")
+                    .definitionHash(entry.approved() != null ? entry.approved().hash() : entry.pending().hash()).outcome("ok")));
             removedSwitches.forEach(tool -> audit.emit(base(requestId, administrator, serverId).reason("kill_switch_cleared")
                     .tool(tool.isEmpty() ? null : tool).outcome("ok")));
+            removedNamedSwitches.forEach(named -> audit.emit(entryEvent(base(requestId, administrator, serverId),
+                    "prompt".equals(named[0]) ? PrimitiveKind.PROMPT : PrimitiveKind.RESOURCE, named[1]).reason("kill_switch_cleared").outcome("ok")));
             if (hadPolicies[0]) {
                 audit.emit(base(requestId, administrator, serverId).reason("policies_removed").outcome("ok"));
             }
@@ -516,6 +525,10 @@ public final class ServerAdmin {
             applyHere();
         }
         return result;
+    }
+
+    private static AuditEvent entryEvent(AuditEvent event, PrimitiveKind kind, String name) {
+        return kind == PrimitiveKind.PROMPT ? event.prompt(name) : event.resourceTemplate(name);
     }
 
     private AuditEvent base(String requestId, GatewayUser administrator, String serverId) {

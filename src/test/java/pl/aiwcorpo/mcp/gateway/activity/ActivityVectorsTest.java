@@ -27,8 +27,16 @@ class ActivityVectorsTest {
         ActivityAggregator aggregator = new ActivityAggregator(JSON);
         List<Vectors.Vector> vectors = Vectors.of("activity-calls");
         assertThat(vectors).hasSizeGreaterThanOrEqualTo(38);
+        int later = 0;
         for (Vectors.Vector vector : vectors) {
             JsonNode document = vector.document();
+            // The rows made of resource_read and prompt_get events, and of the refusals of an agent, need events that the gateway does not
+            // write yet (no resources/read, no prompts/get, no agents). They come with the slices that add those; the vectors that only
+            // check the shape of a row of kind resource or prompt against ActivityCall run here.
+            if (LATER_SLICES.stream().anyMatch(vector.name()::startsWith)) {
+                later++;
+                continue;
+            }
             if (document.has("events")) {
                 tests.add(DynamicTest.dynamicTest(vector.name(), () -> {
                     List<JsonNode> events = new ArrayList<>();
@@ -45,8 +53,11 @@ class ActivityVectorsTest {
                 }));
             }
         }
+        assertThat(later).isEqualTo(24);
         return tests;
     }
+
+    private static final List<String> LATER_SLICES = List.of("aggregation-resource-read-", "aggregation-prompt-get-", "aggregation-agent-");
 
     @TestFactory
     List<DynamicTest> cursor() {

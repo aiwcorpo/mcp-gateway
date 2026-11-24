@@ -23,6 +23,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
 import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitchStore;
 import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitches;
+import pl.aiwcorpo.mcp.gateway.registry.RegistryService;
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
 import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
 import tools.jackson.databind.json.JsonMapper;
@@ -58,7 +59,7 @@ class KillSwitchControllerTest {
         List<String> events = new java.util.ArrayList<>();
         audit.listen(event -> events.add(String.valueOf(event.view().get("reason"))));
         AtomicInteger announced = new AtomicInteger();
-        KillSwitchController controller = new KillSwitchController(store, mock(KillSwitches.class), servers, audit, "mcp-gateway", JSON,
+        KillSwitchController controller = new KillSwitchController(store, mock(KillSwitches.class), servers, mock(RegistryService.class), audit, "mcp-gateway", JSON,
                 announced::incrementAndGet, mfa());
 
         ResponseEntity<String> answer = controller.putServer("mcp-jira", administrator(), body("{\"reason\":\"incident\"}"));
@@ -76,7 +77,7 @@ class KillSwitchControllerTest {
         doThrow(new DataAccessResourceFailureException("down")).when(store).delete(any(), any());
         ServerRegistry servers = mock(ServerRegistry.class);
         when(servers.find("mcp-jira")).thenReturn(Optional.of(mock(McpServer.class)));
-        KillSwitchController controller = new KillSwitchController(store, mock(KillSwitches.class), servers, new AuditLog(), "mcp-gateway", JSON, () -> { },
+        KillSwitchController controller = new KillSwitchController(store, mock(KillSwitches.class), servers, mock(RegistryService.class), new AuditLog(), "mcp-gateway", JSON, () -> { },
                 mfa());
 
         assertThat(controller.deleteServer("mcp-jira", administrator(), new MockHttpServletRequest()).getStatusCode().value()).isEqualTo(503);
@@ -87,7 +88,7 @@ class KillSwitchControllerTest {
         KillSwitches switches = mock(KillSwitches.class);
         when(switches.entries()).thenReturn(Optional.empty());
         KillSwitchController controller = new KillSwitchController(mock(KillSwitchStore.class), switches, mock(ServerRegistry.class),
-                new AuditLog(), "mcp-gateway", JSON, () -> { }, mfa());
+                mock(RegistryService.class), new AuditLog(), "mcp-gateway", JSON, () -> { }, mfa());
 
         ResponseEntity<String> answer = controller.list(administrator(), new MockHttpServletRequest());
 

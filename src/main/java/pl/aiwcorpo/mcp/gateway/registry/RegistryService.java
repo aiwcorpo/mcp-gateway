@@ -123,7 +123,8 @@ public final class RegistryService {
     }
 
     /** What storing a pulled manifest did, for the events that follow it. */
-    record Stored(RegistryPlanner.Plan plan, PolicyPlan policies, boolean hadApprovedPolicies, String namespaceConflict) {
+    record Stored(RegistryPlanner.Plan plan, RegistryPlanner.EntryPlan entries, PolicyPlan policies, boolean hadApprovedPolicies,
+                  String namespaceConflict) {
         boolean conflict() {
             return namespaceConflict != null;
         }
@@ -280,6 +281,8 @@ public final class RegistryService {
         Map<String, RegisteredTool> existing = tx.tools();
         Map<String, Integer> floors = tx.floors();
         RegistryPlanner.Plan plan = RegistryPlanner.plan(manifest, credentialJson, existing, floors, adapter);
+        Map<PrimitiveKind, Map<String, RegisteredEntry>> existingEntries = tx.entries();
+        RegistryPlanner.EntryPlan entryPlan = RegistryPlanner.planEntries(manifest, existingEntries, adapter);
         PolicyPlan policyPlan = null;
         boolean hadApproved = false;
         if (!adapter) {
@@ -287,7 +290,7 @@ public final class RegistryService {
             // name that another server would need; it is refused only for a name that has an approved owner.
             String namespace = manifest.path("policies").path("namespace").asString();
             if (tx.namespaceOwner(namespace).filter(owner -> !owner.equals(serverId)).isPresent()) {
-                return new Stored(plan, null, false, namespace);
+                return new Stored(plan, entryPlan, null, false, namespace);
             }
             StoredPolicies current = tx.policies();
             hadApproved = current.approved();
@@ -298,6 +301,16 @@ public final class RegistryService {
         }
         if (tx.server().map(RegistryStore.StoredServer::manifest).filter(manifest::equals).isEmpty()) {
             tx.saveServer(manifest, adapter ? "adapter" : "manifest");
+        }
+        for (PrimitiveKind kind : PrimitiveKind.values()) {
+            Map<String, RegisteredEntry> before = existingEntries.getOrDefault(kind, Map.of());
+            Map<String, RegisteredEntry> after = entryPlan.entries().get(kind);
+            before.keySet().stream().filter(name -> !after.containsKey(name)).forEach(name -> tx.deleteEntry(kind, name));
+            after.forEach((name, entry) -> {
+                if (!entry.equals(before.get(name))) {
+                    tx.saveEntry(entry);
+                }
+            });
         }
         // The floor of the risk stays when a tool leaves (CC-167): a tool of an adapter that comes back is new and unclassified, and an
         // administrator who classifies it lower than before needs acceptRiskLowering.
@@ -310,12 +323,14 @@ public final class RegistryService {
         if (plan.risks().entrySet().stream().anyMatch(risk -> risk.getValue() > floors.getOrDefault(risk.getKey(), -1))) {
             tx.raiseFloors(plan.risks());
         }
-        return new Stored(plan, policyPlan, hadApproved, null);
+        return new Stored(plan, entryPlan, policyPlan, hadApproved, null);
     }
 
     /** The events of what a pulled manifest changed. */
     void recordPulled(String requestId, String serverId, Stored stored) {
         stored.plan().changes().forEach(change -> changed(requestId, serverId, change));
+        stored.entries().changes().forEach(change -> audit.emit(entryEvent(requestId, serverId, change.kind(), change.name())
+                .reason(change.event()).definitionHash(change.hash()).outcome("ok")));
         PolicyPlan policyPlan = stored.policies();
         if (policyPlan != null && policyPlan.next() != null && policyPlan.next().pending()) {
             audit.emit(AuditEvent.of("admin_change", requestId, componentId).server(serverId)
@@ -461,6 +476,100 @@ public final class RegistryService {
         approvedNow.forEach(tool -> audit.emit(AuditEvent.of("admin_change", requestId, componentId).userWithoutClient(administrator).server(serverId)
                 .tool(tool.name()).definitionHash(tool.pending().hash()).reason("definition_approved").outcome("ok")));
         return approvedNow.size();
+    }
+
+    /** The approved and the pending entry of a resource, a template or a prompt for the diff of the portal. */
+    public record EntryView(RegisteredEntry.Approved approved, RegisteredEntry.Pending pending) {
+    }
+
+    public Optional<EntryView> pendingEntry(String serverId, PrimitiveKind kind, String name) {
+        RegisteredServer server = held.get(serverId);
+        RegisteredEntry registered = server == null ? null : server.entries(kind).get(name);
+        if (registered == null || registered.pending() == null) {
+            return Optional.empty();
+        }
+        return Optional.of(new EntryView(registered.approved(), registered.pending()));
+    }
+
+    /**
+     * Approves the pending resource, template or prompt whose hash is {@code hash} (CC-265). There is nothing to classify: a read has no
+     * risk and no action, so {@code classificationSent} (a body that carried risk, action or acceptRiskLowering) is refused, also for an entry
+     * of an adapter, where the approval itself is the classification (D7). The refusal comes after the hash comparison and the screen
+     * for hidden characters, in the order of the approval of a tool.
+     */
+    public Approval approveEntry(String requestId, String serverId, PrimitiveKind kind, String name, String hash, boolean classificationSent,
+                                 GatewayUser administrator) {
+        Optional<McpServer> server = servers.find(serverId);
+        if (server.isEmpty()) {
+            return new Approval.NotFound();
+        }
+        Approval result = store.locked(serverId, tx -> {
+            if (tx.config().isEmpty()) {
+                return new Approval.NotFound();
+            }
+            RegisteredEntry current = tx.entries().getOrDefault(kind, Map.of()).get(name);
+            if (current == null || current.pending() == null) {
+                return new Approval.NotFound();
+            }
+            RegisteredEntry.Pending pending = current.pending();
+            if (!pending.hash().equals(hash)) {
+                return new Approval.HashMismatch();
+            }
+            if (!storedHashMatches(kind, pending, server.get().system(), tx.server().map(stored -> stored.manifest().path("credential")).orElse(null))) {
+                return new Approval.HashMismatch();
+            }
+            // The whole entry, not only the texts the contract lists: stricter on purpose, a forbidden character in an argument rule or a
+            // variable is as hidden from a reviewer as one in a description.
+            if (DefinitionCheck.hidesText(pending.entry())) {
+                return new Approval.Rejected(null, name + " has a control, format or bidirectional character in its definition");
+            }
+            if (classificationSent) {
+                return new Approval.Rejected("classification_not_allowed", "a " + (kind == PrimitiveKind.RESOURCE ? "static resource" : kind.column().replace('_', ' '))
+                        + " has no risk and no action");
+            }
+            tx.saveEntry(new RegisteredEntry(kind, name, new RegisteredEntry.Approved(pending.entry(), pending.hash(), pending.version()), null));
+            return new Approval.Approved(-1);
+        });
+        if (result instanceof Approval.Approved) {
+            take(serverId);
+            audit.emit(entryEvent(requestId, serverId, kind, name).userWithoutClient(administrator).definitionHash(hash)
+                    .reason("definition_approved").outcome("ok"));
+        } else if (result instanceof Approval.Rejected rejected) {
+            if (rejected.reason() == null) {
+                audit.emit(entryEvent(requestId, serverId, kind, name).userWithoutClient(administrator).reason("hidden_characters")
+                        .definitionHash(hash).outcome("denied"));
+            } else {
+                denied(requestId, serverId, rejected.reason());
+            }
+        }
+        return result;
+    }
+
+    /**
+     * The hash the stored pending entry really has, recomputed per kind: a row that was changed in the database, or written by a build
+     * that hashed differently, must not be approved under the hash it claims.
+     */
+    private boolean storedHashMatches(PrimitiveKind kind, RegisteredEntry.Pending pending, String system, JsonNode credential) {
+        if (credential == null || credential.isMissingNode()) {
+            return false;
+        }
+        try {
+            String type = switch (kind) {
+                case RESOURCE -> "resource";
+                case RESOURCE_TEMPLATE -> "resourceTemplate";
+                case PROMPT -> "prompt";
+            };
+            return pl.aiwcorpo.mcp.manifest.DefinitionHash.computePrimitive(type, json.writeValueAsString(pending.entry().path("definition")),
+                    json.writeValueAsString(pending.entry()), system, json.writeValueAsString(credential)).equals(pending.hash());
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /** An admin_change about an entry: the name goes to {@code prompt} or to {@code resourceTemplate}, which also names a static resource (CC-264). */
+    private AuditEvent entryEvent(String requestId, String serverId, PrimitiveKind kind, String name) {
+        AuditEvent event = AuditEvent.of("admin_change", requestId, componentId).server(serverId);
+        return kind == PrimitiveKind.PROMPT ? event.prompt(name) : event.resourceTemplate(name);
     }
 
     /** What a pull does to the policies row: the row to write (null: nothing changes). */
@@ -871,7 +980,7 @@ public final class RegistryService {
         }
         return new RegisteredServer(stored.serverId(), stored.manifest().path("system").asString(),
                 stored.manifest().path("version").asString(), stored.manifest(), stored.source(), store.tools(stored.serverId()),
-                store.policiesOf(stored.serverId()));
+                store.policiesOf(stored.serverId()), store.entries(stored.serverId()), stored.contractsVersion());
     }
 
     /** Reads the stored state of a server into memory and hands the approved tools to the server registry. */
@@ -896,10 +1005,18 @@ public final class RegistryService {
         servers.apply(serverId, new ServerRegistry.Applied(state.version(), state.tools(), store.floors(serverId), rejections.isEmpty(),
                 policiesApproved));
         if (!state.equals(before)) {
-            guard.forget(serverId);
+            // A change of entries or contractsVersion alone (the manifest holds them too) leaves the tools as they were: the last good reading of their definitions stays.
+            if (before == null || !sameToolsAndPolicies(before, state)) {
+                guard.forget(serverId);
+            }
             onChange.run();
         }
         return state;
+    }
+
+    private static boolean sameToolsAndPolicies(RegisteredServer a, RegisteredServer b) {
+        return new RegisteredServer(a.serverId(), a.system(), a.version(), null, a.source(), a.tools(), a.policies(), Map.of(), null)
+                .equals(new RegisteredServer(b.serverId(), b.system(), b.version(), null, b.source(), b.tools(), b.policies(), Map.of(), null));
     }
 
     private void changed(String requestId, String serverId, RegistryPlanner.Change change) {

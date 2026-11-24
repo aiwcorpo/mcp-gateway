@@ -34,7 +34,60 @@ public final class RegistryPlanner {
     public record Plan(Map<String, RegisteredTool> tools, List<Change> changes, Map<String, Integer> risks) {
     }
 
+    /**
+     * One audited consequence of a pull for a resource, a template or a prompt; {@code event} is the C8 reason ({@code definition_submitted},
+     * {@code resource_removed}, {@code prompt_removed}).
+     */
+    public record EntryChange(PrimitiveKind kind, String event, String name, String hash) {
+    }
+
+    /** @param entries the resources, templates and prompts after the pull; a kind without entries has an empty map */
+    public record EntryPlan(Map<PrimitiveKind, Map<String, RegisteredEntry>> entries, List<EntryChange> changes) {
+    }
+
     private RegistryPlanner() {
+    }
+
+    /**
+     * The same rule as for tools, for the other three kinds of entry (CC-258, CC-265): an entry whose hash is the approved one stays, a new
+     * or changed one waits for an administrator whatever it holds, and an entry the manifest no longer has is removed. There is no risk to
+     * compare, so nothing is ever marked lowered.
+     */
+    public static EntryPlan planEntries(JsonNode manifest, Map<PrimitiveKind, Map<String, RegisteredEntry>> existing, boolean adapter) {
+        String version = manifest.path("version").asString();
+        String source = adapter ? ADAPTER : MANIFEST;
+        Map<PrimitiveKind, Map<String, RegisteredEntry>> next = new java.util.EnumMap<>(PrimitiveKind.class);
+        List<EntryChange> changes = new ArrayList<>();
+        for (PrimitiveKind kind : PrimitiveKind.values()) {
+            Map<String, RegisteredEntry> before = existing.getOrDefault(kind, Map.of());
+            Map<String, RegisteredEntry> after = new LinkedHashMap<>();
+            for (JsonNode entry : manifest.path(kind.field())) {
+                String name = entry.path("name").asString();
+                String hash = entry.path("definitionHash").asString();
+                RegisteredEntry current = before.get(name);
+                RegisteredEntry.Approved approved = current == null ? null : current.approved();
+                if (approved != null && approved.hash().equals(hash)) {
+                    after.put(name, new RegisteredEntry(kind, name, approved, null));
+                    continue;
+                }
+                RegisteredEntry.Pending kept = current == null ? null : current.pending();
+                if (kept != null && kept.hash().equals(hash) && source.equals(kept.source())) {
+                    after.put(name, new RegisteredEntry(kind, name, approved, kept));
+                } else {
+                    after.put(name, new RegisteredEntry(kind, name, approved, new RegisteredEntry.Pending(entry, hash, version,
+                            approved == null ? "new" : "changed", source)));
+                    changes.add(new EntryChange(kind, "definition_submitted", name, hash));
+                }
+            }
+            before.forEach((name, current) -> {
+                if (!after.containsKey(name)) {
+                    changes.add(new EntryChange(kind, kind == PrimitiveKind.PROMPT ? "prompt_removed" : "resource_removed", name,
+                            current.approved() != null ? current.approved().hash() : current.pending().hash()));
+                }
+            });
+            next.put(kind, after);
+        }
+        return new EntryPlan(next, List.copyOf(changes));
     }
 
     /**

@@ -2,6 +2,8 @@ package pl.aiwcorpo.mcp.gateway.admin;
 
 import java.time.temporal.ChronoUnit;
 
+import pl.aiwcorpo.mcp.gateway.registry.PrimitiveKind;
+import pl.aiwcorpo.mcp.gateway.registry.RegisteredEntry;
 import pl.aiwcorpo.mcp.gateway.registry.RegisteredServer;
 import pl.aiwcorpo.mcp.gateway.registry.RegisteredTool;
 import pl.aiwcorpo.mcp.gateway.registry.RegistryStore;
@@ -70,6 +72,32 @@ public final class RegistryViews {
             }
             tools.add(entry);
         });
+        for (PrimitiveKind kind : PrimitiveKind.values()) {
+            if (!server.entries(kind).isEmpty()) {
+                ArrayNode list = view.putArray(kind.field());
+                server.entries(kind).values().forEach(entry -> list.add(entry(entry)));
+            }
+        }
         return view;
+    }
+
+    /** A resource, template or prompt as RegistryServer lists it: the pending entry when there is one, else the approved one, and the status of both. */
+    static ObjectNode entry(RegisteredEntry registered) {
+        RegisteredEntry.Approved approved = registered.approved();
+        RegisteredEntry.Pending pending = registered.pending();
+        ObjectNode entry = ((ObjectNode) (pending != null ? pending.entry() : approved.entry())).deepCopy();
+        if (pending != null) {
+            entry.put("status", "pending_approval");
+            entry.put("change", pending.change());
+            entry.put("source", pending.source());
+        } else {
+            entry.put("status", "approved");
+        }
+        if (approved != null) {
+            entry.put("approvedInVersion", approved.version());
+        } else {
+            entry.putNull("approvedInVersion");
+        }
+        return entry;
     }
 }

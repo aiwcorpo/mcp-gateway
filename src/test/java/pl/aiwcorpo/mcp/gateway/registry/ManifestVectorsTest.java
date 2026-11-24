@@ -18,8 +18,8 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * The manifest vectors of mcp-contracts 4.0.0 (CC-115, CC-123: title required, inputSchema closed and bounded; CC-138: environment)
- * as the gateway judges them as manifests. Whether a gateway takes a manifest of environment dev, or one whose credential types
+ * The manifest vectors of mcp-contracts 4.0.0 (CC-115, CC-123: title required, inputSchema closed and bounded; CC-138: environment) and of
+ * 8.0.0 (CC-258: resources, resource templates, prompts, contractsVersion, valueOnly types, the hash per kind) as the gateway judges them as manifests. Whether a gateway takes a manifest of environment dev, or one whose credential types
  * do not fit its configuration, is a decision of the gateway ({@link ManifestAcceptanceTest}), so dev mode is on and no credential
  * is configured here.
  */
@@ -32,7 +32,7 @@ class ManifestVectorsTest {
         ManifestValidator validator = new ManifestValidator(JSON, true);
         List<DynamicTest> tests = new ArrayList<>();
         List<Vectors.Vector> vectors = Vectors.of("manifests");
-        assertThat(vectors).hasSizeGreaterThanOrEqualTo(52);
+        assertThat(vectors).hasSizeGreaterThanOrEqualTo(153);
         for (Vectors.Vector vector : vectors) {
             tests.add(DynamicTest.dynamicTest(vector.name(), () -> {
                 JsonNode manifest = vector.document().path("manifest");

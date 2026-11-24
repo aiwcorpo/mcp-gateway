@@ -28,7 +28,9 @@ class KillSwitchVectorsTest {
     private static KillSwitches switchesOf(JsonNode input, boolean readable) {
         List<KillSwitchStore.Entry> entries = new ArrayList<>();
         input.path("switches").forEach(s -> entries.add(new KillSwitchStore.Entry(s.path("serverId").asString(),
-                "tool".equals(s.path("scope").asString()) ? s.path("tool").asString() : null, "admin", Instant.EPOCH, "test")));
+                "tool".equals(s.path("scope").asString()) ? s.path("tool").asString() : null, "admin", Instant.EPOCH, "test",
+                "resource".equals(s.path("scope").asString()) ? s.path("resource").asString() : null,
+                "prompt".equals(s.path("scope").asString()) ? s.path("prompt").asString() : null)));
         return new KillSwitches(() -> {
             if (!readable) {
                 throw new IllegalStateException("database down");
@@ -37,20 +39,53 @@ class KillSwitchVectorsTest {
         }, Duration.ofSeconds(5), System::nanoTime, new SimpleMeterRegistry());
     }
 
+    /**
+     * The vectors of 8.0.0 by kind: the switches of a tool and a server have no kind (18); {@code agent-switch} (5) is the suspension of an
+     * agent (CC-266), for the slice with the agent registry; {@code primitive-switch} (21) is the switch of a resource or a prompt (CC-265).
+     * Of those, {@code list} runs here (what a switch hides) and {@code lift} in KillSwitchApiTest (the database); {@code read} is the
+     * refusal of resources/read and prompts/get on /mcp (-32602, order of the checks), which comes with the dispatch of those methods.
+     */
+    private static boolean isTool(Vectors.Vector vector) {
+        return !vector.document().has("kind");
+    }
+
+    private static boolean isListOfPrimitive(Vectors.Vector vector) {
+        return "primitive-switch".equals(vector.document().path("kind").asString()) && "list".equals(vector.document().path("input").path("event").asString());
+    }
+
     @TestFactory
     List<DynamicTest> callsConfirmationsAndLists() {
         List<Vectors.Vector> vectors = Vectors.of("kill-switch");
-        assertThat(vectors).hasSize(18);
+        assertThat(vectors).hasSize(44);
+        assertThat(vectors.stream().filter(v -> "agent-switch".equals(v.document().path("kind").asString()))).hasSize(5);
+        assertThat(vectors.stream().filter(v -> "primitive-switch".equals(v.document().path("kind").asString())
+                && "read".equals(v.document().path("input").path("event").asString()))).as("left for the dispatch of resources/read and prompts/get").hasSize(14);
         List<DynamicTest> tests = new ArrayList<>();
         for (Vectors.Vector vector : vectors) {
+            if (isListOfPrimitive(vector)) {
+                tests.add(DynamicTest.dynamicTest(vector.name(), () -> checkListOfPrimitive(vector.document())));
+                continue;
+            }
             String event = vector.document().path("input").path("event").asString();
-            if (!HANDLED_HERE.contains(event)) {
+            if (!isTool(vector) || !HANDLED_HERE.contains(event)) {
                 continue;
             }
             tests.add(DynamicTest.dynamicTest(vector.name(), () -> check(vector.document())));
         }
-        assertThat(tests).hasSizeGreaterThanOrEqualTo(11);
+        assertThat(tests).hasSizeGreaterThanOrEqualTo(11 + 7);
         return tests;
+    }
+
+    private static void checkListOfPrimitive(JsonNode vector) {
+        JsonNode input = vector.path("input");
+        JsonNode target = input.path("target");
+        boolean readable = input.path("storeReadable").asBoolean(true);
+        KillSwitches switches = switchesOf(input, readable);
+        String serverId = target.path("serverId").asString();
+        KillSwitches.Status status = "prompt".equals(target.path("kind").asString()) ? switches.statusOfPrompt(serverId, target.path("name").asString())
+                : switches.statusOfResource(serverId, target.path("name").asString());
+        assertThat(readable && status == KillSwitches.Status.OFF).as(vector.path("description").asString())
+                .isEqualTo(vector.path("expected").path("listed").asBoolean());
     }
 
     private static void check(JsonNode vector) {
@@ -84,8 +119,16 @@ class KillSwitchVectorsTest {
     @TestFactory
     List<DynamicTest> everyVectorIsAccountedFor() {
         Set<String> events = new TreeSet<>();
-        Vectors.of("kill-switch").forEach(v -> events.add(v.document().path("input").path("event").asString()));
-        return List.of(DynamicTest.dynamicTest("events of the vectors", () ->
-                assertThat(events).containsExactlyInAnyOrder("call", "confirm", "list", "approve", "register", "lift-tool", "lift-server", "catalog")));
+        Set<String> kinds = new TreeSet<>();
+        Vectors.of("kill-switch").forEach(v -> {
+            kinds.add(v.document().path("kind").asString("tool"));
+            if (isTool(v)) {
+                events.add(v.document().path("input").path("event").asString());
+            }
+        });
+        return List.of(DynamicTest.dynamicTest("events of the vectors", () -> {
+            assertThat(events).containsExactlyInAnyOrder("call", "confirm", "list", "approve", "register", "lift-tool", "lift-server", "catalog");
+            assertThat(kinds).containsExactlyInAnyOrder("tool", "agent-switch", "primitive-switch");
+        }));
     }
 }

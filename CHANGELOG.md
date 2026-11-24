@@ -5,6 +5,34 @@ integration builds tag the image `m6-<short sha>`.
 
 ## Unreleased
 
+- Built on `mcp-contracts` 8.0.0 (a major release). This is step 2 of the 8.0.0 rollout (CC-260): the gateway reads and stores the new manifest
+  entries and lets an administrator approve them, and still serves and emits what it did before. `tools/list`, `tools/call`, the
+  capabilities of `initialize` and `server/discover` and the claims of the internal token are unchanged; `resources/*` and `prompts/*` still
+  answer as an unknown method. Before upgrading, read the items below.
+- Flyway migration `V17__registry_primitives.sql` adds the tables `registry_primitives` and `kill_switches_primitive` (both removed with the
+  row of their server) and the column `registry_servers.contracts_version`. It only adds; it approves and hides nothing, and it needs no
+  downtime. An instance of 2.1.x that runs next to a new one ignores the new tables, but it does more than refuse a new manifest: the
+  manifest a new instance stored is checked again by the periodic reload of the old one, which does not know the new fields, and it then
+  disables the whole server on that instance, so its tools fail for the clients routed there. Upgrade every instance before any server
+  publishes `resources`, `resourceTemplates`, `prompts` or `contractsVersion`.
+- A manifest may carry `resources`, `resourceTemplates`, `prompts` (up to 100 each), `contractsVersion` and resource types with
+  `valueOnly: true` (CC-258), and `tools` may be empty when another list is not. The gateway checks them with the rules and the hash per
+  kind of `mcp-manifest` 8.0.0. Every new or changed entry is `pending_approval`, a pulled manifest approves none, an entry that leaves the
+  manifest is removed (audited as `resource_removed` or `prompt_removed`), and the `contractsVersion` of the last accepted manifest is
+  stored. The manifest of an adapter may list resources and templates but no prompts. A manifest with only the old fields behaves as before.
+- Admin API (CC-265): `getPendingResource`, `getPendingResourceTemplate`, `getPendingPrompt` and the matching `approve` operations
+  (`/admin/v1/registry/servers/{serverId}/{resources|resource-templates|prompts}/{name}/pending` and `/approve`), with `409 hash_mismatch` for
+  a hash that is not the pending one, `422 classification_not_allowed` for a body with `risk`, `action` or `acceptRiskLowering`, and `422`
+  without a reason, audited as `hidden_characters`, for a name or text with a forbidden character. Approvals are audited as `admin_change`
+  with `definition_approved` and the new fields `resourceTemplate` (also for a static resource) or `prompt`. A receiver of the audit log that
+  validates events strictly needs the 8.0.0 schema before the first server publishes such an entry. `GET /admin/v1/registry/servers` lists the
+  entries in `resources`, `resourceTemplates` and `prompts`, and `GET /admin/v1/catalog` lists the approved ones with `access: denied` for
+  everyone, because nothing can be read through the gateway yet.
+- Emergency switches of one resource (it also covers a template of that name) and one prompt: `PUT` and `DELETE` on
+  `.../resources/{name}/kill-switch` and `.../prompts/{name}/kill-switch`; `GET /admin/v1/kill-switches` returns them with `scope` `resource`
+  or `prompt`. Lifting needs a fresh MFA, putting does not. A client generated from an earlier contract does not know these `scope` values,
+  so release the portal of 8.0.0 before anyone sets such a switch.
+
 - OpenTelemetry tracing, off by default. Set `MCP_OTLP_ENDPOINT` (the OTLP/HTTP traces URL of a collector, with the path) and restart to
   export spans. A request on the public port always starts a new trace that the gateway's sampler decides about; the client's
   `traceparent` is kept only as a span link, and its `tracestate` and `baggage` are dropped. A request on the internal port (8443)

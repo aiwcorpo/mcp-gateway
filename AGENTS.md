@@ -19,13 +19,13 @@ Java 25 and Docker are required. Maven fails with "release version 25 not suppor
 docker build -t mcp-gateway:dev .             # after verify; the image copies target/mcp-gateway.jar
 ```
 
-The full `verify` runs about 1340 tests and starts PostgreSQL and Redis with Testcontainers; it takes about 7 minutes on a laptop.
+The full `verify` runs about 1500 tests and starts PostgreSQL and Redis with Testcontainers; it takes about 7 minutes on a laptop.
 There is no separate lint or formatter step. Running the gateway locally against test stand-ins: CONTRIBUTING.md,
 "Running locally".
 
 ## Layout
 
-- `src/main/resources/db/migration/`: Flyway migrations, append-only. `V16` is the latest; add `V17__<what>.sql` and never
+- `src/main/resources/db/migration/`: Flyway migrations, append-only. `V17` is the latest; add `V18__<what>.sql` and never
   edit, rename or delete a migration that exists on main.
 - `src/test/java/pl/aiwcorpo/mcp/testserver/`: a minimal MCP server and a broker stub that the integration tests start. Test
   code, not a product.

@@ -42,10 +42,20 @@ class ListChangeVectorsTest {
         return sent;
     }
 
+    /**
+     * The list-changed vectors of resources and prompts (CC-259: notifications/resources/list_changed and notifications/prompts/list_changed).
+     * The tracker follows tools only; the notifications for the other lists come with the slice that serves resources/* and prompts/* on /mcp.
+     */
+    private static final List<String> LATER_SLICE = List.of("list-changed-prompts-removed.json", "list-changed-resources-added.json",
+            "list-changed-resources-definition-changed.json", "list-changed-resources-no-change.json", "list-changed-resources-outside-filter.json");
+
     @TestFactory
     List<DynamicTest> sequencesAndStatelessStreams() {
         List<DynamicTest> tests = new ArrayList<>();
         for (Vectors.Vector vector : Vectors.of("endpoint-aggregate")) {
+            if (LATER_SLICE.contains(vector.name())) {
+                continue;
+            }
             String kind = vector.document().path("kind").asString();
             JsonNode input = vector.document().path("input");
             JsonNode expected = vector.document().path("expected");

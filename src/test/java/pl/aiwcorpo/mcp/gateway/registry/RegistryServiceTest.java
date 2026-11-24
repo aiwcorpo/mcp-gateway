@@ -63,8 +63,8 @@ class RegistryServiceTest extends GatewayTestBase {
     @BeforeEach
     void clean() {
         requestId = pl.aiwcorpo.mcp.gateway.jwt.UuidV7.next();
-        for (String table : List.of("registry_tools", "registry_servers", "registry_risk_floor", "registry_policies", "registry_namespaces",
-                "kill_switches", "servers")) {
+        for (String table : List.of("registry_tools", "registry_primitives", "registry_servers", "registry_risk_floor", "registry_policies", "registry_namespaces",
+                "kill_switches", "kill_switches_primitive", "servers")) {
             jdbc.sql("DELETE FROM " + table + " WHERE server_id = ?").param(SERVER).update();
         }
         store.locked(SERVER, tx -> {
@@ -78,8 +78,8 @@ class RegistryServiceTest extends GatewayTestBase {
 
     @AfterEach
     void remove() {
-        for (String table : List.of("registry_tools", "registry_servers", "registry_risk_floor", "registry_policies", "registry_namespaces",
-                "kill_switches", "servers")) {
+        for (String table : List.of("registry_tools", "registry_primitives", "registry_servers", "registry_risk_floor", "registry_policies", "registry_namespaces",
+                "kill_switches", "kill_switches_primitive", "servers")) {
             jdbc.sql("DELETE FROM " + table + " WHERE server_id = ?").param(SERVER).update();
         }
     }
@@ -156,8 +156,8 @@ class RegistryServiceTest extends GatewayTestBase {
 
     /** Every stored row of the server under test, whole, so that any write to it (a column or a new row) shows. */
     private List<String> rowsOfTheServer() {
-        return List.of("registry_tools", "registry_servers", "registry_risk_floor", "registry_policies", "registry_namespaces", "kill_switches",
-                "servers").stream()
+        return List.of("registry_tools", "registry_primitives", "registry_servers", "registry_risk_floor", "registry_policies", "registry_namespaces", "kill_switches",
+                "kill_switches_primitive", "servers").stream()
                 .flatMap(table -> jdbc.sql("SELECT t::text FROM " + table + " t WHERE t.server_id = ? ORDER BY t::text").param(SERVER)
                         .query(String.class).list().stream())
                 .toList();

@@ -77,8 +77,8 @@ class RegistryAdapterTest extends GatewayTestBase {
 
     @AfterEach
     void wipe() {
-        for (String table : List.of("registry_tools", "registry_servers", "registry_risk_floor", "registry_policies", "registry_namespaces",
-                "kill_switches", "servers")) {
+        for (String table : List.of("registry_tools", "registry_primitives", "registry_servers", "registry_risk_floor", "registry_policies", "registry_namespaces",
+                "kill_switches", "kill_switches_primitive", "servers")) {
             jdbc.sql("DELETE FROM " + table + " WHERE server_id = ?").param(SERVER).update();
         }
     }
@@ -390,7 +390,8 @@ class RegistryAdapterTest extends GatewayTestBase {
 
     @TestFactory
     List<DynamicTest> theAdapterVectors() {
-        List<Vectors.Vector> vectors = Vectors.of("adapter-registry");
+        // The vectors about resources and prompts are RegistryEntriesTest's.
+        List<Vectors.Vector> vectors = Vectors.of("adapter-registry").stream().filter(v -> !RegistryEntriesTest.aboutEntries(v.name())).toList();
         assertThat(vectors).hasSize(9);
         List<DynamicTest> tests = new ArrayList<>();
         for (Vectors.Vector vector : vectors) {
@@ -515,7 +516,7 @@ class RegistryAdapterTest extends GatewayTestBase {
 
     @TestFactory
     List<DynamicTest> theApprovalsOfTheVectors() {
-        List<Vectors.Vector> vectors = Vectors.of("registry-approval");
+        List<Vectors.Vector> vectors = Vectors.of("registry-approval").stream().filter(v -> !RegistryEntriesTest.aboutEntries(v.name())).toList();
         assertThat(vectors).hasSize(28);
         List<DynamicTest> tests = new ArrayList<>();
         for (Vectors.Vector vector : vectors) {

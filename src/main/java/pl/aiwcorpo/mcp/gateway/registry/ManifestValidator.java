@@ -29,6 +29,9 @@ public final class ManifestValidator {
     private static final Schema SCHEMA = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12)
             .getSchema(SchemaLocation.of("classpath:mcp-contracts/schemas/server-manifest.schema.json"));
 
+    private static final java.util.regex.Pattern SEMVER = java.util.regex.Pattern.compile(
+            "(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?");
+
     public static final String ENVIRONMENT_MISMATCH = "environment_mismatch";
     public static final String CREDENTIAL_TYPE_MISMATCH = "credential_type_mismatch";
     public static final String POLICIES_INVALID = "policies_invalid";
@@ -54,6 +57,11 @@ public final class ManifestValidator {
         List<Rejection> out = new ArrayList<>();
         if (!SCHEMA.validate(manifest).isEmpty()) {
             out.add(new Rejection(null, "schema"));
+            return out;
+        }
+        // The schema pattern ends in $, which Java lets match before a final newline; the column's CHECK does not, and the pull must fail here.
+        if (manifest.has("contractsVersion") && !SEMVER.matcher(manifest.path("contractsVersion").asString("")).matches()) {
+            out.add(new Rejection(null, "contractsVersion"));
             return out;
         }
         ManifestRules.violations(json.writeValueAsString(manifest)).forEach(rule -> out.add(new Rejection(reasonOf(rule), rule)));
