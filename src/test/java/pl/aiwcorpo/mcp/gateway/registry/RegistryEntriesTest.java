@@ -276,14 +276,14 @@ class RegistryEntriesTest extends GatewayTestBase {
         RegisteredEntry pending = entry(PrimitiveKind.PROMPT, "summarize_ticket");
         ObjectNode tampered = (ObjectNode) pending.pending().entry().deepCopy();
         ((ObjectNode) tampered.path("messages").get(0)).put("text", "Summarize." + (char) 0x202E);
+        String tamperedHash = rehashed(PrimitiveKind.PROMPT, tampered, SERVER, SYSTEM);
         store.locked(SERVER, tx -> {
             tx.saveEntry(new RegisteredEntry(PrimitiveKind.PROMPT, "summarize_ticket", null, new RegisteredEntry.Pending(tampered,
-                    pending.pending().hash(), "1.1.0", "new", "manifest")));
+                    tamperedHash, "1.1.0", "new", "manifest")));
             return null;
         });
 
-        Approval answer = service.approveEntry(requestId, SERVER, PrimitiveKind.PROMPT, "summarize_ticket", pending.pending().hash(), false,
-                admin());
+        Approval answer = service.approveEntry(requestId, SERVER, PrimitiveKind.PROMPT, "summarize_ticket", tamperedHash, false, admin());
 
         assertThat(answer).isInstanceOfSatisfying(Approval.Rejected.class, rejected -> assertThat(rejected.reason()).isNull());
         assertThat(auditEvents(output, requestId)).anyMatch(e -> "hidden_characters".equals(e.path("reason").asString())
@@ -299,6 +299,91 @@ class RegistryEntriesTest extends GatewayTestBase {
         });
 
         assertThat(jdbc.sql("SELECT count(*) FROM registry_primitives WHERE server_id = ?").param(SERVER).query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void aServerDeletedByAnOlderInstanceTakesItsEntriesAndSwitchesWithIt() {
+        ObjectNode manifest = withAll(manifest("1.1.0"));
+        pull(manifest);
+        String hash = entry(PrimitiveKind.PROMPT, "summarize_ticket").pending().hash();
+        service.approveEntry(requestId, SERVER, PrimitiveKind.PROMPT, "summarize_ticket", hash, false, admin());
+        jdbc.sql("INSERT INTO kill_switches_primitive (server_id, kind, name, set_by, reason) VALUES (?, 'prompt', 'summarize_ticket', 'a', 'r')")
+                .param(SERVER).update();
+
+        // What 2.1.x does when a server is removed: the tables it knows, the row of the server last.
+        for (String table : List.of("registry_tools", "kill_switches", "registry_policies", "registry_namespaces", "registry_servers", "servers")) {
+            jdbc.sql("DELETE FROM " + table + " WHERE server_id = ?").param(SERVER).update();
+        }
+
+        assertThat(jdbc.sql("SELECT count(*) FROM registry_primitives WHERE server_id = ?").param(SERVER).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM kill_switches_primitive WHERE server_id = ?").param(SERVER).query(Long.class).single()).isZero();
+        store.locked(SERVER, tx -> {
+            tx.saveConfig(config(SERVER, SYSTEM, false), true);
+            return null;
+        });
+        service = service(SERVER, SYSTEM, false);
+        pull(manifest);
+        for (PrimitiveKind kind : PrimitiveKind.values()) {
+            service.registered(SERVER).orElseThrow().entries(kind).values().forEach(e -> {
+                assertThat(e.approved()).as(e.name()).isNull();
+                assertThat(e.pending()).isNotNull();
+            });
+        }
+    }
+
+    @Test
+    void aContractsVersionWithATrailingNewlineIsRefusedByThePull() {
+        ObjectNode manifest = manifest("1.1.0");
+        manifest.put("contractsVersion", "8.0.0\n");
+
+        Result result = service.applyPulled(requestId, SERVER, manifest);
+
+        assertThat(result).isInstanceOf(Result.Rejected.class);
+        assertThat(store.findServer(SERVER)).isEmpty();
+    }
+
+    @Test
+    void approvingAPromptKeepsTheLastGoodReadingOfTheTools() {
+        DefinitionGuard guard = mock(DefinitionGuard.class);
+        ServerRegistry servers = new ServerRegistry();
+        servers.replaceConfigs(List.of(config(SERVER, SYSTEM, false)));
+        RegistryService watched = new RegistryService(servers, store, new ManifestValidator(JSON, false), fetcher, guard,
+                new DefinitionCheck(JSON), audit, "mcp-gateway", JSON, policies);
+        ObjectNode manifest = withAll(manifest("1.1.0"));
+        assertThat(watched.applyPulled(requestId, SERVER, manifest)).isInstanceOf(Result.Accepted.class);
+        org.mockito.Mockito.clearInvocations(guard);
+
+        watched.approveEntry(requestId, SERVER, PrimitiveKind.PROMPT, "summarize_ticket",
+                Manifests.entryHash(manifest, "prompts", "summarize_ticket"), false, admin());
+
+        org.mockito.Mockito.verify(guard, org.mockito.Mockito.never()).forget(SERVER);
+    }
+
+    @Test
+    void aStoredEntryWhoseHashIsNotItsOwnIsNotApproved() {
+        pull(withAll(manifest("1.1.0")));
+        RegisteredEntry pending = entry(PrimitiveKind.RESOURCE, "escalation_guide");
+        ObjectNode tampered = (ObjectNode) pending.pending().entry().deepCopy();
+        ((ObjectNode) tampered.path("definition")).put("description", "Another text under the old hash.");
+        store.locked(SERVER, tx -> {
+            tx.saveEntry(new RegisteredEntry(PrimitiveKind.RESOURCE, "escalation_guide", null, new RegisteredEntry.Pending(tampered,
+                    pending.pending().hash(), "1.1.0", "new", "manifest")));
+            return null;
+        });
+
+        assertThat(service.approveEntry(requestId, SERVER, PrimitiveKind.RESOURCE, "escalation_guide", pending.pending().hash(), false, admin()))
+                .isInstanceOf(Approval.HashMismatch.class);
+    }
+
+    /** The hash a tampered entry has, so that the test of the hidden character reaches that check and not the one of the hash. */
+    private String rehashed(PrimitiveKind kind, ObjectNode entry, String serverId, String system) {
+        String type = kind == PrimitiveKind.PROMPT ? "prompt" : kind == PrimitiveKind.RESOURCE_TEMPLATE ? "resourceTemplate" : "resource";
+        entry.remove("definitionHash");
+        JsonNode credential = store.findServer(serverId).orElseThrow().manifest().path("credential");
+        String hash = pl.aiwcorpo.mcp.manifest.DefinitionHash.computePrimitive(type, JSON.writeValueAsString(entry.path("definition")),
+                JSON.writeValueAsString(entry), system, JSON.writeValueAsString(credential));
+        entry.put("definitionHash", hash);
+        return hash;
     }
 
     // --- the vectors -------------------------------------------------------------------------------------------
@@ -361,16 +446,18 @@ class RegistryEntriesTest extends GatewayTestBase {
             RegisteredEntry pending = on.registered(serverId).orElseThrow().entries(kind).get(entryName);
             ObjectNode tampered = (ObjectNode) pending.pending().entry().deepCopy();
             ((ObjectNode) tampered.path("definition")).put("description", "Guide." + (char) 0x202E);
+            String tamperedHash = rehashed(kind, tampered, serverId, system);
             store.locked(serverId, tx -> {
-                tx.saveEntry(new RegisteredEntry(kind, entryName, null, new RegisteredEntry.Pending(tampered, pendingHash, "1.1.0", "new",
+                tx.saveEntry(new RegisteredEntry(kind, entryName, null, new RegisteredEntry.Pending(tampered, tamperedHash, "1.1.0", "new",
                         pending.pending().source())));
                 return null;
             });
+            pendingHash = tamperedHash;
         }
         String sent = input.path("entry").path("hashMatches").asBoolean() ? pendingHash
                 : "sha256:" + "0".repeat(64);
         JsonNode body = input.path("body");
-        boolean classification = body.has("risk") || body.has("action") || body.path("acceptRiskLowering").asBoolean(false);
+        boolean classification = body.has("risk") || body.has("action") || body.has("acceptRiskLowering");
 
         Approval answer = on.approveEntry(requestId, serverId, kind, entryName, sent, classification, admin());
 

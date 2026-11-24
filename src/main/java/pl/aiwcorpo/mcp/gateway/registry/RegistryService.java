@@ -515,6 +515,11 @@ public final class RegistryService {
             if (!pending.hash().equals(hash)) {
                 return new Approval.HashMismatch();
             }
+            if (!storedHashMatches(kind, pending, server.get().system(), tx.server().map(stored -> stored.manifest().path("credential")).orElse(null))) {
+                return new Approval.HashMismatch();
+            }
+            // The whole entry, not only the texts the contract lists: stricter on purpose, a forbidden character in an argument rule or a
+            // variable is as hidden from a reviewer as one in a description.
             if (DefinitionCheck.hidesText(pending.entry())) {
                 return new Approval.Rejected(null, name + " has a control, format or bidirectional character in its definition");
             }
@@ -538,6 +543,27 @@ public final class RegistryService {
             }
         }
         return result;
+    }
+
+    /**
+     * The hash the stored pending entry really has, recomputed per kind: a row that was changed in the database, or written by a build
+     * that hashed differently, must not be approved under the hash it claims.
+     */
+    private boolean storedHashMatches(PrimitiveKind kind, RegisteredEntry.Pending pending, String system, JsonNode credential) {
+        if (credential == null || credential.isMissingNode()) {
+            return false;
+        }
+        try {
+            String type = switch (kind) {
+                case RESOURCE -> "resource";
+                case RESOURCE_TEMPLATE -> "resourceTemplate";
+                case PROMPT -> "prompt";
+            };
+            return pl.aiwcorpo.mcp.manifest.DefinitionHash.computePrimitive(type, json.writeValueAsString(pending.entry().path("definition")),
+                    json.writeValueAsString(pending.entry()), system, json.writeValueAsString(credential)).equals(pending.hash());
+        } catch (RuntimeException e) {
+            return false;
+        }
     }
 
     /** An admin_change about an entry: the name goes to {@code prompt} or to {@code resourceTemplate}, which also names a static resource (CC-264). */
@@ -979,10 +1005,18 @@ public final class RegistryService {
         servers.apply(serverId, new ServerRegistry.Applied(state.version(), state.tools(), store.floors(serverId), rejections.isEmpty(),
                 policiesApproved));
         if (!state.equals(before)) {
-            guard.forget(serverId);
+            // A change of entries or contractsVersion alone (the manifest holds them too) leaves the tools as they were: the last good reading of their definitions stays.
+            if (before == null || !sameToolsAndPolicies(before, state)) {
+                guard.forget(serverId);
+            }
             onChange.run();
         }
         return state;
+    }
+
+    private static boolean sameToolsAndPolicies(RegisteredServer a, RegisteredServer b) {
+        return new RegisteredServer(a.serverId(), a.system(), a.version(), null, a.source(), a.tools(), a.policies(), Map.of(), null)
+                .equals(new RegisteredServer(b.serverId(), b.system(), b.version(), null, b.source(), b.tools(), b.policies(), Map.of(), null));
     }
 
     private void changed(String requestId, String serverId, RegistryPlanner.Change change) {

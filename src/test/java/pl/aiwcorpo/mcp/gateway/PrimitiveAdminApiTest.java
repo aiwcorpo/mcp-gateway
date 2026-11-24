@@ -138,7 +138,7 @@ class PrimitiveAdminApiTest extends GatewayTestBase {
 
         assertThat(asAdmin("POST", path, "{\"definitionHash\":\"sha256:" + "0".repeat(64) + "\"}").statusCode()).isEqualTo(409);
         String current = "\"definitionHash\":\"" + hash("prompts", "summarize_ticket") + "\"";
-        for (String extra : List.of("\"risk\":\"READ_ONLY\",\"action\":\"read\"", "\"acceptRiskLowering\":true", "\"risk\":\"READ_ONLY\"")) {
+        for (String extra : List.of("\"risk\":\"READ_ONLY\",\"action\":\"read\"", "\"acceptRiskLowering\":true", "\"acceptRiskLowering\":false", "\"risk\":\"READ_ONLY\"")) {
             HttpResponse<String> refused = asAdmin("POST", path, "{" + current + "," + extra + "}");
             assertThat(refused.statusCode()).as(refused.body()).isEqualTo(422);
             JsonNode error = JSON.readTree(refused.body());

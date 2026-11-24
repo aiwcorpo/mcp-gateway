@@ -365,7 +365,7 @@ public class RegistryController {
                     && (!body.has("risk") || RISKS.contains(body.path("risk").asString("")))
                     && (!body.has("action") || ACTIONS.contains(body.path("action").asString("")));
             hash = shape ? body.path("definitionHash").asString(null) : null;
-            classificationSent = shape && (body.has("risk") || body.has("action") || body.path("acceptRiskLowering").asBoolean(false));
+            classificationSent = shape && (body.has("risk") || body.has("action") || body.has("acceptRiskLowering"));
         } catch (JacksonException e) {
             hash = null;
         }

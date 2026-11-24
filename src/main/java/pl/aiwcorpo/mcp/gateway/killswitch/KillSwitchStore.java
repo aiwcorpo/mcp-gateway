@@ -52,7 +52,8 @@ public class KillSwitchStore {
                         rs.getString("reason"), "resource".equals(rs.getString("kind")) ? rs.getString("name") : null,
                         "prompt".equals(rs.getString("kind")) ? rs.getString("name") : null))
                 .list());
-        all.sort(java.util.Comparator.comparing(Entry::setAt));
+        all.sort(java.util.Comparator.comparing(Entry::setAt).thenComparing(Entry::serverId)
+                .thenComparing(e -> e.tool() != null ? e.tool() : e.resource() != null ? e.resource() : e.prompt() != null ? e.prompt() : ""));
         return all;
     }
 
