@@ -39,6 +39,11 @@ public final class AuditEvent {
         return this;
     }
 
+    /** The owner of the agent an admin_change of the management of agents concerns (CC-264). */
+    public AuditEvent agentOwner(String ownerSub) {
+        return put("agentOwner", ownerSub);
+    }
+
     /** The actor of an administrative call: the sub and the name, not the client of the BFF token. */
     public AuditEvent userWithoutClient(GatewayUser user) {
         put("sub", user.sub());

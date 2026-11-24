@@ -38,6 +38,10 @@ import pl.aiwcorpo.mcp.gateway.stream.ToolStreams;
 import pl.aiwcorpo.mcp.gateway.stream.UserToolLists;
 import pl.aiwcorpo.mcp.gateway.registry.ChangeWatcher;
 import pl.aiwcorpo.mcp.gateway.registry.DefinitionCheck;
+import pl.aiwcorpo.mcp.gateway.agent.AgentAdmin;
+import pl.aiwcorpo.mcp.gateway.agent.AgentRegistry;
+import pl.aiwcorpo.mcp.gateway.agent.AgentStore;
+import pl.aiwcorpo.mcp.gateway.admin.AgentClientController;
 import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitchHealth;
 import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitchStore;
 import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitches;
@@ -263,9 +267,34 @@ public class GatewayConfiguration {
     @Bean
     KillSwitchController killSwitchController(KillSwitchStore store, KillSwitches killSwitches, ServerRegistry servers,
                                               RegistryService registryService, AuditLog audit, GatewayProperties properties,
-                                              JsonMapper gatewayJson, FreshMfa mfa) {
+                                              JsonMapper gatewayJson, FreshMfa mfa, AgentRegistry agentRegistry) {
         return new KillSwitchController(store, killSwitches, servers, registryService, audit, properties.componentId(), gatewayJson,
-                killSwitches::refresh, mfa);
+                killSwitches::refresh, mfa, agentRegistry);
+    }
+
+    @Bean
+    AgentStore agentStore(JdbcClient jdbc, JsonMapper gatewayJson) {
+        return new AgentStore(jdbc, gatewayJson);
+    }
+
+    /** Agents are suspended within the 5 s of every emergency switch (CC-266), so the copy lives as long as the one of the switches. */
+    @Bean
+    AgentRegistry agentRegistry(AgentStore store, GatewayProperties properties, MeterRegistry meters) {
+        return new AgentRegistry(store::all, properties.mcp().killSwitchCacheTtl(), System::nanoTime, meters);
+    }
+
+    @Bean
+    AgentAdmin agentAdmin(AgentStore store, RegistryStore registryStore, AuditLog audit, GatewayProperties properties, JsonMapper gatewayJson,
+                          Clock clock, AgentRegistry agentRegistry, PolicyService policies) {
+        return new AgentAdmin(store, registryStore, audit, properties.componentId(), gatewayJson, clock, () -> {
+            agentRegistry.refresh();
+            policies.reload();
+        });
+    }
+
+    @Bean
+    AgentClientController agentClientController(AgentAdmin agents, JsonMapper gatewayJson, FreshMfa mfa) {
+        return new AgentClientController(agents, gatewayJson, mfa);
     }
 
     @Bean
@@ -297,8 +326,9 @@ public class GatewayConfiguration {
 
     @Bean
     ChangeWatcher changeWatcher(ChangeCounter counter, RegistryService registry, KillSwitches killSwitches, PolicyService policies,
-                                GatewayProperties properties) {
-        return new ChangeWatcher(counter, registry, killSwitches, policies, properties.mcp().changePollInterval(), java.util.List.of());
+                                AgentRegistry agentRegistry, GatewayProperties properties) {
+        return new ChangeWatcher(counter, registry, killSwitches, policies, agentRegistry, properties.mcp().changePollInterval(),
+                java.util.List.of());
     }
 
     /** Created before anything that uses a relaxed setting: the start is refused here, not after a bundle was pulled over http. */
@@ -626,9 +656,9 @@ public class GatewayConfiguration {
     pl.aiwcorpo.mcp.gateway.offboarding.UserPurge userPurge(ConfirmationService confirmations,
                                                             ClientSessionStore sessions, UpstreamSessions upstream,
                                                             CredentialCache credentials, AuditLog audit, GatewayProperties properties,
-                                                            ToolStreams streams) {
+                                                            ToolStreams streams, AgentAdmin agentAdmin) {
         return new pl.aiwcorpo.mcp.gateway.offboarding.UserPurge(confirmations, sessions, upstream, credentials, audit,
-                properties.componentId(), streams);
+                properties.componentId(), streams, agentAdmin);
     }
 
     @Bean

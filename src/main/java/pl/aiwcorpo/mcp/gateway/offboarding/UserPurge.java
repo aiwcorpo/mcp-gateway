@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 
+import pl.aiwcorpo.mcp.gateway.agent.AgentAdmin;
 import pl.aiwcorpo.mcp.gateway.audit.AuditEvent;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
 import pl.aiwcorpo.mcp.gateway.broker.CredentialCache;
@@ -16,7 +17,7 @@ import pl.aiwcorpo.mcp.gateway.upstream.UpstreamSessions;
 /**
  * Removes what the gateway keeps about a user who left (C5 purgeUser, CC-155): the pending confirmations and their
  * traces, the MCP sessions of the client and the credentials in the cache. The activity records stay until their retention ends
- * (CC-134). Idempotent: nothing to remove is no failure. The sub is not blocked afterwards; a token issued before keeps working
+ * (CC-134), and the agents the user owns are suspended (CC-266). Idempotent: nothing to remove is no failure. The sub is not blocked afterwards; a token issued before keeps working
  * until it expires (at most 60 minutes), a window the decision of 2026-10-29 accepts.
  */
 public final class UserPurge {
@@ -30,9 +31,11 @@ public final class UserPurge {
     private final AuditLog audit;
     private final String componentId;
     private final ToolStreams streams;
+    private final AgentAdmin agents;
 
     public UserPurge(ConfirmationService confirmations, ClientSessionStore sessions, UpstreamSessions upstream,
-                     CredentialCache credentials, AuditLog audit, String componentId, ToolStreams streams) {
+                     CredentialCache credentials, AuditLog audit, String componentId, ToolStreams streams, AgentAdmin agents) {
+        this.agents = agents;
         this.confirmations = confirmations;
         this.sessions = sessions;
         this.upstream = upstream;
@@ -54,6 +57,12 @@ public final class UserPurge {
         } catch (ConfirmationStore.StoreUnavailableException | DataAccessException e) {
             complete = false;
             log.error("purge rid={}: Redis state could not be removed: {}", requestId, e.getClass().getName());
+        }
+        try {
+            agents.suspendAgentsOf(requestId, sub);
+        } catch (DataAccessException e) {
+            complete = false;
+            log.error("purge rid={}: the agents of the owner could not be suspended: {}", requestId, e.getClass().getName());
         }
         credentials.invalidateUser(sub);
         upstream.forgetUser(sub);

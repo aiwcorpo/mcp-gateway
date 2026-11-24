@@ -41,7 +41,7 @@ class KillSwitchVectorsTest {
 
     /**
      * The vectors of 8.0.0 by kind: the switches of a tool and a server have no kind (18); {@code agent-switch} (5) is the suspension of an
-     * agent (CC-266), for the slice with the agent registry; {@code primitive-switch} (21) is the switch of a resource or a prompt (CC-265).
+     * agent (CC-266), who may put and lift it, run against the database in {@code AgentClientApiTest}; {@code primitive-switch} (21) is the switch of a resource or a prompt (CC-265).
      * Of those, {@code list} runs here (what a switch hides) and {@code lift} in KillSwitchApiTest (the database); {@code read} is the
      * refusal of resources/read and prompts/get on /mcp (-32602, order of the checks), which comes with the dispatch of those methods.
      */
