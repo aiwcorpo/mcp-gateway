@@ -129,7 +129,8 @@ public final class AgentAdmin {
         AgentClient agent = new AgentClient(clientId, serviceAccountSub, ownerSub, maxRisk.get(), groups.get(),
                 body.path("delegationAllowed").asBoolean(false), administrator.sub(), clock.instant().truncatedTo(ChronoUnit.MILLIS), null, null);
         Outcome<Item> result = store.policyLocked(tx -> {
-            if (agents.find(clientId).isPresent()) {
+            // One service account is one agent: a second entry for it would make a token ambiguous. The contract has the one 409 for both.
+            if (agents.find(clientId).isPresent() || agents.serviceAccountTaken(serviceAccountSub)) {
                 return Outcome.of(Outcome.Status.EXISTS);
             }
             agents.insert(agent);

@@ -61,6 +61,16 @@ public final class AgentCeilingAuthorizer implements ToolAuthorizer {
         return delegate.policyRevision();
     }
 
+    /**
+     * Whether an agent may make this call at all before the principal type is emitted. Until the emission slice (CC-260 step 5) the broker
+     * is asked for a credential as for a person, without {@code pty}, so its rule for agents (CC-261: only a service account of a system
+     * with {@code agentsAllowed}) cannot apply; an agent therefore gets no tool that needs a credential, and none that needs a confirmation
+     * (it has no authenticator). Lift the credential half when the gateway sends {@code pty} to the broker. Not an agent: always eligible.
+     */
+    public static boolean eligible(GatewayUser user, McpServer server, ToolDefinition tool) {
+        return !user.isAgent() || !(tool.requiresConfirmation() || server.credential().required());
+    }
+
     /** The refusal the registry gives for this agent and tool, or null when Cedar decides. */
     private ToolDecision refusal(GatewayUser user, ToolDefinition tool) {
         return switch (agents.find(user.agent().clientId())) {

@@ -54,8 +54,8 @@ integration builds tag the image `m6-<short sha>`.
   asked: an agent has no authenticator to confirm with. Cedar gets the context `principalType` for every request (`user` for a person, `agent`
   for an agent) and the platform policy `agent-no-destructive` is in force.
 - Rate limit of an agent: `MCP_RATE_LIMIT_PER_AGENT` (default 120 per window) and `MCP_RATE_LIMIT_PER_AGENT_TOOL` (default 30) replace the
-  limits per user and per client for an agent; the answer is the same `429 rate_limited`, the audit reason is `rate_limited_agent` (and
-  `rate_limited_tool` for the tool).
+  limits per user and per client for an agent; the answer is the same `429 rate_limited`, the audit reason is `rate_limited_agent` (also
+  for the tool of an agent, which keeps the limits set for that tool in `gateway.rate-limit.tools` and for DESTRUCTIVE tools when they are lower).
 - Audit: events of an agent carry `principalType: agent` and `agentOwner`; the management of agents is `admin_change` with the reasons
   `agent_registered`, `agent_updated`, `agent_key_rotated`, `agent_deleted`, `agent_kill_switch_set`, `agent_kill_switch_cleared` and
   `agent_owner_purged`, with `client` set to the agent. The text of a suspension is not in the event. A receiver that validates events
@@ -65,6 +65,11 @@ integration builds tag the image `m6-<short sha>`.
   account, preferably authenticated with `private_key_jwt`; the audience `mcp-gateway`; a mapper that adds the claim `principal_type` with
   the value `agent`; an access token lifespan of at most 300 s; the service account in the groups the agent needs. Then register the client
   here with the `sub` of its service account (not its `preferred_username`).
+- Until the principal type is emitted, an agent gets no tool that needs a credential from the broker: such a `tools/call` is `access_denied`
+  with the reason `principal_not_eligible`, before the broker is asked (the broker would take the agent for a person, so its rule for
+  agents cannot apply yet). Tools of a server that needs no credential still work. Never add the `azp` of an agent to
+  `MCP_ALLOWED_CLIENTS`: the registry is the only list for agents, and an agent that also appeared there would be a person's client for the
+  servers. One service account belongs to one agent (a second entry for it is `409 agent_exists`).
 - Not done yet, by design: the gateway sends no `pty`, `act` or `resource` claim to servers or to the broker, and does not push
   `allowedAgentClients` to servers. A server that follows 8.0.0 accepts an `azp` without `pty` only from `allowedClients`, so its answer to a
   call from an agent is a refusal until the release that emits. Register no agent before that release.

@@ -286,8 +286,8 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    PrincipalClassifier principalClassifier(AgentRegistry agentRegistry) {
-        return new PrincipalClassifier(agentRegistry);
+    PrincipalClassifier principalClassifier(AgentRegistry agentRegistry, Clock clock) {
+        return new PrincipalClassifier(agentRegistry, clock, java.time.Duration.ofSeconds(60));
     }
 
     @Bean

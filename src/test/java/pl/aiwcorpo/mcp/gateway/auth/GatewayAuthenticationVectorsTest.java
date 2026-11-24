@@ -127,6 +127,27 @@ class GatewayAuthenticationVectorsTest {
         }
     }
 
+    @org.junit.jupiter.api.Test
+    void anAgentTokenThatEndsLaterThanItsLifetimeFromNowIsRefusedWhateverItsIat() {
+        Instant now = Instant.parse("2026-11-24T12:00:00Z");
+        AgentClient entry = new AgentClient("agent-reports", "sa-1", "owner-1", Risk.READ_ONLY, List.of(), false, "admin-1", Instant.EPOCH, null, null);
+        AgentRegistry registry = new AgentRegistry(() -> List.of(entry), java.time.Duration.ofSeconds(5), System::nanoTime, new SimpleMeterRegistry());
+        PrincipalClassifier classifier = new PrincipalClassifier(registry, java.time.Clock.fixed(now, java.time.ZoneOffset.UTC), java.time.Duration.ofSeconds(60));
+
+        assertThat(classifier.classify("agent-reports", "sa-1", true, now.plusSeconds(1000), now.plusSeconds(1300)))
+                .as("an iat in the future makes exp - iat 300 s, but the token would live 1300 s").isInstanceOf(PrincipalClassifier.Classification.Refused.class);
+        assertThat(classifier.classify("agent-reports", "sa-1", true, now.plusSeconds(60), now.plusSeconds(360))).isInstanceOf(PrincipalClassifier.Classification.Agent.class);
+        assertThat(classifier.classify("agent-reports", "sa-1", true, now.minusSeconds(100), now.plusSeconds(200))).isInstanceOf(PrincipalClassifier.Classification.Agent.class);
+    }
+
+    @org.junit.jupiter.api.Test
+    void theCeilingNeverLetsAForbiddenGroupThroughEvenIfItWasStored() {
+        AgentClient entry = new AgentClient("agent-reports", "sa-1", "owner-1", Risk.READ_ONLY,
+                List.of("mcp-jira-read", "mcp-jira-destructive", "mcp-platform-admin"), false, "admin-1", Instant.EPOCH, null, null);
+
+        assertThat(entry.narrow(List.of("mcp-platform-admin", "mcp-jira-destructive", "mcp-jira-read", "mcp-other"))).containsExactly("mcp-jira-read");
+    }
+
     private static final McpServer SERVER = new McpServer("mcp-jira", "jira", URI.create("https://mcp-jira.internal:8443/mcp"), "1.0.0", true,
             new CredentialPolicy(true, Set.of("user-secret"), List.of(), false, "user-secret"), Map.of());
 

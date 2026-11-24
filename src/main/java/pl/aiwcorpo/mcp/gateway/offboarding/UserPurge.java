@@ -58,16 +58,18 @@ public final class UserPurge {
             complete = false;
             log.error("purge rid={}: Redis state could not be removed: {}", requestId, e.getClass().getName());
         }
-        try {
-            agents.suspendAgentsOf(requestId, sub);
-        } catch (DataAccessException e) {
-            complete = false;
-            log.error("purge rid={}: the agents of the owner could not be suspended: {}", requestId, e.getClass().getName());
-        }
         credentials.invalidateUser(sub);
         upstream.forgetUser(sub);
         // The streams of this instance end; those on other instances end with their session (the next heartbeat) or with their token.
         streams.closeUser(sub);
+        // Last, and for any failure of the database (a transaction that cannot start is no DataAccessException): the local cleanup and the
+        // summary event of CC-155 must happen whatever the registry does. The caller repeats the purge when it is told it was incomplete.
+        try {
+            agents.suspendAgentsOf(requestId, sub);
+        } catch (RuntimeException e) {
+            complete = false;
+            log.error("purge rid={}: the agents of the owner could not be suspended: {}", requestId, e.getClass().getName());
+        }
         AuditEvent summary = AuditEvent.of("admin_change", requestId, componentId).sub(sub).reason("user_purged");
         audit.emit(complete ? summary.outcome("ok") : summary.outcome("error", "upstream_unavailable"));
         return complete;

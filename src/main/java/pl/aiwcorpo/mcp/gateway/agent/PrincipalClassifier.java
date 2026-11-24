@@ -1,5 +1,6 @@
 package pl.aiwcorpo.mcp.gateway.agent;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 
@@ -34,10 +35,21 @@ public final class PrincipalClassifier {
         }
     }
 
+    private static final Duration DEFAULT_SKEW = Duration.ofSeconds(60);
+
     private final AgentRegistry registry;
+    private final Clock clock;
+    private final Duration skew;
 
     public PrincipalClassifier(AgentRegistry registry) {
+        this(registry, Clock.systemUTC(), DEFAULT_SKEW);
+    }
+
+    /** @param skew the clock skew the token validation allows; an agent token may not end later than the lifetime plus this from now */
+    public PrincipalClassifier(AgentRegistry registry, Clock clock, Duration skew) {
         this.registry = registry;
+        this.clock = clock;
+        this.skew = skew;
     }
 
     public Classification classify(String azp, String sub, boolean marked, Instant issuedAt, Instant expiresAt) {
@@ -53,7 +65,9 @@ public final class PrincipalClassifier {
                 if (!marked || !entry.serviceAccountSub().equals(sub)) {
                     return new Classification.Refused("agent_not_registered");
                 }
-                if (Duration.between(issuedAt, expiresAt).compareTo(MAX_AGENT_TOKEN_LIFETIME) > 0) {
+                // iat is the token's own claim, so the end is also bounded from the clock of the gateway: an iat in the past cannot stretch it.
+                if (Duration.between(issuedAt, expiresAt).compareTo(MAX_AGENT_TOKEN_LIFETIME) > 0
+                        || Duration.between(clock.instant(), expiresAt).compareTo(MAX_AGENT_TOKEN_LIFETIME.plus(skew)) > 0) {
                     return new Classification.Refused("agent_token_lifetime");
                 }
                 return new Classification.Agent(entry);

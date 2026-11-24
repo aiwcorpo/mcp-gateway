@@ -6,7 +6,7 @@
 -- allowed_groups is the ceiling of the groups of the token: -destructive groups and mcp-platform-admin are refused by the API, not stored.
 CREATE TABLE agent_clients (
     client_id           text        PRIMARY KEY CHECK (client_id ~ '^agent-[a-z][a-z0-9]*(-[a-z0-9]+)*$' AND char_length(client_id) <= 64),
-    service_account_sub text        NOT NULL CHECK (char_length(service_account_sub) BETWEEN 1 AND 255 AND service_account_sub !~ '^system:'),
+    service_account_sub text        NOT NULL UNIQUE CHECK (char_length(service_account_sub) BETWEEN 1 AND 255 AND service_account_sub !~ '^system:'),
     owner_sub           text        NOT NULL CHECK (char_length(owner_sub) BETWEEN 1 AND 255),
     max_risk            text        NOT NULL DEFAULT 'READ_ONLY' CHECK (max_risk IN ('READ_ONLY', 'UPDATE')),
     allowed_groups      jsonb       NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(allowed_groups) = 'array' AND jsonb_array_length(allowed_groups) <= 100),

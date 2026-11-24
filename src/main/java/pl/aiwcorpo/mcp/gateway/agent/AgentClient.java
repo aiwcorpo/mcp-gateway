@@ -36,6 +36,6 @@ public record AgentClient(String clientId, String serviceAccountSub, String owne
 
     /** The groups of the token that the ceiling lets through, in the order of the token. */
     public List<String> narrow(List<String> tokenGroups) {
-        return tokenGroups.stream().filter(allowedGroups::contains).toList();
+        return tokenGroups.stream().filter(allowedGroups::contains).filter(group -> !groupNotAllowed(group)).toList();
     }
 }

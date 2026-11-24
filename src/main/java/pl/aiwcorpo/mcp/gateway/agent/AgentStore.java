@@ -47,6 +47,10 @@ public class AgentStore {
         return jdbc.sql("SELECT " + COLUMNS + " FROM agent_clients WHERE client_id = ? FOR UPDATE").param(clientId).query(this::row).optional();
     }
 
+    public boolean serviceAccountTaken(String serviceAccountSub) {
+        return jdbc.sql("SELECT count(*) FROM agent_clients WHERE service_account_sub = ?").param(serviceAccountSub).query(Long.class).single() > 0;
+    }
+
     public void insert(AgentClient agent) {
         jdbc.sql("INSERT INTO agent_clients (client_id, service_account_sub, owner_sub, max_risk, allowed_groups, delegation_allowed, "
                         + "created_by, created_at) VALUES (?, ?, ?, ?, ?::jsonb, ?, ?, ?)")

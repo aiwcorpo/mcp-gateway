@@ -563,8 +563,8 @@ public class McpGatewayService {
                 () -> server.enabled() && !tool.disabled(),
                 () -> readDefinitions(ctx, server, tool, state),
                 () -> state.definition == null || state.definition == Verdict.INTACT,
-                // An agent has no authenticator to confirm with, and the confirmation is what UPDATE and DESTRUCTIVE tools need (CC-261).
-                () -> !(ctx.user().isAgent() && tool.requiresConfirmation()),
+                // An agent has no authenticator to confirm with (CC-261), and until pty is emitted it must not reach the broker at all.
+                () -> AgentCeilingAuthorizer.eligible(ctx.user(), server, tool),
                 () -> resolveCredential(ctx, server, tool, state));
         if (!verdict.passes()) {
             return refuse(ctx, server, tool, verdict, state, started, argsLength);
@@ -740,7 +740,7 @@ public class McpGatewayService {
         ObjectNode error = switch (verdict.errorCode()) {
             case "tool_disabled" -> errors.error("tool_disabled", "This tool is not available.");
             case "upstream_unavailable" -> errors.error("upstream_unavailable", "The MCP server is unavailable. Try again later.");
-            case "access_denied" -> errors.error("access_denied", "This agent cannot confirm an operation that changes data.");
+            case "access_denied" -> errors.error("access_denied", "This agent may not call this tool.");
             default -> errors.error("not_found_or_denied", ToolErrors.NOT_FOUND_OR_DENIED_MESSAGE);
         };
         decisionEvent(ctx, server, tool, "deny", reason, verdict.errorCode());

@@ -256,7 +256,8 @@ class RateLimitTest extends GatewayTestBase {
             assertThat(getIssue(token).path("error").asString("")).isNotEqualTo("rate_limited");
             JsonNode perTool = getIssue(token);
             assertThat(perTool.path("error").asString()).as("the third call of the same tool").isEqualTo("rate_limited");
-            assertThat(events(output, sub, "rate_limited_tool")).isNotEmpty();
+            assertThat(events(output, sub, "rate_limited_agent")).as("the tool of an agent is its own dimension").isNotEmpty();
+            assertThat(events(output, sub, "rate_limited_tool")).isEmpty();
 
             assertThat(ping(token).statusCode()).isEqualTo(200);
             HttpResponse<String> limited = ping(token);

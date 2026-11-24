@@ -47,12 +47,11 @@ public class PolicyDataStore {
      * restored from an older copy still hands out revisions that every server takes as new. The caller holds the row lock.
      */
     public long raiseRevision() {
-        long next = nextRevision(jdbc.sql("SELECT revision FROM policy_state WHERE id = 1").query(Long.class).single(), System.currentTimeMillis());
-        jdbc.sql("UPDATE policy_state SET revision = ? WHERE id = 1").param(next).update();
-        return next;
+        return jdbc.sql("UPDATE policy_state SET revision = GREATEST(revision + 1, ?) WHERE id = 1 RETURNING revision")
+                .param(System.currentTimeMillis()).query(Long.class).single();
     }
 
-    /** The larger of the next revision and the clock: a previous revision at or above the clock still rises by one. */
+    /** The rule of {@link #raiseRevision} (done atomically in SQL), pinned by the vectors: a previous revision at or above the clock still rises by one. */
     public static long nextRevision(long previous, long nowMillis) {
         return Math.max(previous + 1, nowMillis);
     }

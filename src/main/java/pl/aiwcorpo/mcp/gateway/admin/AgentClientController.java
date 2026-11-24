@@ -50,6 +50,8 @@ public class AgentClientController {
     private static final Logger log = LoggerFactory.getLogger(AgentClientController.class);
     private static final int MAX_BODY = 16 * 1024;
     private static final int RETRY_AFTER_SECONDS = 10;
+    /** maxItems of the list in the contract. */
+    private static final int MAX_LISTED = 1000;
 
     private final AgentAdmin agents;
     private final FreshMfa mfa;
@@ -76,7 +78,7 @@ public class AgentClientController {
         }
         List<AgentClient> found = mine ? agents.ownedBy(GatewayUser.from(token).sub()) : agents.list();
         ArrayNode body = json.createArrayNode();
-        found.forEach(agent -> body.add(agents.view(agent)));
+        found.stream().limit(MAX_LISTED).forEach(agent -> body.add(agents.view(agent)));
         return responses.ok(requestId, body);
     }
 

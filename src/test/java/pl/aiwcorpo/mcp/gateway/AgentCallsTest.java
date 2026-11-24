@@ -6,6 +6,8 @@ import java.net.http.HttpResponse;
 import java.time.Instant;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
@@ -19,15 +21,20 @@ import com.nimbusds.jwt.JWTClaimsSet;
 import pl.aiwcorpo.mcp.gateway.agent.AgentClient;
 import pl.aiwcorpo.mcp.gateway.agent.AgentRegistry;
 import pl.aiwcorpo.mcp.gateway.agent.AgentStore;
+import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
+import pl.aiwcorpo.mcp.gateway.authz.AgentCeilingAuthorizer;
 import pl.aiwcorpo.mcp.gateway.registry.DefinitionGuard;
+import pl.aiwcorpo.mcp.gateway.server.CredentialPolicy;
+import pl.aiwcorpo.mcp.gateway.server.McpServer;
+import pl.aiwcorpo.mcp.gateway.server.ToolDefinition;
 import pl.aiwcorpo.mcp.gateway.server.Risk;
 import pl.aiwcorpo.mcp.gateway.support.Contracts;
 import tools.jackson.databind.JsonNode;
 
 /**
  * An autonomous agent through the real gateway (CC-266, CC-261, CC-263): recognised from the registry, its groups cut to the ceiling, the
- * ceiling of risk in the list and at the call, the refusal of a suspended agent and of an UPDATE that it cannot confirm. Nothing about an
- * agent is sent to a server or to the broker yet: the claims of the token for the server are those of a human.
+ * ceiling of risk in the list and at the call, the refusal of a suspended agent and of a call that needs a confirmation or a credential
+ * (until the principal type is emitted). Nothing about an agent is sent to a server or to the broker yet.
  */
 class AgentCallsTest extends GatewayTestBase {
 
@@ -152,28 +159,39 @@ class AgentCallsTest extends GatewayTestBase {
     }
 
     @Test
-    void aReadOnlyCallGoesThroughWithTheGroupsOfTheCeilingAndNothingThatNamesAnAgent(CapturedOutput output) throws Exception {
+    void aToolThatNeedsACredentialIsRefusedToAnAgentBeforeTheBrokerUntilThePrincipalTypeIsEmitted(CapturedOutput output) throws Exception {
+        env.broker.clear();
         env.jira.clearRequests();
 
-        HttpResponse<String> response = sendModern(agentToken(), "/mcp", "tools/call", "jira__get_issue",
-                "{\"name\":\"jira__get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}");
+        JsonNode answer = toolError(sendModern(agentToken(), "/mcp", "tools/call", "jira__get_issue",
+                "{\"name\":\"jira__get_issue\",\"arguments\":{\"issueKey\":\"ABC-1\"}}"));
 
-        assertThat(response.statusCode()).isEqualTo(200);
-        assertThat(toolError(response)).as(response.body()).isEmpty();
-        JsonNode claims = claims(lastToolCall(env.jira).header("authorization"));
-        assertThat(claims.path("sub").asString()).isEqualTo(SERVICE_ACCOUNT);
-        assertThat(claims.path("azp").asString()).isEqualTo(CLIENT);
-        assertThat(claims.path("grp").valueStream().map(JsonNode::asString).toList()).as("grp is cut to the ceiling before C2 is built")
-                .containsExactlyInAnyOrderElementsOf(CEILING);
-        assertThat(claims.has("pty")).as("emission of the principal type is off").isFalse();
-        assertThat(claims.has("act")).isFalse();
-        assertThat(claims.has("resource")).isFalse();
-        JsonNode event = output.getOut().lines().filter(l -> l.startsWith("{") && l.contains("\"component\":\"gateway\"") && l.contains("\"event\":\"tool_call\"") && l.contains(CLIENT)
-                && l.contains("\"outcome\":\"ok\""))
-                .map(l -> JSON.readTree(l)).findFirst().orElseThrow();
-        assertThat(event.path("decision").asString()).isEqualTo("allow");
-        assertThat(event.path("principalType").asString()).isEqualTo("agent");
-        assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", event)).isEmpty();
+        assertThat(answer.path("error").asString()).isEqualTo("access_denied");
+        assertThat(env.broker.received()).as("the broker would take the agent for a person: no pty is sent yet").isEmpty();
+        assertThat(env.jira.requests()).noneMatch(r -> "tools/call".equals(r.rpcMethod()));
+        List<JsonNode> refusals = events(output, "principal_not_eligible");
+        assertThat(refusals).isNotEmpty().allSatisfy(e -> {
+            assertThat(e.path("principalType").asString()).isEqualTo("agent");
+            assertThat(e.path("agentOwner").asString()).isEqualTo(OWNER);
+            assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", e)).isEmpty();
+        });
+    }
+
+    @Test
+    void aToolWithoutACredentialIsStillOpenToAnAgentAndAPersonIsNeverAffected() {
+        McpServer open = new McpServer("mcp-open", "open", java.net.URI.create("https://mcp-open.internal:8443/mcp"), "1.0.0", true,
+                new CredentialPolicy(false, Set.of(), List.of(), false, null), Map.of());
+        McpServer needs = new McpServer("mcp-needs", "needs", java.net.URI.create("https://mcp-needs.internal:8443/mcp"), "1.0.0", true,
+                new CredentialPolicy(true, Set.of("user-secret"), List.of(), false, "user-secret"), Map.of());
+        ToolDefinition read = new ToolDefinition("get_thing", Risk.READ_ONLY, "read", null, "x", false, List.of());
+        ToolDefinition update = new ToolDefinition("set_thing", Risk.UPDATE, "update", null, "x", false, List.of());
+        GatewayUser agent = new GatewayUser("sa", "svc", CLIENT, List.of(), "t", new GatewayUser.Agent(CLIENT, OWNER));
+        GatewayUser person = new GatewayUser("p", "alice", "claude-code", List.of(), "t");
+
+        assertThat(AgentCeilingAuthorizer.eligible(agent, open, read)).isTrue();
+        assertThat(AgentCeilingAuthorizer.eligible(agent, needs, read)).isFalse();
+        assertThat(AgentCeilingAuthorizer.eligible(agent, open, update)).as("no authenticator to confirm with").isFalse();
+        assertThat(AgentCeilingAuthorizer.eligible(person, needs, update)).isTrue();
     }
 
     @Test

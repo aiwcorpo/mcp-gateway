@@ -120,8 +120,9 @@ public final class RateLimiter {
             }
         }
         if (qualifiedTool != null) {
-            add(dimensions, keys, arguments, Dimension.TOOL, "t:" + KeyHash.of(sub + "\n" + qualifiedTool),
-                    agent ? config.perAgentTool() : toolLimit(config, qualifiedTool, risk));
+            // The tool of an agent is a dimension of the agent (rate_limited_agent, CC-266); it keeps the limits an operator set for the tool.
+            add(dimensions, keys, arguments, agent ? Dimension.AGENT : Dimension.TOOL, "t:" + KeyHash.of(sub + "\n" + qualifiedTool),
+                    agent ? Math.min(config.perAgentTool(), toolLimit(config, qualifiedTool, risk)) : toolLimit(config, qualifiedTool, risk));
         }
         try {
             List<?> answer = redis.execute(CHECK_AND_COUNT, keys, arguments.toArray());
