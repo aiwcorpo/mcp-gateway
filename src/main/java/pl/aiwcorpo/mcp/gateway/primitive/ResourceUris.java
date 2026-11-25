@@ -38,7 +38,7 @@ public final class ResourceUris {
     public record Variable(String name, Pattern pattern, int maxLength) {
 
         public static Variable of(String name, String idPattern, int maxLength) {
-            return new Variable(name, Pattern.compile(idPattern), maxLength);
+            return new Variable(name, BoundedMatch.compile(idPattern), maxLength);
         }
     }
 
@@ -138,7 +138,7 @@ public final class ResourceUris {
                 return Match.no(Mismatch.VARIABLE);
             }
             String text = value.get();
-            if (text.length() > declared.maxLength() || !declared.pattern().matcher(text).matches() || TextHygiene.containsForbiddenInIdentifier(text)) {
+            if (text.length() > declared.maxLength() || !BoundedMatch.matches(declared.pattern(), text) || TextHygiene.containsForbiddenInIdentifier(text)) {
                 return Match.no(Mismatch.VARIABLE);
             }
             decoded.put(name, text);

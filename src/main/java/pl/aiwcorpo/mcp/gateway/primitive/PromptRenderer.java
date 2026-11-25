@@ -106,12 +106,12 @@ public final class PromptRenderer {
         if (text.indexOf('<') >= 0 || text.indexOf('>') >= 0 || text.indexOf('{') >= 0 || text.indexOf('}') >= 0) {
             return "forbidden_character";
         }
-        if (!Pattern.compile(rule.path("pattern").asString()).matcher(text).matches()) {
+        if (!BoundedMatch.matches(rule.path("pattern").asString(), text)) {
             return "pattern";
         }
         if (rule.path("type").isString()) {
             Optional<String> idPattern = typePattern.apply(rule.path("type").asString());
-            if (idPattern.isEmpty() || !Pattern.compile(idPattern.get()).matcher(text).matches()) {
+            if (idPattern.isEmpty() || !BoundedMatch.matches(idPattern.get(), text)) {
                 return "type";
             }
         }

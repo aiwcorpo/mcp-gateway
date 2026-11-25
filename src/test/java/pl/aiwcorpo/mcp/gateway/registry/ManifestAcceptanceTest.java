@@ -88,4 +88,20 @@ class ManifestAcceptanceTest {
         assertThat(new ManifestValidator(JSON, false).check(manifest, server("user-secret"))).extracting(Rejection::reason)
                 .contains(ManifestValidator.CREDENTIAL_TYPE_MISMATCH);
     }
+
+    @Test
+    void aPromptPatternOutsideTheLinearGrammarIsRefusedLikeAnIdPattern() {
+        for (String pattern : List.of("^(.*a){12}$", "^(a|aa)+$", "^(a+)+$")) {
+            ObjectNode manifest = jira("user-secret");
+            Manifests.addPrompt(manifest, "summarize", "Summarize");
+            ObjectNode entry = (ObjectNode) manifest.path("prompts").get(0);
+            ((ObjectNode) entry.path("argumentRules").get(0)).put("pattern", pattern);
+            entry.put("definitionHash", pl.aiwcorpo.mcp.manifest.DefinitionHash.computePrimitive("prompt", JSON.writeValueAsString(entry.get("definition")),
+                    JSON.writeValueAsString(entry), "jira", JSON.writeValueAsString(manifest.path("credential"))));
+
+            List<Rejection> refused = new ManifestValidator(JSON, false).check(manifest, server("user-secret"));
+
+            assertThat(refused).as(pattern).extracting(Rejection::message).contains("prompts-valid");
+        }
+    }
 }
