@@ -37,4 +37,22 @@ class PrimitiveStreamsTest extends DocsServerTestBase {
             assertThat(stream.nextMessage(Duration.ofSeconds(8)).path("method").asString()).isEqualTo("notifications/resources/list_changed");
         }
     }
+
+    @Test
+    void aReadingThatFindsAResourceChangedOnTheServerIsAnnounced() throws Exception {
+        String token = reader();
+        String body = "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"subscriptions/listen\",\"params\":{\"_meta\":{"
+                + "\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\",\"io.modelcontextprotocol/clientCapabilities\":{}},"
+                + "\"notifications\":{\"resourcesListChanged\":true}}}";
+        try (SseClient stream = SseClient.post(http, "http://localhost:" + port + "/mcp", body, Map.of("Authorization", "Bearer " + token,
+                "MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "subscriptions/listen"))) {
+            assertThat(stream.nextMessage(Duration.ofSeconds(5)).path("method").asString()).isEqualTo("notifications/subscriptions/acknowledged");
+
+            server.driftResources(true);
+            primitiveReadings.clear();
+            assertThat(list(reader(), "/mcp", "resources/list", "resources").statusCode()).isEqualTo(200);
+
+            assertThat(stream.nextMessage(Duration.ofSeconds(8)).path("method").asString()).isEqualTo("notifications/resources/list_changed");
+        }
+    }
 }

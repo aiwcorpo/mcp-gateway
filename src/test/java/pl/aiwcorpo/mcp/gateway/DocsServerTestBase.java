@@ -42,6 +42,16 @@ abstract class DocsServerTestBase extends GatewayTestBase {
     @Autowired
     protected PrimitiveService primitives;
 
+    /** The readings of the server's own lists, which a test that changes what the server presents has to drop. */
+    protected final Readings primitiveReadings = new Readings();
+
+    protected final class Readings {
+        void clear() {
+            ((java.util.Map<?, ?>) org.springframework.test.util.ReflectionTestUtils.getField(primitives, "readings")).clear();
+            ((java.util.Map<?, ?>) org.springframework.test.util.ReflectionTestUtils.getField(primitives, "lastOfServer")).clear();
+        }
+    }
+
     @Autowired
     KillSwitchStore switchStore;
 

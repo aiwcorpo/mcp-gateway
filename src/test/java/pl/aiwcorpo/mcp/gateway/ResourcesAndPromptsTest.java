@@ -5,6 +5,7 @@ import static org.awaitility.Awaitility.await;
 
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.time.Instant;
 import java.util.Date;
 import java.util.List;
@@ -415,6 +416,7 @@ class ResourcesAndPromptsTest extends DocsServerTestBase {
         bad.put("pattern", "{\"issueKey\":\"abc\"}");
         bad.put("newline", "{\"issueKey\":\"ABC-1\\n\"}");
         bad.put("not a string", "{\"issueKey\":5}");
+        bad.put("arguments not an object", "[\"ABC-1\"]");
         bad.put("too long", "{\"issueKey\":\"" + "A".repeat(40) + "-1\"}");
         for (Map.Entry<String, String> c : bad.entrySet()) {
             HttpResponse<String> response = getPrompt(token, "/mcp", "docs__summarize_issue", c.getValue());
@@ -539,5 +541,89 @@ class ResourcesAndPromptsTest extends DocsServerTestBase {
         JsonNode event = lastEvent(output, rid(response), "tool_call");
         assertThat(event.path("reason").asString()).isEqualTo("link_scheme_refused");
         assertThat(event.path("outcome").asString()).isEqualTo("ok");
+    }
+
+    @Test
+    void argumentsThatAreNotAnObjectAreCheckedAfterAuthorizationAndAnswerLikeAnyBadArgument() throws Exception {
+        String stranger = env.idp.token(UUID.randomUUID().toString(), "sam", List.of("mcp-jira-read"));
+        HttpResponse<String> denied = getPrompt(stranger, "/mcp", "docs__summarize_issue", "[1]");
+        HttpResponse<String> bad = getPrompt(reader(), "/mcp", "docs__summarize_issue", "[1]");
+
+        assertThat(denied.statusCode()).isEqualTo(200);
+        assertThat(bad.statusCode()).as("not a request error: the caller may get the prompt, so the argument is judged").isEqualTo(200);
+        assertThat(error(bad).toString()).isEqualTo(error(denied).toString());
+        assertThat(error(bad).path("message").asString()).isEqualTo("Prompt not found");
+    }
+
+    @Test
+    void aReadOfAnEntryNobodyApprovedIsAuditedAsNotGrantedAndNotAsNoMatch(CapturedOutput output) throws Exception {
+        server.close();
+        TestMcpServer fresh = env.startServer("mcp-docs", server.port());
+        fresh.servePrimitives(true);
+        server = fresh;
+        adminCall("DELETE", SERVER_PATH, null);
+        HttpResponse<String> created = adminCall("POST", "/admin/v1/servers", "{\"internalUrl\":\"https://127.0.0.1:" + server.port() + "/mcp\"}");
+        String fingerprint = JSON.readTree(created.body()).path("pendingConnection").path("fingerprint").asString();
+        adminCall("POST", SERVER_PATH + "/connection/approve", "{\"tlsMode\":\"ca\",\"fingerprint\":\"" + fingerprint + "\"}");
+        refresh();
+        adminCall("POST", REGISTRY + "/policies/approve", "{\"policiesHash\":\"" + server.manifest().path("policiesHash").asString() + "\"}");
+
+        HttpResponse<String> response = read(reader(), "/mcp", RUNBOOK);
+
+        assertThat(error(response).path("message").asString()).isEqualTo("Resource not found");
+        assertThat(lastEvent(output, rid(response), "resource_read").path("reason").asString()).isEqualTo("not_granted");
+        HttpResponse<String> unknown = read(reader(), "/mcp", "docs://docs/never");
+        assertThat(lastEvent(output, rid(unknown), "resource_read").path("reason").asString()).isEqualTo("uri_no_match");
+    }
+
+    @Test
+    void onlyTheUriTheMimeTypeAndTheTextOfTheItemArePassedOn() throws Exception {
+        ObjectNode rich = JSON.createObjectNode();
+        ObjectNode item = rich.putArray("contents").addObject();
+        item.put("uri", RUNBOOK).put("mimeType", "text/plain").put("text", "hello").put("extra", "x");
+        item.putObject("_meta").put("note", "from the server");
+        item.putObject("annotations").put("audience", "user");
+        rich.put("_meta", "outer");
+        server.answerResourceReadWith(rich);
+
+        JsonNode result = JSON.readTree(read(reader(), "/mcp", RUNBOOK).body()).path("result");
+
+        assertThat(result.path("contents").get(0).propertyNames()).containsExactlyInAnyOrder("uri", "mimeType", "text");
+    }
+
+    @Test
+    void theListsOfManyReadersShareOneReadOfAServerAndAHangingServerDoesNotHoldThemUp() throws Exception {
+        server.clearRequests();
+        server.slowResourceLists(300);
+        primitiveReadings.clear();
+        String one = reader();
+        List<java.util.concurrent.Future<HttpResponse<String>>> shared = new ArrayList<>();
+        try (var pool = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int i = 0; i < 5; i++) {
+                shared.add(pool.submit(() -> list(one, "/mcp", "resources/list", "resources")));
+            }
+            for (var each : shared) {
+                assertThat(names(each.get())).containsExactly("runbook");
+            }
+        }
+        assertThat(serverCalls("resources/list")).as("one reading for five lists of one user").hasSize(1);
+
+        primitiveReadings.clear();
+        server.slowResourceLists(20_000);
+        long started = System.nanoTime();
+        List<java.util.concurrent.Future<HttpResponse<String>>> hung = new ArrayList<>();
+        try (var pool = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int i = 0; i < 5; i++) {
+                hung.add(pool.submit(() -> list(one, "/mcp", "resources/list", "resources")));
+            }
+            for (var each : hung) {
+                assertThat(names(each.get())).as("skipped, not stuck").isEmpty();
+            }
+        }
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).as("bounded by the time limit of a list, not by the lock").isLessThan(Duration.ofSeconds(10));
+
+        server.slowResourceLists(0);
+        primitiveReadings.clear();
+        await().atMost(Duration.ofSeconds(35)).untilAsserted(() -> assertThat(names(list(reader(), "/mcp", "resources/list", "resources"))).containsExactly("runbook"));
     }
 }

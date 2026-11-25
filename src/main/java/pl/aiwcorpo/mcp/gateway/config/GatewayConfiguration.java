@@ -323,13 +323,14 @@ public class GatewayConfiguration {
     @Bean
     ToolStreams toolStreams(UserToolLists lists, UserPrimitiveLists primitiveLists, GatewayProperties properties, MeterRegistry meters, ClientSessionStore sessions,
                             JsonMapper gatewayJson, RegistryService registry, KillSwitches killSwitches, DefinitionGuard guard,
-                            PolicyService policies, AgentRegistry agentRegistry) {
+                            PolicyService policies, AgentRegistry agentRegistry, pl.aiwcorpo.mcp.gateway.mcp.PrimitiveService primitives) {
         ToolStreams streams = new ToolStreams(lists, primitiveLists, properties.mcp().sseHeartbeatInterval(), java.time.Duration.ofSeconds(1),
                 System::currentTimeMillis, meters, id -> sessions.find(id).isPresent(), gatewayJson,
                 properties.mcp().maxOpenStreams(), properties.mcp().maxOpenStreamsPerUser(), properties.mcp().streamRecomputeParallelism(),
                 java.time.Duration.ofMillis(100));
         registry.onChange(streams::changed);
         killSwitches.onChange(streams::changed);
+        primitives.onChange(streams::changed);
         // The decisions kept per identity do not know that an agent was suspended or got another ceiling, so they are made again.
         agentRegistry.onChange(() -> {
             lists.policiesChanged();
@@ -713,6 +714,7 @@ public class GatewayConfiguration {
                                                                   UpstreamSessions upstream, CredentialService credentials, PublicUrls urls,
                                                                   ToolsListCursor listCursor, JsonMapper gatewayJson, MeterRegistry meters, Clock clock,
                                                                   GatewayProperties properties) {
+        pl.aiwcorpo.mcp.gateway.mcp.PrimitiveService.checkLimits(properties.mcp().resourceMaxBytes(), properties.upstream().maxResponseBytes());
         return new pl.aiwcorpo.mcp.gateway.mcp.PrimitiveService(registry, authorizer, killSwitches, service, audit, endpointAudit, upstream, credentials,
                 urls, listCursor, gatewayJson, meters, clock, properties.componentId(), properties.mcp().toolsListTimeout(),
                 properties.registry().definitionCheckTtl(), properties.mcp().resourceMaxBytes(), properties.broker().confirmedContractsVersion());

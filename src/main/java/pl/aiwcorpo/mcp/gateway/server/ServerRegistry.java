@@ -169,10 +169,15 @@ public final class ServerRegistry {
             return Primitives.NONE;
         }
         Map<String, ResourceDefinition> resources = new LinkedHashMap<>();
+        Map<String, ResourceDefinition> waiting = new LinkedHashMap<>();
         for (PrimitiveKind kind : List.of(PrimitiveKind.RESOURCE, PrimitiveKind.RESOURCE_TEMPLATE)) {
             state.entries().getOrDefault(kind, Map.of()).forEach((name, registered) -> {
                 if (registered.approved() != null) {
-                    resources.put(name, resource(kind == PrimitiveKind.RESOURCE_TEMPLATE, registered.approved(), state.credentialJson(), name));
+                    resources.put(name, resource(kind == PrimitiveKind.RESOURCE_TEMPLATE, registered.approved().entry(), registered.approved().hash(),
+                            state.credentialJson(), name));
+                } else {
+                    waiting.put(name, resource(kind == PrimitiveKind.RESOURCE_TEMPLATE, registered.pending().entry(), registered.pending().hash(),
+                            state.credentialJson(), name));
                 }
             });
         }
@@ -184,17 +189,16 @@ public final class ServerRegistry {
                         registered.pending() != null));
             }
         });
-        return new Primitives(Map.copyOf(resources), Map.copyOf(prompts), state.contractsVersion(), state.policiesApproved());
+        return new Primitives(Map.copyOf(resources), Map.copyOf(prompts), state.contractsVersion(), state.policiesApproved(), Map.copyOf(waiting));
     }
 
-    private static ResourceDefinition resource(boolean template, RegisteredEntry.Approved approved, String credentialJson, String name) {
-        JsonNode entry = approved.entry();
+    private static ResourceDefinition resource(boolean template, JsonNode entry, String hash, String credentialJson, String name) {
         List<ResourceDefinition.UriVariable> variables = new ArrayList<>();
         entry.path("variables").forEach(variable -> variables.add(new ResourceDefinition.UriVariable(variable.path("name").asString(),
                 variable.path("type").asString(null), variable.path("maxLength").asInt(0), variable.path("pattern").asString(null))));
         JsonNode definition = entry.path("definition");
         return new ResourceDefinition(name, template, definition.path(template ? "uriTemplate" : "uri").asString(), List.copyOf(variables),
-                entry.path("additionalGroup").asString(null), approved.hash(), entry, credentialJson);
+                entry.path("additionalGroup").asString(null), hash, entry, credentialJson);
     }
 
     private static List<pl.aiwcorpo.mcp.cedar.entities.ResourceRef> refs(JsonNode entry) {

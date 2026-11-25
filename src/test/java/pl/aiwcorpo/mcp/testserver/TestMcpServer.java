@@ -218,6 +218,7 @@ public final class TestMcpServer implements AutoCloseable {
     private volatile boolean resourceReadFails;
     private volatile ObjectNode resourceReadResult;
     private volatile boolean resourceListsFail;
+    private volatile long resourceListDelayMillis;
     private volatile String promptText = "Summarize the issue";
     private volatile ObjectNode fixedToolResult;
 
@@ -258,6 +259,11 @@ public final class TestMcpServer implements AutoCloseable {
     /** Every {@code tools/call} answers this result as it is (links and embedded resources included), or its own answer when null. */
     public void answerCallsWith(ObjectNode result) {
         fixedToolResult = result;
+    }
+
+    /** {@code resources/list} and {@code resources/templates/list} answer after this many milliseconds: a server that hangs. */
+    public void slowResourceLists(long millis) {
+        resourceListDelayMillis = millis;
     }
 
     /** {@code resources/list} and {@code resources/templates/list} answer 503 while this is on. */
@@ -836,6 +842,13 @@ public final class TestMcpServer implements AutoCloseable {
             }
             case "resources/list", "resources/templates/list" -> {
                 record(exchange, headers, body, method, null, resourceListsFail ? 503 : 200, null, sub, sessionId);
+                if (resourceListDelayMillis > 0) {
+                    try {
+                        Thread.sleep(resourceListDelayMillis);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
                 if (resourceListsFail) {
                     send(exchange, 503, null, null);
                     return;

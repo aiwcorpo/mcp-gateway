@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -69,6 +70,7 @@ public final class PrimitiveService {
 
     private static final Logger log = LoggerFactory.getLogger(PrimitiveService.class);
     private static final int MAX_LIST_PAGES = 20;
+    private static final int MAX_READINGS = 10_000;
     private static final String UNAVAILABLE_MESSAGE = "Internal error";
 
     private final ServerRegistry registry;
@@ -88,9 +90,12 @@ public final class PrimitiveService {
     private final Duration listTimeout;
     private final Duration readingTtl;
     private final long resourceMaxBytes;
+    private final Duration readWaitLimit;
     private final String brokerContractsVersion;
     private final Map<String, Reading> readings = new ConcurrentHashMap<>();
-    private final Map<String, Object> readLocks = new ConcurrentHashMap<>();
+    private final Map<String, CompletableFuture<Reading>> readsInFlight = new ConcurrentHashMap<>();
+    private final Map<String, Reading> lastOfServer = new ConcurrentHashMap<>();
+    private volatile Runnable onReadingChange = () -> { };
     private final ExecutorService listReaders = Executors.newVirtualThreadPerTaskExecutor();
 
     /**
@@ -102,6 +107,16 @@ public final class PrimitiveService {
                             EndpointAuditThrottle endpointAudit, UpstreamSessions upstream, CredentialService credentials, PublicUrls urls,
                             ToolsListCursor cursors, JsonMapper json, MeterRegistry meters, Clock clock, String componentId, Duration listTimeout,
                             Duration readingTtl, long resourceMaxBytes, String brokerContractsVersion) {
+        this(registry, authorizer, killSwitches, service, audit, endpointAudit, upstream, credentials, urls, cursors, json, meters, clock, componentId,
+                listTimeout, readingTtl, resourceMaxBytes, brokerContractsVersion, Duration.ofSeconds(60));
+    }
+
+    /** @param readWaitLimit the longest a list waits for the reading another has in flight */
+    public PrimitiveService(ServerRegistry registry, ToolAuthorizer authorizer, KillSwitches killSwitches, McpGatewayService service, AuditLog audit,
+                            EndpointAuditThrottle endpointAudit, UpstreamSessions upstream, CredentialService credentials, PublicUrls urls,
+                            ToolsListCursor cursors, JsonMapper json, MeterRegistry meters, Clock clock, String componentId, Duration listTimeout,
+                            Duration readingTtl, long resourceMaxBytes, String brokerContractsVersion, Duration readWaitLimit) {
+        this.readWaitLimit = readWaitLimit;
         this.registry = registry;
         this.authorizer = authorizer;
         this.killSwitches = killSwitches;
@@ -120,6 +135,13 @@ public final class PrimitiveService {
         this.readingTtl = readingTtl;
         this.resourceMaxBytes = resourceMaxBytes;
         this.brokerContractsVersion = brokerContractsVersion;
+    }
+
+    /** A result larger than the response the upstream client reads could never be seen whole, so the limit of a resource may not exceed it. */
+    public static void checkLimits(long resourceMaxBytes, long upstreamMaxResponseBytes) {
+        if (resourceMaxBytes > upstreamMaxResponseBytes) {
+            throw new IllegalStateException("gateway.mcp.resource-max-bytes (MCP_RESOURCE_MAX_BYTES) must not exceed gateway.upstream.max-response-bytes");
+        }
     }
 
     // ---------------------------------------------------------------------------------------------------------------- lists
@@ -256,7 +278,7 @@ public final class PrimitiveService {
         if (!ContractsVersion.supportsNewClaims(server.primitives().contractsVersion())) {
             return false;
         }
-        Reading last = readings.get(server.serverId());
+        Reading last = lastOfServer.get(server.serverId());
         return last == null || last.matches(json, server, resource);
     }
 
@@ -272,7 +294,7 @@ public final class PrimitiveService {
     // -------------------------------------------------------------------------------------------- what a server presents
 
     /** What a server listed as its resources and templates, by name, when. */
-    private record Reading(Instant at, Map<String, JsonNode> resources, Map<String, JsonNode> templates) {
+    private record Reading(Instant at, Map<String, JsonNode> resources, Map<String, JsonNode> templates, Map<String, Boolean> verdicts) {
 
         boolean matches(JsonMapper json, McpServer server, ResourceDefinition approved) {
             JsonNode live = (approved.template() ? templates : resources).get(approved.name());
@@ -289,28 +311,80 @@ public final class PrimitiveService {
     }
 
     /**
-     * The resource lists of the server as of a reading not older than the TTL, or a new one; one reading per server at a time, so that the lists
-     * of many clients do not send the server one request each. A server that cannot be read is no proof of a change: the caller skips it and
-     * concludes nothing else.
+     * The resource lists of the server as of a reading not older than the TTL, or a new one. One reading per server is in flight at a time and a
+     * failed one fails its waiters at once, so that the lists of many clients neither send the server one request each nor queue behind a read that
+     * hangs (the pattern of the definitions of tools). It is made with the token of the user who asked and kept for that user only: the service variant
+     * of the token cannot be used inside a session (CC-070), and a server may list by who asks, so one user's view must not hide entries from another.
+     * A server that cannot be read is no proof of a change: the caller skips it and concludes nothing else.
      */
     private Reading reading(CallContext ctx, McpServer server) throws RpcFailure {
-        Reading fresh = readings.get(server.serverId());
+        String key = server.serverId() + "|" + ctx.user().sub();
+        Reading fresh = readings.get(key);
         if (fresh != null && Duration.between(fresh.at(), clock.instant()).compareTo(readingTtl) <= 0) {
             return fresh;
         }
-        synchronized (readLocks.computeIfAbsent(server.serverId(), id -> new Object())) {
-            Reading again = readings.get(server.serverId());
-            if (again != null && Duration.between(again.at(), clock.instant()).compareTo(readingTtl) <= 0) {
-                return again;
-            }
-            Reading made = new Reading(clock.instant(), readAll(ctx, server, "resources/list", "resources"),
-                    readAll(ctx, server, "resources/templates/list", "resourceTemplates"));
-            readings.put(server.serverId(), made);
-            // A server that left the registry takes its reading with it.
-            readings.keySet().removeIf(serverId -> registry.find(serverId).isEmpty());
-            readLocks.keySet().removeIf(serverId -> registry.find(serverId).isEmpty());
-            return made;
+        CompletableFuture<Reading> mine = new CompletableFuture<>();
+        CompletableFuture<Reading> running = readsInFlight.putIfAbsent(key, mine);
+        if (running != null) {
+            return awaitReading(key, running);
         }
+        try {
+            Reading again = readings.get(key);
+            Reading made = again != null && Duration.between(again.at(), clock.instant()).compareTo(readingTtl) <= 0 ? again : readNow(ctx, server, key);
+            readsInFlight.remove(key, mine);
+            mine.complete(made);
+            return made;
+        } catch (RpcFailure | RuntimeException e) {
+            readsInFlight.remove(key, mine);
+            mine.completeExceptionally(e);
+            throw e instanceof RpcFailure failure ? failure : new RpcFailure(-32603, "upstream_unavailable: the MCP server is unavailable.", 502);
+        } finally {
+            readsInFlight.remove(key, mine);
+            mine.completeExceptionally(new IllegalStateException("the read ended without a result"));
+        }
+    }
+
+    private Reading readNow(CallContext ctx, McpServer server, String key) throws RpcFailure {
+        Map<String, JsonNode> resources = readAll(ctx, server, "resources/list", "resources");
+        Map<String, JsonNode> templates = readAll(ctx, server, "resources/templates/list", "resourceTemplates");
+        Map<String, Boolean> verdicts = new LinkedHashMap<>();
+        Reading probe = new Reading(clock.instant(), resources, templates, Map.of());
+        server.primitives().resources().forEach((name, definition) -> verdicts.put(name, probe.matches(json, server, definition)));
+        Reading made = new Reading(probe.at(), resources, templates, Map.copyOf(verdicts));
+        readings.put(key, made);
+        Reading before = lastOfServer.put(server.serverId(), made);
+        // A reading that finds an entry in another state than the one before it (or in a bad state on the first) changes a list: streams are told.
+        boolean differs = before == null ? verdicts.containsValue(false) : !before.verdicts().equals(made.verdicts());
+        // A server that left the registry takes its readings with it, and the readings of users are kept for the most recent ones only.
+        readings.keySet().removeIf(each -> registry.find(each.substring(0, each.indexOf('|'))).isEmpty());
+        lastOfServer.keySet().removeIf(serverId -> registry.find(serverId).isEmpty());
+        if (readings.size() > MAX_READINGS) {
+            readings.entrySet().removeIf(each -> Duration.between(each.getValue().at(), clock.instant()).compareTo(readingTtl) > 0);
+        }
+        if (differs) {
+            onReadingChange.run();
+        }
+        return made;
+    }
+
+    /** Waits for the reading in flight; it ends by itself (every request of it is bound by the upstream timeout), the limit is a backstop. */
+    private Reading awaitReading(String key, CompletableFuture<Reading> running) throws RpcFailure {
+        try {
+            return running.get(readWaitLimit.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            readsInFlight.remove(key, running);
+            throw new RpcFailure(-32603, "upstream_unavailable: the MCP server is unavailable.", 502);
+        } catch (ExecutionException e) {
+            throw e.getCause() instanceof RpcFailure failure ? failure : new RpcFailure(-32603, "upstream_unavailable: the MCP server is unavailable.", 502);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RpcFailure(-32603, "upstream_unavailable: the MCP server is unavailable.", 502);
+        }
+    }
+
+    /** Told when a reading of a server's resource lists changed what an entry is judged as. */
+    public void onChange(Runnable listener) {
+        this.onReadingChange = listener;
     }
 
     private Map<String, JsonNode> readAll(CallContext ctx, McpServer server, String method, String field) throws RpcFailure {
@@ -322,7 +396,7 @@ public final class PrimitiveService {
             if (cursor != null) {
                 request.putObject("params").put("cursor", cursor);
             }
-            JsonNode response = callUpstream(ctx, server, request, null, null);
+            JsonNode response = callUpstream(ctx, server, request);
             if (response.has("error")) {
                 throw new RpcFailure(-32603, "The MCP server could not list its " + field + ".", 502);
             }
@@ -343,10 +417,9 @@ public final class PrimitiveService {
         return byName;
     }
 
-    private JsonNode callUpstream(CallContext ctx, McpServer server, ObjectNode request, String resource, Credential credential) throws RpcFailure {
+    private JsonNode callUpstream(CallContext ctx, McpServer server, ObjectNode request) throws RpcFailure {
         try {
-            return upstream.call(server, ctx.conversationKey(), ctx.user(), ctx.requestId(), request, null, resource, credential, true, null, null,
-                    () -> true);
+            return upstream.call(server, ctx.conversationKey(), ctx.user(), ctx.requestId(), request, null, null, true);
         } catch (UpstreamException e) {
             log.warn("{} rid={} to {} failed: {} {}", request.path("method").asString(), ctx.requestId(), server.serverId(), e.kind(), e.getMessage());
             throw new RpcFailure(-32603, "upstream_unavailable: the MCP server is unavailable.", 502);
@@ -462,8 +535,15 @@ public final class PrimitiveService {
         if (!check.passes()) {
             throw failed(ctx, server, resource, variables, "allow", check.reason(), "upstream_unavailable", started);
         }
+        // Only what the contract names: an item's own _meta, annotations or any field a server adds are not passed on.
+        ObjectNode item = json.createObjectNode();
+        item.put("uri", uri);
+        if (contents.get(0).path("mimeType").isString()) {
+            item.put("mimeType", contents.get(0).path("mimeType").asString());
+        }
+        item.put("text", contents.get(0).path("text").asString());
         ObjectNode out = json.createObjectNode();
-        out.set("contents", contents);
+        out.putArray("contents").add(item);
         audit.emit(readEvent(ctx, server, resource, variables).decision("allow", null).policyRevision(authorizer.policyRevision())
                 .outcome("ok", null).latencyMs(millis(started)).content(bytes, AuditEvent.sha256(contents.get(0).path("text").asString())));
         count("resources/read", "ok");
@@ -504,7 +584,28 @@ public final class PrimitiveService {
             }
             undeclared = undeclared || "variable_invalid".equals(resolved.reason());
         }
+        // An entry nobody approved yet is known to the registry: the refusal is the same, the audit says it is a question of approval (CC-259, step 6).
+        for (McpServer server : serversOf(ctx)) {
+            if (schemeBelongs(server, scheme) && ResourceUris.resolve(staticsOf(server.primitives().waiting()),
+                    templatesOf(server.primitives().waiting(), types), uri).found()) {
+                return new Matched(server, null, Map.of(), "not_granted");
+            }
+        }
         return new Matched(owner, null, Map.of(), undeclared ? "variable_invalid" : "uri_no_match");
+    }
+
+    private static List<ResourceUris.StaticEntry> staticsOf(Map<String, ResourceDefinition> entries) {
+        return entries.values().stream().filter(r -> !r.template()).map(r -> new ResourceUris.StaticEntry(r.name(), r.locator())).toList();
+    }
+
+    private List<ResourceUris.TemplateEntry> templatesOf(Map<String, ResourceDefinition> entries, ResourceTypes types) {
+        List<ResourceUris.TemplateEntry> out = new ArrayList<>();
+        for (ResourceDefinition resource : entries.values()) {
+            if (resource.template()) {
+                variablesOf(resource, types).ifPresent(variables -> out.add(new ResourceUris.TemplateEntry(resource.name(), resource.locator(), variables)));
+            }
+        }
+        return out;
     }
 
     private static boolean schemeBelongs(McpServer server, String scheme) {
@@ -650,8 +751,8 @@ public final class PrimitiveService {
         long started = System.nanoTime();
         String name = params.path("name").asString(null);
         JsonNode arguments = params.get("arguments");
-        if (name == null || arguments != null && !arguments.isNull() && !arguments.isObject()) {
-            throw new RpcFailure(-32602, "prompts/get needs a string name and object arguments.", 400);
+        if (name == null) {
+            throw new RpcFailure(-32602, "prompts/get needs a string name.", 400);
         }
         int argsLength = arguments == null ? 0 : json.writeValueAsString(arguments).getBytes(StandardCharsets.UTF_8).length;
         Optional<ToolRoute> route = ToolRoute.of(name, registry.all().stream().map(McpServer::system).toList());
@@ -700,7 +801,7 @@ public final class PrimitiveService {
 
     private RpcFailure promptDenied(CallContext ctx, McpServer server, PromptDefinition prompt, String name, String reason, long started,
                                     int argsLength) {
-        if (endpointAudit.admit(ctx.user(), reason, name)) {
+        if (!repeatable(reason) || endpointAudit.admit(ctx.user(), reason, name)) {
             AuditEvent event = promptEvent(ctx, server, prompt).decision("deny", reason).policyRevision(authorizer.policyRevision())
                     .outcome("denied", "not_found_or_denied").latencyMs(millis(started)).argsLength(argsLength);
             if (prompt != null) {
