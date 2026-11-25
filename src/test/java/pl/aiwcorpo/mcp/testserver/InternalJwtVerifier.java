@@ -36,18 +36,29 @@ public final class InternalJwtVerifier {
 
     /**
      * What the receiving endpoint allows: the purpose of the token ({@code use}), the service variant and the {@code tool} claim.
-     * {@code open}: the endpoint takes no token at all (the manifest, C14).
+     * {@code open}: the endpoint takes no token at all (the manifest, C14). {@code resource}: the URI of a {@code resources/read}, which the claim
+     * of the same name must equal (CC-260); null where no such claim is allowed.
      */
-    public record RequestRule(String purpose, boolean serviceAllowed, ToolRule toolRule, String toolName, boolean open) {
+    public record RequestRule(String purpose, boolean serviceAllowed, ToolRule toolRule, String toolName, boolean open, String resource) {
+
+        public RequestRule(String purpose, boolean serviceAllowed, ToolRule toolRule, String toolName, boolean open) {
+            this(purpose, serviceAllowed, toolRule, toolName, open, null);
+        }
 
         public RequestRule(boolean serviceAllowed, ToolRule toolRule, String toolName) {
             this("call", serviceAllowed, toolRule, toolName, false);
         }
 
+        /** A {@code resources/read}: the token names the URI and no tool. */
+        public static RequestRule forResourceRead(String uri) {
+            return new RequestRule("call", false, ToolRule.ABSENT, null, false, uri);
+        }
+
         public static RequestRule forJsonRpc(String method, String toolName) {
             return switch (method) {
                 case "tools/call" -> new RequestRule(false, ToolRule.EQUALS, toolName);
-                case "initialize", "server/discover", "tools/list", "ping" -> new RequestRule(true, ToolRule.ABSENT, null);
+                case "initialize", "server/discover", "tools/list", "ping", "resources/list", "resources/templates/list" ->
+                        new RequestRule(true, ToolRule.ABSENT, null);
                 default -> new RequestRule(false, ToolRule.ABSENT, null);
             };
         }
@@ -56,7 +67,8 @@ public final class InternalJwtVerifier {
             if (("POST".equals(method) && ("/v1/credentials/resolve".equals(path) || "/v1/authenticator/verify".equals(path)
                     || "/v1/authenticator/invalidate-codes".equals(path)))
                     || ("GET".equals(method) && "/v1/authenticator".equals(path))) {
-                return new RequestRule(false, ToolRule.REQUIRED, null);
+                // The broker resolves for a tool or, since 8.0.0, for a resource (CC-261): exactly one of them.
+                return new RequestRule(false, "/v1/credentials/resolve".equals(path) ? ToolRule.TOOL_OR_RESOURCE : ToolRule.REQUIRED, null);
             }
             if ("GET".equals(method) && "/.well-known/mcp-manifest".equals(path)) {
                 return new RequestRule(null, false, ToolRule.ABSENT, null, true);
@@ -69,7 +81,7 @@ public final class InternalJwtVerifier {
         }
     }
 
-    public enum ToolRule { ABSENT, REQUIRED, EQUALS }
+    public enum ToolRule { ABSENT, REQUIRED, EQUALS, TOOL_OR_RESOURCE }
 
     /** Verification outcome; {@code reason} is null when valid. */
     public record Result(String reason, Map<String, Object> claims) {
@@ -222,7 +234,16 @@ public final class InternalJwtVerifier {
             return Result.reject("service_token_not_allowed");
         }
         String tool = claims.has("tool") ? claims.get("tool").asString() : null;
+        String resource = claims.has("resource") ? claims.get("resource").asString() : null;
+        if (rule.toolRule() != ToolRule.TOOL_OR_RESOURCE && !java.util.Objects.equals(rule.resource(), resource)) {
+            return Result.reject(resource == null ? "resource_missing" : rule.resource() == null ? "resource_not_allowed" : "resource_mismatch");
+        }
         switch (rule.toolRule()) {
+            case TOOL_OR_RESOURCE -> {
+                if (tool == null && resource == null) {
+                    return Result.reject("tool_missing");
+                }
+            }
             case ABSENT -> {
                 if (tool != null) {
                     return Result.reject("tool_not_allowed");

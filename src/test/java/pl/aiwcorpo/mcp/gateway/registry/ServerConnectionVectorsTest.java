@@ -30,17 +30,11 @@ class ServerConnectionVectorsTest {
     @TestFactory
     List<DynamicTest> theVectors() {
         List<DynamicTest> tests = new ArrayList<>();
-        int emission = 0;
         for (Vectors.Vector vector : Vectors.of("server-connection")) {
-            // The kind emission (contracts-version-*, emission-*) is the preflight before the new claims are sent (CC-260, step 5 of the
-            // rollout). This slice only stores contractsVersion and emits nothing; the preflight comes with the slice that emits the claims.
-            if ("emission".equals(vector.document().path("kind").asString())) {
-                emission++;
-                continue;
-            }
             tests.add(DynamicTest.dynamicTest(vector.name(), () -> {
                 JsonNode document = vector.document();
                 switch (document.path("kind").asString()) {
+                    case "emission" -> emission(document);
                     case "approve" -> approve(document);
                     case "check" -> check(document);
                     case "availability" -> availability(document);
@@ -50,9 +44,20 @@ class ServerConnectionVectorsTest {
                 }
             }));
         }
-        assertThat(tests).hasSize(28);
-        assertThat(emission).isEqualTo(8);
+        assertThat(tests).hasSize(36);
         return tests;
+    }
+
+    /**
+     * The condition for the claims 8.0.0 added (CC-260, step 5): the contractsVersion of the approved manifest of a server, or the version of the
+     * broker the operator confirmed, is at least 8.0.0. This slice sends the claim {@code resource} under it; {@code pty} and {@code act} wait for the
+     * slice that emits agents.
+     */
+    private void emission(JsonNode vector) {
+        JsonNode input = vector.path("input").path("emission");
+        String version = "broker".equals(input.path("receiver").asString()) ? text(input.get("confirmedBrokerVersion")) : text(input.get("contractsVersion"));
+        assertThat(pl.aiwcorpo.mcp.gateway.primitive.ContractsVersion.supportsNewClaims(version)).as(vector.path("description").asString())
+                .isEqualTo(vector.path("expected").path("emit").asBoolean());
     }
 
     private void addSystem(JsonNode vector) {

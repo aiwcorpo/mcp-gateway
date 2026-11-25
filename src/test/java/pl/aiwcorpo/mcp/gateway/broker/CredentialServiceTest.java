@@ -45,7 +45,7 @@ class CredentialServiceTest {
         live.set(false);
         service.resolve(user, "jira", secretPolicy, "get_issue", "rid-1");
         service.resolve(user, "jira", secretPolicy, "get_issue", "rid-2");
-        verify(broker, times(2)).resolve(any(), eq("jira"), anyList(), isNull(), eq("get_issue"), anyString());
+        verify(broker, times(2)).resolve(any(), eq("jira"), anyList(), isNull(), eq("get_issue"), isNull(), anyString());
         assertThat(cache.size()).isZero();
     }
 
@@ -60,10 +60,10 @@ class CredentialServiceTest {
     void tokenExchangeSystemsSendTheExchangedTokenNeverTheRawOne() {
         CredentialPolicy exchangePolicy = new CredentialPolicy(true, Set.of("token-exchange"), List.of(), true, "token-exchange");
         when(exchange.exchange("raw-idp-token")).thenReturn("exchanged");
-        when(broker.resolve(any(), eq("opensearch"), anyList(), eq("exchanged"), any(), any())).thenReturn(
+        when(broker.resolve(any(), eq("opensearch"), anyList(), eq("exchanged"), any(), any(), any())).thenReturn(
                 new Resolution.Granted(new Credential("Bearer", "os-token", "token-exchange", null, 30), false));
         assertThat(service.resolve(user, "opensearch", exchangePolicy, "search_logs", "rid")).isInstanceOf(Resolution.Granted.class);
-        verify(broker).resolve(any(), eq("opensearch"), anyList(), eq("exchanged"), eq("search_logs"), eq("rid"));
+        verify(broker).resolve(any(), eq("opensearch"), anyList(), eq("exchanged"), eq("search_logs"), isNull(), eq("rid"));
     }
 
     @Test
@@ -72,11 +72,11 @@ class CredentialServiceTest {
         when(exchange.exchange(any())).thenReturn(null);
         assertThat(service.resolve(user, "opensearch", exchangePolicy, "search_logs", "rid"))
                 .isInstanceOf(Resolution.Unavailable.class);
-        verify(broker, times(0)).resolve(any(), any(), anyList(), any(), any(), any());
+        verify(broker, times(0)).resolve(any(), any(), anyList(), any(), any(), any(), any());
     }
 
     private void grant(String type) {
-        when(broker.resolve(any(), any(), anyList(), any(), any(), any())).thenReturn(
+        when(broker.resolve(any(), any(), anyList(), any(), any(), any(), any())).thenReturn(
                 new Resolution.Granted(new Credential("Bearer", "pat", type, null, 60), false));
     }
 }

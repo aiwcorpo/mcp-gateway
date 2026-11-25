@@ -59,6 +59,17 @@ public final class InternalTokenIssuer {
      * only with a {@code tool}: anything else is left out, and the sidecar then refuses the call.
      */
     public String forUser(String audience, GatewayUser user, String tool, String requestId, String risk, String action) {
+        return forUser(audience, user, tool, null, requestId, risk, action);
+    }
+
+    /**
+     * As above with the claim {@code resource} (CC-260): the URI a {@code resources/read} asks for, which the server must find equal to
+     * {@code params.uri}. At most one of {@code tool} and {@code resource}; a token for a resource carries no classification.
+     */
+    public String forUser(String audience, GatewayUser user, String tool, String resource, String requestId, String risk, String action) {
+        if (tool != null && resource != null) {
+            throw new IllegalArgumentException("a token names a tool or a resource, not both");
+        }
         JWTClaimsSet.Builder claims = common(audience, requestId)
                 .subject(user.sub())
                 .claim("usr", user.username())
@@ -69,6 +80,9 @@ public final class InternalTokenIssuer {
             if (fits(risk, action)) {
                 claims.claim("mcp_risk", risk).claim("mcp_action", action);
             }
+        }
+        if (resource != null) {
+            claims.claim("resource", resource);
         }
         return sign(claims.build());
     }

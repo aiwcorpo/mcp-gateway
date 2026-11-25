@@ -14,6 +14,8 @@ import org.junit.jupiter.api.TestFactory;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import pl.aiwcorpo.mcp.gateway.mcp.CallOrder;
+import pl.aiwcorpo.mcp.gateway.primitive.PromptGetOrder;
+import pl.aiwcorpo.mcp.gateway.primitive.ResourceReadOrder;
 import pl.aiwcorpo.mcp.gateway.support.Vectors;
 import tools.jackson.databind.JsonNode;
 
@@ -43,7 +45,7 @@ class KillSwitchVectorsTest {
      * The vectors of 8.0.0 by kind: the switches of a tool and a server have no kind (18); {@code agent-switch} (5) is the suspension of an
      * agent (CC-266), who may put and lift it, run against the database in {@code AgentClientApiTest}; {@code primitive-switch} (21) is the switch of a resource or a prompt (CC-265).
      * Of those, {@code list} runs here (what a switch hides) and {@code lift} in KillSwitchApiTest (the database); {@code read} is the
-     * refusal of resources/read and prompts/get on /mcp (-32602, order of the checks), which comes with the dispatch of those methods.
+     * refusal of resources/read and prompts/get on /mcp (-32602, order of the checks) and runs here against the order of the checks of both.
      */
     private static boolean isTool(Vectors.Vector vector) {
         return !vector.document().has("kind");
@@ -53,15 +55,22 @@ class KillSwitchVectorsTest {
         return "primitive-switch".equals(vector.document().path("kind").asString()) && "list".equals(vector.document().path("input").path("event").asString());
     }
 
+    private static boolean isReadOfPrimitive(Vectors.Vector vector) {
+        return "primitive-switch".equals(vector.document().path("kind").asString()) && "read".equals(vector.document().path("input").path("event").asString());
+    }
+
     @TestFactory
     List<DynamicTest> callsConfirmationsAndLists() {
         List<Vectors.Vector> vectors = Vectors.of("kill-switch");
         assertThat(vectors).hasSize(44);
         assertThat(vectors.stream().filter(v -> "agent-switch".equals(v.document().path("kind").asString()))).hasSize(5);
-        assertThat(vectors.stream().filter(v -> "primitive-switch".equals(v.document().path("kind").asString())
-                && "read".equals(v.document().path("input").path("event").asString()))).as("left for the dispatch of resources/read and prompts/get").hasSize(14);
+        assertThat(vectors.stream().filter(KillSwitchVectorsTest::isReadOfPrimitive)).hasSize(14);
         List<DynamicTest> tests = new ArrayList<>();
         for (Vectors.Vector vector : vectors) {
+            if (isReadOfPrimitive(vector)) {
+                tests.add(DynamicTest.dynamicTest(vector.name(), () -> checkReadOfPrimitive(vector.document())));
+                continue;
+            }
             if (isListOfPrimitive(vector)) {
                 tests.add(DynamicTest.dynamicTest(vector.name(), () -> checkListOfPrimitive(vector.document())));
                 continue;
@@ -72,7 +81,7 @@ class KillSwitchVectorsTest {
             }
             tests.add(DynamicTest.dynamicTest(vector.name(), () -> check(vector.document())));
         }
-        assertThat(tests).hasSizeGreaterThanOrEqualTo(11 + 7);
+        assertThat(tests).hasSizeGreaterThanOrEqualTo(11 + 7 + 14);
         return tests;
     }
 
@@ -86,6 +95,40 @@ class KillSwitchVectorsTest {
                 : switches.statusOfResource(serverId, target.path("name").asString());
         assertThat(readable && status == KillSwitches.Status.OFF).as(vector.path("description").asString())
                 .isEqualTo(vector.path("expected").path("listed").asBoolean());
+    }
+
+    /** The switch in the order of the checks of resources/read and prompts/get: after the grant and the filter, before the state of anything else. */
+    private static void checkReadOfPrimitive(JsonNode vector) {
+        JsonNode input = vector.path("input");
+        JsonNode target = input.path("target");
+        JsonNode expected = vector.path("expected");
+        KillSwitches switches = switchesOf(input, input.path("storeReadable").asBoolean(true));
+        String serverId = target.path("serverId").asString();
+        boolean prompt = "prompt".equals(target.path("kind").asString());
+        java.util.function.Supplier<KillSwitches.Status> status = () -> prompt ? switches.statusOfPrompt(serverId, target.path("name").asString())
+                : switches.statusOfResource(serverId, target.path("name").asString());
+        boolean mayAccess = input.path("mayAccess").asBoolean(true);
+        boolean inFilter = input.path("inFilter").asBoolean(true);
+        boolean passes;
+        String reason = null;
+        int code = 0;
+        if (prompt) {
+            PromptGetOrder.Verdict verdict = PromptGetOrder.decide(true, mayAccess, false, inFilter, status, true, false);
+            passes = verdict.passes();
+            reason = verdict.reason();
+            code = verdict.answer() == PromptGetOrder.Answer.UPSTREAM_UNAVAILABLE ? -32603 : -32602;
+        } else {
+            ResourceReadOrder.Verdict verdict = ResourceReadOrder.decide(mayAccess, false, inFilter, status, () -> true, () -> true, () -> true,
+                    () -> true, () -> true, () -> true, () -> true);
+            passes = verdict.passes();
+            reason = verdict.reason();
+            code = verdict.answer() == ResourceReadOrder.Answer.UPSTREAM_UNAVAILABLE ? -32603 : -32602;
+        }
+        assertThat(passes).as(vector.path("description").asString()).isEqualTo(expected.path("allowed").asBoolean());
+        if (!passes) {
+            assertThat(code).isEqualTo(expected.path("jsonRpcCode").asInt());
+            assertThat(reason).isEqualTo(expected.path("auditReason").asString());
+        }
     }
 
     private static void check(JsonNode vector) {
