@@ -38,6 +38,11 @@ import pl.aiwcorpo.mcp.gateway.stream.ToolStreams;
 import pl.aiwcorpo.mcp.gateway.stream.UserToolLists;
 import pl.aiwcorpo.mcp.gateway.registry.ChangeWatcher;
 import pl.aiwcorpo.mcp.gateway.registry.DefinitionCheck;
+import pl.aiwcorpo.mcp.gateway.agent.AgentAdmin;
+import pl.aiwcorpo.mcp.gateway.agent.AgentRegistry;
+import pl.aiwcorpo.mcp.gateway.agent.AgentStore;
+import pl.aiwcorpo.mcp.gateway.agent.PrincipalClassifier;
+import pl.aiwcorpo.mcp.gateway.admin.AgentClientController;
 import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitchHealth;
 import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitchStore;
 import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitches;
@@ -73,6 +78,7 @@ import pl.aiwcorpo.mcp.gateway.tracing.RedactingSpanExporters;
 import pl.aiwcorpo.mcp.gateway.tracing.RequestUrlFilter;
 import pl.aiwcorpo.mcp.gateway.net.AddressPolicy;
 import pl.aiwcorpo.mcp.gateway.tls.ServerTls;
+import pl.aiwcorpo.mcp.gateway.authz.AgentCeilingAuthorizer;
 import pl.aiwcorpo.mcp.gateway.authz.ToolAccess;
 import pl.aiwcorpo.mcp.gateway.authz.ToolAuthorizer;
 import pl.aiwcorpo.mcp.gateway.broker.BrokerClient;
@@ -263,9 +269,39 @@ public class GatewayConfiguration {
     @Bean
     KillSwitchController killSwitchController(KillSwitchStore store, KillSwitches killSwitches, ServerRegistry servers,
                                               RegistryService registryService, AuditLog audit, GatewayProperties properties,
-                                              JsonMapper gatewayJson, FreshMfa mfa) {
+                                              JsonMapper gatewayJson, FreshMfa mfa, AgentRegistry agentRegistry) {
         return new KillSwitchController(store, killSwitches, servers, registryService, audit, properties.componentId(), gatewayJson,
-                killSwitches::refresh, mfa);
+                killSwitches::refresh, mfa, agentRegistry);
+    }
+
+    @Bean
+    AgentStore agentStore(JdbcClient jdbc, JsonMapper gatewayJson) {
+        return new AgentStore(jdbc, gatewayJson);
+    }
+
+    /** Agents are suspended within the 5 s of every emergency switch (CC-266), so the copy lives as long as the one of the switches. */
+    @Bean
+    AgentRegistry agentRegistry(AgentStore store, GatewayProperties properties, MeterRegistry meters) {
+        return new AgentRegistry(store::all, properties.mcp().killSwitchCacheTtl(), System::nanoTime, meters);
+    }
+
+    @Bean
+    PrincipalClassifier principalClassifier(AgentRegistry agentRegistry, Clock clock) {
+        return new PrincipalClassifier(agentRegistry, clock, java.time.Duration.ofSeconds(60));
+    }
+
+    @Bean
+    AgentAdmin agentAdmin(AgentStore store, RegistryStore registryStore, AuditLog audit, GatewayProperties properties, JsonMapper gatewayJson,
+                          Clock clock, AgentRegistry agentRegistry, PolicyService policies) {
+        return new AgentAdmin(store, registryStore, audit, properties.componentId(), gatewayJson, clock, () -> {
+            agentRegistry.refresh();
+            policies.reload();
+        });
+    }
+
+    @Bean
+    AgentClientController agentClientController(AgentAdmin agents, JsonMapper gatewayJson, FreshMfa mfa) {
+        return new AgentClientController(agents, gatewayJson, mfa);
     }
 
     @Bean
@@ -280,13 +316,18 @@ public class GatewayConfiguration {
     @Bean
     ToolStreams toolStreams(UserToolLists lists, GatewayProperties properties, MeterRegistry meters, ClientSessionStore sessions,
                             JsonMapper gatewayJson, RegistryService registry, KillSwitches killSwitches, DefinitionGuard guard,
-                            PolicyService policies) {
+                            PolicyService policies, AgentRegistry agentRegistry) {
         ToolStreams streams = new ToolStreams(lists, properties.mcp().sseHeartbeatInterval(), java.time.Duration.ofSeconds(1),
                 System::currentTimeMillis, meters, id -> sessions.find(id).isPresent(), gatewayJson,
                 properties.mcp().maxOpenStreams(), properties.mcp().maxOpenStreamsPerUser(), properties.mcp().streamRecomputeParallelism(),
                 java.time.Duration.ofMillis(100));
         registry.onChange(streams::changed);
         killSwitches.onChange(streams::changed);
+        // The decisions kept per identity do not know that an agent was suspended or got another ceiling, so they are made again.
+        agentRegistry.onChange(() -> {
+            lists.policiesChanged();
+            streams.changed();
+        });
         guard.onVerdictChange(streams::changed);
         policies.onChange(() -> {
             lists.policiesChanged();
@@ -297,8 +338,9 @@ public class GatewayConfiguration {
 
     @Bean
     ChangeWatcher changeWatcher(ChangeCounter counter, RegistryService registry, KillSwitches killSwitches, PolicyService policies,
-                                GatewayProperties properties) {
-        return new ChangeWatcher(counter, registry, killSwitches, policies, properties.mcp().changePollInterval(), java.util.List.of());
+                                AgentRegistry agentRegistry, GatewayProperties properties) {
+        return new ChangeWatcher(counter, registry, killSwitches, policies, agentRegistry, properties.mcp().changePollInterval(),
+                java.util.List.of());
     }
 
     /** Created before anything that uses a relaxed setting: the start is refused here, not after a bundle was pulled over http. */
@@ -332,8 +374,8 @@ public class GatewayConfiguration {
     }
 
     @Bean
-    ToolAuthorizer toolAuthorizer(PolicyService policies, JsonMapper gatewayJson) {
-        return new CedarToolAuthorizer(policies, gatewayJson);
+    ToolAuthorizer toolAuthorizer(PolicyService policies, JsonMapper gatewayJson, AgentRegistry agentRegistry) {
+        return new AgentCeilingAuthorizer(new CedarToolAuthorizer(policies, gatewayJson), agentRegistry);
     }
 
     @Bean
@@ -626,9 +668,9 @@ public class GatewayConfiguration {
     pl.aiwcorpo.mcp.gateway.offboarding.UserPurge userPurge(ConfirmationService confirmations,
                                                             ClientSessionStore sessions, UpstreamSessions upstream,
                                                             CredentialCache credentials, AuditLog audit, GatewayProperties properties,
-                                                            ToolStreams streams) {
+                                                            ToolStreams streams, AgentAdmin agentAdmin) {
         return new pl.aiwcorpo.mcp.gateway.offboarding.UserPurge(confirmations, sessions, upstream, credentials, audit,
-                properties.componentId(), streams);
+                properties.componentId(), streams, agentAdmin);
     }
 
     @Bean
@@ -650,10 +692,10 @@ public class GatewayConfiguration {
                                         pl.aiwcorpo.mcp.gateway.ratelimit.RateLimiter rateLimiter,
                                         pl.aiwcorpo.mcp.gateway.ratelimit.RateLimitAuditThrottle rateLimitAudit,
                                         EndpointAuditThrottle endpointAudit, ToolsListCursor listCursor, KillSwitches killSwitches,
-                                        ToolAccess toolAccess, Clock clock) {
+                                        ToolAccess toolAccess, Clock clock, AgentRegistry agentRegistry) {
         return new McpGatewayService(registry, urls, upstream, credentials, authorizer, audit, errors, gatewayJson, meters,
                 properties.componentId(), confirmations, registryService, definitionGuard, rateLimiter, rateLimitAudit, endpointAudit, listCursor,
-                killSwitches, toolAccess, properties.mcp().toolsListTimeout(), clock);
+                killSwitches, toolAccess, properties.mcp().toolsListTimeout(), clock, agentRegistry);
     }
 
     @Bean

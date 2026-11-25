@@ -376,6 +376,11 @@ public class RegistryStore {
             wrote = true;
             return policyData.raiseRevision();
         }
+
+        /** Data of another table written in this transaction that the other instances must read: raises the counter of changes only. */
+        public void changed() {
+            wrote = true;
+        }
     }
 
     /**

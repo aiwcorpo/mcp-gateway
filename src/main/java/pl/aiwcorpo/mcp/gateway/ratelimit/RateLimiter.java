@@ -15,7 +15,7 @@ import pl.aiwcorpo.mcp.gateway.redis.KeyHash;
 import pl.aiwcorpo.mcp.gateway.server.Risk;
 
 /**
- * Request limits per user, per (user, AI client) and per (user, tool) (CC-135, CC-156), counted in Redis so that every instance of
+ * Request limits per user, per (user, AI client) and per (user, tool) (CC-135, CC-156), and per agent and per (agent, tool) for autonomous agents (CC-266), counted in Redis so that every instance of
  * the gateway shares them. A counter is a fixed window that starts with the first request and lives {@code window}; the request
  * that finds one at its limit is refused and counts nowhere, so a refused tool call does not use up the budget of the user. A
  * tool of risk DESTRUCTIVE has its own, lower limit; a limit can be set for any single tool. Redis that does not answer refuses the
@@ -27,7 +27,7 @@ public final class RateLimiter {
 
     /** The three dimensions in the order they are checked; the name is the audit reason of the refusal. */
     public enum Dimension {
-        USER("rate_limited_user"), CLIENT("rate_limited_client"), TOOL("rate_limited_tool");
+        USER("rate_limited_user"), CLIENT("rate_limited_client"), TOOL("rate_limited_tool"), AGENT("rate_limited_agent");
 
         private final String reason;
 
@@ -95,6 +95,14 @@ public final class RateLimiter {
      * @param risk risk of that tool, which picks the lower limit of DESTRUCTIVE tools
      */
     public Optional<Limited> check(String sub, String client, String qualifiedTool, Risk risk) {
+        return check(sub, client, false, qualifiedTool, risk);
+    }
+
+    /**
+     * As above; for an autonomous agent ({@code agent}, {@code client} is its client id) the dimensions are the agent and the pair of agent
+     * and tool, with the limits of agents (CC-266), instead of the user and the pair of user and client.
+     */
+    public Optional<Limited> check(String sub, String client, boolean agent, String qualifiedTool, Risk risk) {
         GatewayProperties.RateLimit config = settings.get();
         if (!config.enabled()) {
             return Optional.empty();
@@ -103,12 +111,18 @@ public final class RateLimiter {
         List<String> keys = new ArrayList<>();
         List<String> arguments = new ArrayList<>();
         arguments.add(Long.toString(config.window().toMillis()));
-        add(dimensions, keys, arguments, Dimension.USER, "u:" + KeyHash.of(sub), config.perUser());
-        if (client != null) {
-            add(dimensions, keys, arguments, Dimension.CLIENT, "c:" + KeyHash.of(sub + "\n" + client), config.perClient());
+        if (agent) {
+            add(dimensions, keys, arguments, Dimension.AGENT, "a:" + KeyHash.of(client), config.perAgent());
+        } else {
+            add(dimensions, keys, arguments, Dimension.USER, "u:" + KeyHash.of(sub), config.perUser());
+            if (client != null) {
+                add(dimensions, keys, arguments, Dimension.CLIENT, "c:" + KeyHash.of(sub + "\n" + client), config.perClient());
+            }
         }
         if (qualifiedTool != null) {
-            add(dimensions, keys, arguments, Dimension.TOOL, "t:" + KeyHash.of(sub + "\n" + qualifiedTool), toolLimit(config, qualifiedTool, risk));
+            // The tool of an agent is a dimension of the agent (rate_limited_agent, CC-266); it keeps the limits an operator set for the tool.
+            add(dimensions, keys, arguments, agent ? Dimension.AGENT : Dimension.TOOL, "t:" + KeyHash.of(sub + "\n" + qualifiedTool),
+                    agent ? Math.min(config.perAgentTool(), toolLimit(config, qualifiedTool, risk)) : toolLimit(config, qualifiedTool, risk));
         }
         try {
             List<?> answer = redis.execute(CHECK_AND_COUNT, keys, arguments.toArray());

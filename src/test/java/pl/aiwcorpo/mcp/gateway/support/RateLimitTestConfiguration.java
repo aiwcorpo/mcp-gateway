@@ -27,7 +27,13 @@ public class RateLimitTestConfiguration {
     public static GatewayProperties.RateLimit settings(int perUser, int perClient, int perTool, int destructivePerTool,
                                                        Map<String, Integer> tools) {
         return new GatewayProperties.RateLimit(true, Duration.ofSeconds(30), perUser, perClient, perTool, destructivePerTool, tools,
-                Duration.ofSeconds(10));
+                Duration.ofSeconds(10), 1_000_000, 1_000_000);
+    }
+
+    /** Only the limits of autonomous agents are small; every other limit is out of reach. */
+    public static GatewayProperties.RateLimit agentSettings(int perAgent, int perAgentTool) {
+        return new GatewayProperties.RateLimit(true, Duration.ofSeconds(30), 1_000_000, 1_000_000, 1_000_000, 1_000_000, Map.of(),
+                Duration.ofSeconds(10), perAgent, perAgentTool);
     }
 
     public static void use(GatewayProperties.RateLimit next) {

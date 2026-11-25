@@ -32,13 +32,10 @@ class CedarDecisionVectorsTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private static final List<String> CLIENTS = List.of("claude-code", "claude-ai");
 
-    /**
-     * Vectors of 8.0.0 that need the Cedar context attribute principalType (CC-263): the gateway does not set it until an agent can
-     * call (the agent registry and the emission of pty, later slices of the rollout), so every caller is a human and the ban of
-     * DESTRUCTIVE tools for agents has nothing to decide. The vectors of the levels gateway-resource and gateway-prompt (read_resource and
-     * get_prompt, CC-262) are not run here either: the gateway evaluates neither action until it serves resources/read and prompts/get.
+    /*
+     * The vectors of the levels gateway-resource and gateway-prompt (read_resource and get_prompt, CC-262) are not run here: the gateway
+     * evaluates neither action until it serves resources/read and prompts/get.
      */
-    private static final Set<String> NEEDS_PRINCIPAL_TYPE = Set.of("gw-agent-destructive-denied.json", "gw-delegated-destructive-denied.json");
 
     @TestFactory
     List<DynamicTest> gatewayVectors() {
@@ -53,9 +50,6 @@ class CedarDecisionVectorsTest {
             if (document.path("builder").has("adjustment")) {
                 // The vector takes the refs out of the request after the builder made it, which the gateway never does: its builder always
                 // gives them, and a request without them is the contract's own fail-closed case (the entity builder vectors).
-                continue;
-            }
-            if (NEEDS_PRINCIPAL_TYPE.contains(vector.name())) {
                 continue;
             }
             if (vector.name().equals("gw-unknown-tool-denied.json")) {
@@ -87,6 +81,12 @@ class CedarDecisionVectorsTest {
                 Caller caller = Caller.of(c.path("sub").asString(), c.path("usr").asString(), groups, c.path("azp").asString());
                 if (c.has("mfa")) {
                     caller = caller.withMfaAge(c.path("mfa").asLong());
+                }
+                if (c.has("pty")) {
+                    caller = caller.withPrincipalType(c.path("pty").asString());
+                }
+                if (c.has("act")) {
+                    caller = caller.withActor(c.path("act").path("sub").asString());
                 }
                 CedarToolAuthorizer.Evaluation result = authorizer.evaluate(caller, descriptor,
                         JSON.convertValue(input.path("arguments"), Map.class), List.of(), input.path("credentialType").asString(null));

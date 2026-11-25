@@ -10,6 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 
+import pl.aiwcorpo.mcp.gateway.agent.AgentRegistry;
 import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitches;
 import pl.aiwcorpo.mcp.gateway.policy.PolicyService;
 
@@ -26,6 +27,7 @@ public final class ChangeWatcher implements DisposableBean {
     private final RegistryService registry;
     private final KillSwitches switches;
     private final PolicyService policies;
+    private final AgentRegistry agents;
     private final List<Runnable> listeners;
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread thread = new Thread(r, "change-watcher");
@@ -34,12 +36,13 @@ public final class ChangeWatcher implements DisposableBean {
     });
     private long seen = -1;
 
-    public ChangeWatcher(ChangeCounter counter, RegistryService registry, KillSwitches switches, PolicyService policies, Duration interval,
+    public ChangeWatcher(ChangeCounter counter, RegistryService registry, KillSwitches switches, PolicyService policies, AgentRegistry agents, Duration interval,
                          List<Runnable> listeners) {
         this.counter = counter;
         this.registry = registry;
         this.switches = switches;
         this.policies = policies;
+        this.agents = agents;
         this.listeners = List.copyOf(listeners);
         scheduler.scheduleWithFixedDelay(this::tick, interval.toMillis(), interval.toMillis(), TimeUnit.MILLISECONDS);
     }
@@ -52,6 +55,9 @@ public final class ChangeWatcher implements DisposableBean {
             if (moved || switches.dueForRefresh()) {
                 switches.refresh();
             }
+            if (moved || agents.dueForRefresh()) {
+                agents.refresh();
+            }
             if (moved) {
                 registry.reloadChanged();
                 policies.reload();
@@ -62,6 +68,9 @@ public final class ChangeWatcher implements DisposableBean {
             log.warn("the counter of changes could not be read: {}", e.getClass().getName());
             if (switches.dueForRefresh()) {
                 switches.refresh();
+            }
+            if (agents.dueForRefresh()) {
+                agents.refresh();
             }
         }
     }

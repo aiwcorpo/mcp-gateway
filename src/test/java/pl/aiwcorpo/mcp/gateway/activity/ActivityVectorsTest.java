@@ -30,9 +30,9 @@ class ActivityVectorsTest {
         int later = 0;
         for (Vectors.Vector vector : vectors) {
             JsonNode document = vector.document();
-            // The rows made of resource_read and prompt_get events, and of the refusals of an agent, need events that the gateway does not
-            // write yet (no resources/read, no prompts/get, no agents). They come with the slices that add those; the vectors that only
-            // check the shape of a row of kind resource or prompt against ActivityCall run here.
+            // The rows made of resource_read and prompt_get events (also of the refusals of an agent among them) need events that the gateway
+            // does not write yet (no resources/read, no prompts/get). They come with the slice that adds those; the vectors that only check
+            // the shape of a row of kind resource or prompt against ActivityCall run here.
             if (LATER_SLICES.stream().anyMatch(vector.name()::startsWith)) {
                 later++;
                 continue;
@@ -53,11 +53,11 @@ class ActivityVectorsTest {
                 }));
             }
         }
-        assertThat(later).isEqualTo(24);
+        assertThat(later).isEqualTo(21);
         return tests;
     }
 
-    private static final List<String> LATER_SLICES = List.of("aggregation-resource-read-", "aggregation-prompt-get-", "aggregation-agent-");
+    private static final List<String> LATER_SLICES = List.of("aggregation-resource-read-", "aggregation-prompt-get-");
 
     @TestFactory
     List<DynamicTest> cursor() {

@@ -32,7 +32,7 @@ public final class UserToolLists {
 
     private static final int MAX_IDENTITIES = 10_000;
 
-    private record Identity(String sub, String username, String client, List<String> groups) {
+    private record Identity(String sub, String username, String client, String principalType, List<String> groups) {
     }
 
     /** The decisions made for one identity; {@code policies} is the generation of the policies they were made under. */
@@ -68,7 +68,7 @@ public final class UserToolLists {
     public List<ListChangeTracker.Tool> of(GatewayUser user) {
         Decisions decisions;
         synchronized (identities) {
-            decisions = identities.computeIfAbsent(new Identity(user.sub(), user.username(), user.client(), user.mcpGroups()), k -> new Decisions());
+            decisions = identities.computeIfAbsent(new Identity(user.sub(), user.username(), user.client(), user.principalType(), user.mcpGroups()), k -> new Decisions());
         }
         List<ListChangeTracker.Tool> out = new ArrayList<>();
         // One computation per identity at a time: the second stream of an identity waits for the first and finds its decisions.

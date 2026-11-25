@@ -24,6 +24,9 @@ public final class McpAuthenticationEntryPoint implements AuthenticationEntryPoi
     static final String UNAVAILABLE_BODY = "{\"error\":\"upstream_unavailable\",\"message\":\"The identity provider keys are "
             + "temporarily unavailable. Try again in a few seconds.\"}";
 
+    static final String REGISTRY_UNAVAILABLE_BODY = "{\"error\":\"upstream_unavailable\",\"message\":\"The service is temporarily "
+            + "unavailable. Try again in a few seconds.\"}";
+
     /**
      * Known noise that is not audited. Everything else is, because the security chain matches paths after
      * normalization (encoding, ;params, double slashes, case) and a raw-path allowlist would let those variants
@@ -49,11 +52,12 @@ public final class McpAuthenticationEntryPoint implements AuthenticationEntryPoi
         }
         response.setHeader("X-Request-Id", requestId);
         response.setContentType("application/json; charset=utf-8");
-        if (ClientTokenUnavailable.REASON.equals(reason)) {
+        boolean registryUnavailable = AgentRegistryUnavailable.REASON.equals(reason);
+        if (ClientTokenUnavailable.REASON.equals(reason) || registryUnavailable) {
             response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
             response.setHeader(HttpHeaders.RETRY_AFTER, Integer.toString(AuthenticationAudit.retryAfterOf(authException)));
             response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
-            response.getWriter().write(UNAVAILABLE_BODY);
+            response.getWriter().write(registryUnavailable ? REGISTRY_UNAVAILABLE_BODY : UNAVAILABLE_BODY);
             return;
         }
         response.setHeader(HttpHeaders.WWW_AUTHENTICATE,

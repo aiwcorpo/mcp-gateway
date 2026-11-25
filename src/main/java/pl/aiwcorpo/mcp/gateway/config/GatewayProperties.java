@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 import org.springframework.validation.annotation.Validated;
 
@@ -320,8 +321,17 @@ public record GatewayProperties(
             @DefaultValue("10") @Min(1) int destructivePerTool,
             @DefaultValue Map<String, Integer> tools,
             /* One audit event per user and reason in this time; the rest is only counted. */
-            @DefaultValue("10s") Duration auditInterval) {
+            @DefaultValue("10s") Duration auditInterval,
+            /* An autonomous agent is counted per agent, and per (agent, tool), instead of per user and per client (CC-266, reason rate_limited_agent). */
+            @DefaultValue("120") @Min(1) int perAgent,
+            @DefaultValue("30") @Min(1) int perAgentTool) {
 
+        public RateLimit(boolean enabled, Duration window, int perUser, int perClient, int perTool, int destructivePerTool, Map<String, Integer> tools,
+                         Duration auditInterval) {
+            this(enabled, window, perUser, perClient, perTool, destructivePerTool, tools, auditInterval, 120, 30);
+        }
+
+        @ConstructorBinding
         public RateLimit {
             if (window == null || window.compareTo(Duration.ofSeconds(1)) < 0 || window.compareTo(Duration.ofHours(1)) > 0) {
                 throw new IllegalArgumentException("gateway.rate-limit.window must be between 1 s and 1 h");

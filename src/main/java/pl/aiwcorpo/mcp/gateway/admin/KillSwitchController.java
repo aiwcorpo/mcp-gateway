@@ -20,10 +20,11 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import jakarta.servlet.http.HttpServletRequest;
+import pl.aiwcorpo.mcp.gateway.agent.AgentClient;
+import pl.aiwcorpo.mcp.gateway.agent.AgentRegistry;
 import pl.aiwcorpo.mcp.gateway.audit.AuditEvent;
 import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
 import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
-import pl.aiwcorpo.mcp.gateway.confirm.TextHygiene;
 import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitchStore;
 import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitches;
 import pl.aiwcorpo.mcp.gateway.registry.PrimitiveKind;
@@ -31,8 +32,6 @@ import pl.aiwcorpo.mcp.gateway.registry.RegisteredServer;
 import pl.aiwcorpo.mcp.gateway.registry.RegistryService;
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
 import pl.aiwcorpo.mcp.gateway.server.ServerRegistry;
-import tools.jackson.core.JacksonException;
-import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
@@ -61,10 +60,18 @@ public class KillSwitchController {
     private final AdminResponses answers;
     private final Runnable changed;
     private final FreshMfa mfa;
+    private final AgentRegistry agents;
 
     /** @param changed told after a switch was stored, so that this instance reads it and its streams are checked at once */
     public KillSwitchController(KillSwitchStore store, KillSwitches switches, ServerRegistry servers, RegistryService registry, AuditLog audit,
                                 String componentId, JsonMapper json, Runnable changed, FreshMfa mfa) {
+        this(store, switches, servers, registry, audit, componentId, json, changed, mfa, AgentRegistry.empty());
+    }
+
+    /** @param agents the suspensions of agents, listed next to the switches of servers, tools, resources and prompts (CC-266) */
+    public KillSwitchController(KillSwitchStore store, KillSwitches switches, ServerRegistry servers, RegistryService registry, AuditLog audit,
+                                String componentId, JsonMapper json, Runnable changed, FreshMfa mfa, AgentRegistry agents) {
+        this.agents = agents;
         this.store = store;
         this.switches = switches;
         this.servers = servers;
@@ -84,7 +91,8 @@ public class KillSwitchController {
             return answers.error(HttpStatus.FORBIDDEN, requestId, "access_denied", null, null);
         }
         Optional<List<KillSwitchStore.Entry>> entries = switches.entries();
-        if (entries.isEmpty()) {
+        Optional<List<AgentClient>> registered = agents.all();
+        if (entries.isEmpty() || registered.isEmpty()) {
             return answers.unavailable(requestId, RETRY_AFTER_SECONDS);
         }
         ObjectNode body = json.createObjectNode();
@@ -106,6 +114,18 @@ public class KillSwitchController {
             item.put("setAt", entry.setAt().truncatedTo(ChronoUnit.SECONDS).toString());
             item.put("reason", entry.reason());
         });
+        List<AgentClient> suspended = registered.get().stream().filter(AgentClient::suspended)
+                .sorted(java.util.Comparator.comparing((AgentClient agent) -> agent.suspension().at()).thenComparing(AgentClient::clientId)).toList();
+        if (!suspended.isEmpty()) {
+            ArrayNode agentSwitches = body.putArray("agentSwitches");
+            suspended.forEach(agent -> {
+                ObjectNode item = agentSwitches.addObject();
+                item.put("clientId", agent.clientId());
+                item.put("setBy", agent.suspension().by());
+                item.put("setAt", agent.suspension().at().truncatedTo(ChronoUnit.SECONDS).toString());
+                item.put("reason", agent.suspension().reason());
+            });
+        }
         return answers.ok(requestId, body);
     }
 
@@ -169,7 +189,7 @@ public class KillSwitchController {
         if (servers.find(serverId).isEmpty() || !knowsEntry(serverId, kind, name)) {
             return answers.error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
         }
-        Optional<String> reason = reasonOf(request.getInputStream().readNBytes(2049));
+        Optional<String> reason = KillSwitchReason.parse(json, request.getInputStream().readNBytes(2049));
         if (reason.isEmpty()) {
             return answers.error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
         }
@@ -250,7 +270,7 @@ public class KillSwitchController {
         if (server.isEmpty() || (tool != null && !knows(server.get(), tool))) {
             return answers.error(HttpStatus.NOT_FOUND, requestId, "not_found_or_denied", null, null);
         }
-        Optional<String> reason = reasonOf(request.getInputStream().readNBytes(2049));
+        Optional<String> reason = KillSwitchReason.parse(json, request.getInputStream().readNBytes(2049));
         if (reason.isEmpty()) {
             return answers.error(HttpStatus.BAD_REQUEST, requestId, "invalid_request", null, null);
         }
@@ -300,27 +320,6 @@ public class KillSwitchController {
     /** The registry knows the tool in any state: approved, waiting for approval, or served from the configuration. */
     private boolean knows(McpServer server, String tool) {
         return TOOL_NAME.matcher(tool).matches() && servers.resolveForCall(server.system() + "__" + tool).isPresent();
-    }
-
-    /** The body is exactly {@code {"reason": <1 to 200 characters>}}, without the characters CC-121 forbids. */
-    private Optional<String> reasonOf(byte[] raw) {
-        if (raw.length > 2048) {
-            return Optional.empty();
-        }
-        try {
-            JsonNode body = json.readTree(raw);
-            if (body == null || !body.isObject() || body.size() != 1 || !body.path("reason").isString()) {
-                return Optional.empty();
-            }
-            String reason = body.path("reason").asString();
-            int length = reason.codePointCount(0, reason.length());
-            if (length < 1 || length > 200 || TextHygiene.containsForbidden(reason)) {
-                return Optional.empty();
-            }
-            return Optional.of(reason);
-        } catch (JacksonException e) {
-            return Optional.empty();
-        }
     }
 
     private static boolean administrator(Jwt token) {

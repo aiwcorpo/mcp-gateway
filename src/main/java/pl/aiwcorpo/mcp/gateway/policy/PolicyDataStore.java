@@ -51,6 +51,11 @@ public class PolicyDataStore {
                 .param(System.currentTimeMillis()).query(Long.class).single();
     }
 
+    /** The rule of {@link #raiseRevision} (done atomically in SQL), pinned by the vectors: a previous revision at or above the clock still rises by one. */
+    public static long nextRevision(long previous, long nowMillis) {
+        return Math.max(previous + 1, nowMillis);
+    }
+
     public void saveScopeMapping(JsonNode document) {
         jdbc.sql("UPDATE policy_state SET scope_mapping = ?::jsonb WHERE id = 1").param(json.writeValueAsString(document)).update();
     }
