@@ -5,10 +5,10 @@ integration builds tag the image `m6-<short sha>`.
 
 ## Unreleased
 
-- Built on `mcp-contracts` 8.0.0 (a major release). This is step 2 of the 8.0.0 rollout (CC-260): the gateway reads and stores the new manifest
-  entries and lets an administrator approve them, and still serves and emits what it did before. `tools/list`, `tools/call`, the
-  capabilities of `initialize` and `server/discover` and the claims of the internal token are unchanged; `resources/*` and `prompts/*` still
-  answer as an unknown method. Before upgrading, read the items below.
+- Built on `mcp-contracts` 8.0.0 (a major release). Step 2 of the 8.0.0 rollout (CC-260) was the reading, storing and approval of the new
+  manifest entries; this release also serves them: `resources/list`, `resources/templates/list`, `resources/read`, `prompts/list` and
+  `prompts/get` on `/mcp` and `/s/<serverId>/mcp` (items below). The claims `pty`, `act` and the agent fields of the data pushed to servers are
+  still not emitted. Before upgrading, read the items below.
 - Flyway migration `V17__registry_primitives.sql` adds the tables `registry_primitives` and `kill_switches_primitive` (both removed with the
   row of their server) and the column `registry_servers.contracts_version`. It only adds; it approves and hides nothing, and it needs no
   downtime. An instance of 2.1.x that runs next to a new one ignores the new tables, but it does more than refuse a new manifest: the
@@ -26,12 +26,60 @@ integration builds tag the image `m6-<short sha>`.
   without a reason, audited as `hidden_characters`, for a name or text with a forbidden character. Approvals are audited as `admin_change`
   with `definition_approved` and the new fields `resourceTemplate` (also for a static resource) or `prompt`. A receiver of the audit log that
   validates events strictly needs the 8.0.0 schema before the first server publishes such an entry. `GET /admin/v1/registry/servers` lists the
-  entries in `resources`, `resourceTemplates` and `prompts`, and `GET /admin/v1/catalog` lists the approved ones with `access: denied` for
-  everyone, because nothing can be read through the gateway yet.
+  entries in `resources`, `resourceTemplates` and `prompts`, and `GET /admin/v1/catalog` lists the approved ones with the access of the caller (see below).
 - Emergency switches of one resource (it also covers a template of that name) and one prompt: `PUT` and `DELETE` on
   `.../resources/{name}/kill-switch` and `.../prompts/{name}/kill-switch`; `GET /admin/v1/kill-switches` returns them with `scope` `resource`
   or `prompt`. Lifting needs a fresh MFA, putting does not. A client generated from an earlier contract does not know these `scope` values,
   so release the portal of 8.0.0 before anyone sets such a switch.
+- Resources and prompts (CC-259), in both eras of the protocol. `initialize` and `server/discover` always declare `resources: {subscribe: false,
+  listChanged: true}` and `prompts: {listChanged: true}`, whatever the registry holds, and never `completions`. `resources/subscribe`,
+  `resources/unsubscribe`, `completion/complete`, sampling and elicitation still answer as an unknown method (`-32601`, HTTP 404 in the modern
+  era, 200 in the legacy one). In the modern era `resources/list`, `resources/templates/list` and `prompts/list` carry `resultType: complete`,
+  `ttlMs: 60000`, `cacheScope: private`, `resources/read` carries `ttlMs: 0` and `cacheScope: private`, and `prompts/get` only `resultType`;
+  the legacy era has none of them. The three lists are paged (100 entries, `nextCursor` bound to `sub`, the filter and the kind of list;
+  a cursor of another list, `tools` included, is `-32602 Invalid cursor`), ordered by `ServerId` and then by name, bytewise. They are built
+  from approved entries, never from the lists of a server: an entry is listed when the server is served (its connection and policies are
+  approved, it is enabled, no switch), the entry is approved, not switched off and Cedar allows `read_resource` or `get_prompt` for the user
+  (`mcp-<system>-read`, `additionalGroup`). The gateway reads a server's own `resources/list` and `resources/templates/list` (at most every
+  `MCP_REGISTRY_DEFINITION_CHECK_TTL`) only to compare each entry with its approved definition; a mismatch hides the entry and a server that
+  does not answer in `MCP_TOOLS_LIST_TIMEOUT` is skipped. Prompts need no server. The address filter: `tools=` hides every entry, `access=write`
+  hides them, `systems` and system entries of `exclude` apply, tool entries of `exclude` do not.
+- `resources/read`: the URI is matched against the approved static resources and templates of the system named by its scheme (RFC 6570 level 1,
+  each variable decoded once and checked against the `idPattern` of its type and the text hygiene, the expansion must equal the URI byte for
+  byte, so a query, a fragment, an upper-case scheme, an encoded slash a type does not allow, `..` in a file path and a double encoding match
+  nothing). Everything from there to the state of the entry (no match, a bad variable, no grant, a forbid, the address filter, an emergency
+  switch, a server or entry that is not served, a changed definition) is one answer, `-32602 Resource not found` with `data.uri`, with the
+  same bytes; the audit says which it was (`uri_no_match`, `variable_invalid`, `not_granted`, `policy_forbid`, `filter_scope`, `kill_switch`,
+  `definition_changed`). An unreadable store of switches, a server that does not answer, a result the gateway refuses and a failed policy
+  service are `-32603` with `data.error: upstream_unavailable`; a missing connection of the account is `-32603` with
+  `data: {error: credential_required, system, connectUrl}`. In the modern era `Mcp-Name` must equal `params.uri` (`-32020`, HTTP 400, audit
+  `header_mismatch`); the legacy era needs no header. A template with `credential.required` takes the credential of the user from the broker;
+  a static resource is a document of the catalogue and never calls the broker. The server must return exactly one item of `contents` with the
+  requested `uri` and a `text`; a `blob` (`blob_not_supported`), another shape (`result_invalid`), an `input_required` result and more than
+  `MCP_RESOURCE_MAX_BYTES` (1 MiB, `result_too_large`) are refused. The content is passed on as the server gave it. Agents read resources the
+  same way (`maxRisk` does not limit reading) but not a template that needs a person's credential (audit `principal_not_eligible`).
+- The claim `resource` (CC-260). `resources/read` goes to a server with `resource` equal to `params.uri` in its token, and to the broker's
+  `resolve` for a template that needs a credential, and only when the receiver is known to take it: the `contractsVersion` of the approved
+  manifest of the server is at least 8.0.0, and for the broker `MCP_BROKER_CONTRACTS_VERSION` (new, empty by default) says it is. Otherwise
+  nothing is sent: `-32603 upstream_unavailable` with the audit reason `contracts_version_unsupported`, and a server of an older contract has
+  its resources and templates left out of the lists. Set `MCP_BROKER_CONTRACTS_VERSION=8.0.0` only after the broker was upgraded.
+  The gate of the policy data (`409 policy_data_stale`, one push and one repeat) now also covers `resources/read`.
+- `prompts/get` composes its result in the gateway from the approved `messages` of the manifest entry and calls no server. An unknown
+  argument, a missing required one, a value that fails its `argumentRules` (`maxLength`, `pattern`, `type`), contains `<`, `>`, `{` or `}`,
+  or has a TAB, LF or CR, is `-32602 Prompt not found` with the requested name in `data.name`, the same answer as for an unknown or a forbidden
+  prompt (audit `argument_invalid`, `not_granted`, `policy_forbid`, `filter_scope`, `kill_switch`, `definition_changed`). A prompt whose
+  text changed in the manifest is hidden until it is approved again. The events `resource_read` and `prompt_get` (CC-264) carry the name of the
+  entry, `contentBytes` and `contentSha256` or `argsLength` and `definitionHash`, never a URI, an argument or a content; an agent's carry
+  `principalType`. They are rows of the activity of the user (`kind` `resource` or `prompt`), and a request over a limit leaves one too.
+- `notifications/resources/list_changed` and `notifications/prompts/list_changed` follow the rules of `tools/list_changed` (window of 1 s,
+  the same triggers, none for a change the address filter cuts out). A legacy session stream announces all three lists; a
+  `subscriptions/listen` asks for them with `resourcesListChanged` and `promptsListChanged` next to `toolsListChanged`.
+- The catalog (`GET /admin/v1/catalog`) now says `granted` or `denied` for resources, templates and prompts from the decision of Cedar, with
+  `mcp-<system>-read` and the `additionalGroup` of the entry as `requiredEntitlements`.
+  The development bootstrap approves the pending resources, templates and prompts of a manifest together with its tools.
+- Blocks of a `tools/call` result that point at a URI (`resource_link`, an embedded resource) whose scheme is not the system of the server
+  (for an adapter `<system>+<scheme>`) are removed, and the `tool_call` event says `link_scheme_refused`. This changes the result of an existing
+  tool that returned such a link.
 - Registry of autonomous agents (CC-266, CC-261, CC-263; step 6 of the 8.0.0 rollout is the first agent, so do not register one yet, see the
   last item). Flyway migration `V18__agent_clients.sql` adds the table `agent_clients` (it only adds, no downtime; an instance of 2.1.x ignores
   it). New admin operations under `/admin/v1/agent-clients`: list (`owner=me` needs no group), create, get, change (`If-Match`, as for servers),
@@ -70,7 +118,7 @@ integration builds tag the image `m6-<short sha>`.
   agents cannot apply yet). Tools of a server that needs no credential still work. Never add the `azp` of an agent to
   `MCP_ALLOWED_CLIENTS`: the registry is the only list for agents, and an agent that also appeared there would be a person's client for the
   servers. One service account belongs to one agent (a second entry for it is `409 agent_exists`).
-- Not done yet, by design: the gateway sends no `pty`, `act` or `resource` claim to servers or to the broker, and does not push
+- Not done yet, by design: the gateway sends no `pty` or `act` claim to servers or to the broker, and does not push
   `allowedAgentClients` to servers. A server that follows 8.0.0 accepts an `azp` without `pty` only from `allowedClients`, so its answer to a
   call from an agent is a refusal until the release that emits. Register no agent before that release.
 

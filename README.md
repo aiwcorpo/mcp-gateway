@@ -31,7 +31,7 @@ Full steps: [deploy/README.md](deploy/README.md).
 
 | Port | Who calls it | What it serves |
 | --- | --- | --- |
-| 8080 | AI clients, through your reverse proxy | `/mcp`, `/s/`, `/.well-known/oauth-protected-resource`, `/.well-known/mcp-jwks.json` (the keys that MCP servers use to verify the gateway) |
+| 8080 | AI clients, through your reverse proxy | `/mcp`, `/s/` (tools, resources and prompts), `/.well-known/oauth-protected-resource`, `/.well-known/mcp-jwks.json` (the keys that MCP servers use to verify the gateway) |
 | 8443 | the platform, over TLS | `/admin/v1/*` (the portal), `/actuator/health`, `/actuator/prometheus` |
 
 The public port serves no actuator, and the internal one serves no MCP paths. MCP servers are not listed in the configuration: an administrator adds one by its address in the portal.
