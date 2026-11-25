@@ -41,7 +41,7 @@ integration builds tag the image `m6-<short sha>`.
   from approved entries, never from the lists of a server: an entry is listed when the server is served (its connection and policies are
   approved, it is enabled, no switch), the entry is approved, not switched off and Cedar allows `read_resource` or `get_prompt` for the user
   (`mcp-<system>-read`, `additionalGroup`). The gateway reads a server's own `resources/list` and `resources/templates/list` (at most every
-  `MCP_REGISTRY_DEFINITION_CHECK_TTL`) only to compare each entry with its approved definition; a mismatch hides the entry and a server that
+  `MCP_REGISTRY_DEFINITION_CHECK_TTL`) only to compare each entry with its approved definition; a mismatch hides the entry (the reading is made with the token of the user who asked and kept for that user: the service variant of the token cannot be used inside a session, CC-070), and a server that
   does not answer in `MCP_TOOLS_LIST_TIMEOUT` is skipped. Prompts need no server. The address filter: `tools=` hides every entry, `access=write`
   hides them, `systems` and system entries of `exclude` apply, tool entries of `exclude` do not.
 - `resources/read`: the URI is matched against the approved static resources and templates of the system named by its scheme (RFC 6570 level 1,
@@ -57,7 +57,7 @@ integration builds tag the image `m6-<short sha>`.
   a static resource is a document of the catalogue and never calls the broker. The server must return exactly one item of `contents` with the
   requested `uri` and a `text`; a `blob` (`blob_not_supported`), another shape (`result_invalid`), an `input_required` result and more than
   `MCP_RESOURCE_MAX_BYTES` (1 MiB, `result_too_large`) are refused. The content is passed on as the server gave it. Agents read resources the
-  same way (`maxRisk` does not limit reading) but not a template that needs a person's credential (audit `principal_not_eligible`).
+  same way (`maxRisk` does not limit reading) but not a template with `credential.required`, whatever the credential type (service account and token exchange too, as for tools until the principal type is emitted); that read is refused as `Resource not found` with the audit reason `principal_not_eligible`.
 - The claim `resource` (CC-260). `resources/read` goes to a server with `resource` equal to `params.uri` in its token, and to the broker's
   `resolve` for a template that needs a credential, and only when the receiver is known to take it: the `contractsVersion` of the approved
   manifest of the server is at least 8.0.0, and for the broker `MCP_BROKER_CONTRACTS_VERSION` (new, empty by default) says it is. Otherwise
