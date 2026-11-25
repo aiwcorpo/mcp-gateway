@@ -53,6 +53,12 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
     /** Why no stream was opened: the user holds its share (the caller answers 429) or the instance is full (503). */
     public enum Refusal { USER_SHARE, INSTANCE }
 
+    /** Which lists a stream announces a change of: the ones its client asked for, and for a session all the ones the gateway declares (CC-259). */
+    public record Interest(boolean tools, boolean resources, boolean prompts) {
+
+        public static final Interest ALL = new Interest(true, true, true);
+    }
+
     /** The result of {@link #open}: a stream, or the refusal. */
     public record Opening(Stream stream, Refusal refusal) {
         public java.util.Optional<Stream> opened() {
@@ -61,6 +67,7 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
     }
 
     private final UserToolLists lists;
+    private final UserPrimitiveLists primitiveLists;
     private final Duration heartbeat;
     private final long windowMillis;
     private final LongSupplier millis;
@@ -84,6 +91,14 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
     public ToolStreams(UserToolLists lists, Duration heartbeat, Duration window, LongSupplier millis, MeterRegistry meters,
                        Predicate<String> sessionExists, JsonMapper json, int maxOpen, int maxOpenPerUser, int recomputeParallelism,
                        Duration debounce) {
+        this(lists, null, heartbeat, window, millis, meters, sessionExists, json, maxOpen, maxOpenPerUser, recomputeParallelism, debounce);
+    }
+
+    /** @param primitiveLists the lists of resources and prompts; null for a stream that announces tools only */
+    public ToolStreams(UserToolLists lists, UserPrimitiveLists primitiveLists, Duration heartbeat, Duration window, LongSupplier millis,
+                       MeterRegistry meters, Predicate<String> sessionExists, JsonMapper json, int maxOpen, int maxOpenPerUser,
+                       int recomputeParallelism, Duration debounce) {
+        this.primitiveLists = primitiveLists;
         this.maxOpen = maxOpen;
         this.maxOpenPerUser = maxOpenPerUser;
         this.computing = new Semaphore(recomputeParallelism);
@@ -109,6 +124,11 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
      */
     public Opening open(Kind kind, GatewayUser user, String sessionId, EndpointFilter filter, String routeSystem,
                                            java.time.Instant tokenExpiresAt, JsonNode subscriptionId, boolean toolsListChanged) {
+        return open(kind, user, sessionId, filter, routeSystem, tokenExpiresAt, subscriptionId, new Interest(toolsListChanged, false, false));
+    }
+
+    public Opening open(Kind kind, GatewayUser user, String sessionId, EndpointFilter filter, String routeSystem,
+                        java.time.Instant tokenExpiresAt, JsonNode subscriptionId, Interest interest) {
         String sub = user.sub();
         boolean[] taken = {false};
         openPerUser.compute(sub, (key, count) -> {
@@ -132,10 +152,16 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
         try {
             long before = changes.get();
             // A stream that announces nothing needs no reference and no list: it costs nothing at a change (and keeps its place for the limit).
-            ListChangeTracker tracker = toolsListChanged ? new ListChangeTracker(filter, routeSystem, listOf(user), windowMillis) : null;
-            Stream stream = new Stream(kind, user, sub, sessionId, tracker, tokenExpiresAt == null ? Long.MAX_VALUE
+            ListChangeTracker tracker = interest.tools() ? new ListChangeTracker(filter, routeSystem, listOf(user), windowMillis) : null;
+            boolean resources = interest.resources() && primitiveLists != null;
+            boolean prompts = interest.prompts() && primitiveLists != null;
+            ListChangeTracker resourceTracker = resources ? ListChangeTracker.ofPrimitives(filter, routeSystem,
+                    primitivesOf(user, UserPrimitiveLists.Kind.RESOURCES), windowMillis) : null;
+            ListChangeTracker promptTracker = prompts ? ListChangeTracker.ofPrimitives(filter, routeSystem,
+                    primitivesOf(user, UserPrimitiveLists.Kind.PROMPTS), windowMillis) : null;
+            Stream stream = new Stream(kind, user, sub, sessionId, tracker, resourceTracker, promptTracker, tokenExpiresAt == null ? Long.MAX_VALUE
                     : millis.getAsLong() + Math.max(0, Duration.between(java.time.Instant.now(), tokenExpiresAt).toMillis()), subscriptionId,
-                    toolsListChanged);
+                    new Interest(interest.tools(), resources, prompts));
             open.add(stream);
             if (changes.get() != before) {
                 // Something changed while the reference was computed: the stream must not wait for the next change to find out.
@@ -159,6 +185,15 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
         computing.acquireUninterruptibly();
         try {
             return lists.of(user);
+        } finally {
+            computing.release();
+        }
+    }
+
+    private List<ListChangeTracker.Tool> primitivesOf(GatewayUser user, UserPrimitiveLists.Kind kind) {
+        computing.acquireUninterruptibly();
+        try {
+            return primitiveLists.of(user, kind);
         } finally {
             computing.release();
         }
@@ -213,24 +248,42 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
         private final String sub;
         private final String sessionId;
         private final ListChangeTracker tracker;
+        private final ListChangeTracker resourceTracker;
+        private final ListChangeTracker promptTracker;
         private final long expiresAtMillis;
         private final JsonNode subscriptionId;
-        private final boolean toolsListChanged;
+        private final Interest interest;
         private final Semaphore wake = new Semaphore(0);
         private volatile boolean check;
         private volatile String closeReason;
         private final java.util.concurrent.atomic.AtomicBoolean released = new java.util.concurrent.atomic.AtomicBoolean();
 
-        private Stream(Kind kind, GatewayUser user, String sub, String sessionId, ListChangeTracker tracker, long expiresAtMillis, JsonNode subscriptionId,
-                       boolean toolsListChanged) {
+        private Stream(Kind kind, GatewayUser user, String sub, String sessionId, ListChangeTracker tracker, ListChangeTracker resourceTracker,
+                       ListChangeTracker promptTracker, long expiresAtMillis, JsonNode subscriptionId, Interest interest) {
             this.kind = kind;
             this.user = user;
             this.sub = sub;
             this.sessionId = sessionId;
             this.tracker = tracker;
+            this.resourceTracker = resourceTracker;
+            this.promptTracker = promptTracker;
             this.expiresAtMillis = expiresAtMillis;
             this.subscriptionId = subscriptionId;
-            this.toolsListChanged = toolsListChanged;
+            this.interest = interest;
+        }
+
+        private long nextDue() {
+            long due = Long.MAX_VALUE;
+            for (ListChangeTracker each : new ListChangeTracker[] {tracker, resourceTracker, promptTracker}) {
+                if (each != null) {
+                    due = Math.min(due, each.nextDueAt());
+                }
+            }
+            return due;
+        }
+
+        private boolean tracking() {
+            return tracker != null || resourceTracker != null || promptTracker != null;
         }
 
         /** Takes the stream out of the books; harmless a second time. */
@@ -292,7 +345,7 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
                 if (now >= expiresAtMillis) {
                     return "token_expired";
                 }
-                long wakeAt = Math.min(Math.min(nextBeat, nextProbe), Math.min(expiresAtMillis, tracker == null ? Long.MAX_VALUE : tracker.nextDueAt()));
+                long wakeAt = Math.min(Math.min(nextBeat, nextProbe), Math.min(expiresAtMillis, nextDue()));
                 if (check) {
                     wakeAt = Math.min(wakeAt, now + 1000);
                 }
@@ -307,8 +360,10 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
                 if (closeReason != null) {
                     return closeReason;
                 }
-                List<Long> sends = List.of();
-                if (check && tracker != null) {
+                int tools = 0;
+                int resources = 0;
+                int prompts = 0;
+                if (check && tracking()) {
                     // Changes come in bursts (an approval touches the registry, the switches and the readings): wait a moment so that one list is
                     // computed for all of them. The wake-ups are taken before the flag is cleared, so that one that comes in between is not lost.
                     if (debounceMillis > 0) {
@@ -323,7 +378,9 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
                     check = false;
                     now = millis.getAsLong();
                     try {
-                        sends = tracker.observe(now, listOf(user));
+                        tools = tracker == null ? 0 : tracker.observe(now, listOf(user)).size();
+                        resources = resourceTracker == null ? 0 : resourceTracker.observe(now, primitivesOf(user, UserPrimitiveLists.Kind.RESOURCES)).size();
+                        prompts = promptTracker == null ? 0 : promptTracker.observe(now, primitivesOf(user, UserPrimitiveLists.Kind.PROMPTS)).size();
                     } catch (RuntimeException e) {
                         check = true;
                         log.warn("the list of a stream could not be computed, it is tried again: {}", e.getClass().getName());
@@ -331,14 +388,23 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
                 } else {
                     check = false;
                 }
-                if (sends.isEmpty() && tracker != null) {
-                    sends = tracker.advance(now);
+                if (tools == 0 && tracker != null) {
+                    tools = tracker.advance(now).size();
                 }
-                for (int i = 0; i < sends.size(); i++) {
-                    if (toolsListChanged) {
-                        send(out, envelope("notifications/tools/list_changed", null));
-                        meters.counter("mcp_gateway_stream_notifications_total").increment();
-                    }
+                if (resources == 0 && resourceTracker != null) {
+                    resources = resourceTracker.advance(now).size();
+                }
+                if (prompts == 0 && promptTracker != null) {
+                    prompts = promptTracker.advance(now).size();
+                }
+                for (int i = 0; i < tools; i++) {
+                    announce(out, "notifications/tools/list_changed");
+                }
+                for (int i = 0; i < resources; i++) {
+                    announce(out, "notifications/resources/list_changed");
+                }
+                for (int i = 0; i < prompts; i++) {
+                    announce(out, "notifications/prompts/list_changed");
                 }
                 if (now >= nextProbe) {
                     out.write(PROBE);
@@ -357,6 +423,11 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
             }
         }
 
+        private void announce(OutputStream out, String method) throws IOException {
+            send(out, envelope(method, null));
+            meters.counter("mcp_gateway_stream_notifications_total").increment();
+        }
+
         private boolean alive() {
             try {
                 return sessionExists.test(sessionId);
@@ -368,8 +439,14 @@ public final class ToolStreams implements ApplicationListener<ContextClosedEvent
 
         private ObjectNode acknowledgement() {
             ObjectNode notifications = json.createObjectNode();
-            if (toolsListChanged) {
+            if (interest.tools()) {
                 notifications.put("toolsListChanged", true);
+            }
+            if (interest.resources()) {
+                notifications.put("resourcesListChanged", true);
+            }
+            if (interest.prompts()) {
+                notifications.put("promptsListChanged", true);
             }
             return notifications;
         }

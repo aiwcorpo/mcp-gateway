@@ -11,6 +11,9 @@ import pl.aiwcorpo.mcp.manifest.EndpointFilter;
  * snapshot before it, after the filter, by name, risk and hash of the definition. At most one notification per window: a change inside
  * the window of the last one waits for its end and is sent once for all changes so far, even when the list went back meanwhile. The
  * notification is empty. Time is given by the caller, so that the vectors run without waiting.
+ *
+ * <p>The same rules serve the lists of resources and of prompts (CC-259): there the entries carry no risk and the address leaves them by the rules
+ * of {@link pl.aiwcorpo.mcp.gateway.primitive.PrimitiveLists#throughFilter}.
  */
 public final class ListChangeTracker {
 
@@ -21,6 +24,7 @@ public final class ListChangeTracker {
     private final EndpointFilter filter;
     private final long windowMillis;
     private final String routeSystem;
+    private final boolean primitives;
     private List<String> previous;
     private long lastSent = Long.MIN_VALUE;
     private boolean pending;
@@ -34,8 +38,18 @@ public final class ListChangeTracker {
      * @param opened the list of the user when the stream was opened: the reference of the first comparison
      */
     public ListChangeTracker(EndpointFilter filter, String routeSystem, List<Tool> opened, long windowMillis) {
+        this(filter, routeSystem, opened, windowMillis, false);
+    }
+
+    /** A tracker of the entries of resources or prompts: {@code name} is {@code <system>__<name>}, {@code risk} is not used. */
+    public static ListChangeTracker ofPrimitives(EndpointFilter filter, String routeSystem, List<Tool> opened, long windowMillis) {
+        return new ListChangeTracker(filter, routeSystem, opened, windowMillis, true);
+    }
+
+    private ListChangeTracker(EndpointFilter filter, String routeSystem, List<Tool> opened, long windowMillis, boolean primitives) {
         this.filter = filter;
         this.routeSystem = routeSystem;
+        this.primitives = primitives;
         this.windowMillis = windowMillis;
         this.previous = entries(opened);
     }
@@ -80,7 +94,10 @@ public final class ListChangeTracker {
     private List<String> entries(List<Tool> tools) {
         List<String> out = new ArrayList<>();
         for (Tool tool : tools) {
-            if ((routeSystem == null || tool.name().startsWith(routeSystem + "__")) && filter.allows(tool.name(), tool.risk())) {
+            boolean left = primitives
+                    ? pl.aiwcorpo.mcp.gateway.primitive.PrimitiveLists.throughFilter(filter, tool.name().substring(0, Math.max(0, tool.name().indexOf("__"))))
+                    : filter.allows(tool.name(), tool.risk());
+            if ((routeSystem == null || tool.name().startsWith(routeSystem + "__")) && left) {
                 out.add(tool.name() + " " + tool.risk() + " " + (tool.hash() == null ? "" : tool.hash()));
             }
         }

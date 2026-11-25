@@ -205,8 +205,7 @@ class EndpointVectorsTest {
             }
         }
         // primitive-list and primitive-cursor are the lists and cursors of resources/list, resources/templates/list and prompts/list on /mcp
-        // (CC-259): the gateway does not serve those methods yet, so they are not run. They belong to the slice that adds the dispatch of
-        // resources/* and prompts/* (the second slice of the 8.0.0 rollout, after the one that took the manifest and the registry).
+        // (CC-259); they run in ResourcesPromptsVectorsTest against the classes those methods are served with.
         assertThat(kinds).containsExactly("audit-throttle", "availability", "cursor", "legacy-route", "list", "list-changed", "list-changed-sequence",
                 "list-changed-stateless", "page", "primitive-cursor", "primitive-list", "routing");
         return tests;

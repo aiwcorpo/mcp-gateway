@@ -392,6 +392,7 @@ public final class GatewayTestEnvironment {
         registry.add("gateway.tls.store-password", () -> new String(TestPki.PASSWORD));
         registry.add("gateway.broker.url", () -> "https://127.0.0.1:" + broker.port());
         registry.add("gateway.broker.tls-name", () -> "mcp-credential-broker.internal");
+        registry.add("gateway.broker.confirmed-contracts-version", () -> "8.0.0");
         registry.add("gateway.redis.host", redis::getHost);
         registry.add("gateway.redis.port", () -> redis.getMappedPort(6379));
         registry.add("gateway.redis.username", () -> "gateway");

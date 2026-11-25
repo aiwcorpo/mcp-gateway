@@ -246,6 +246,12 @@ public final class AuditEvent {
         }
     }
 
+    /** Size and digest of the text a {@code resource_read} returned (CC-264); the content itself never goes to the log. */
+    public AuditEvent content(long bytes, String sha256) {
+        fields.put("contentBytes", Math.max(0, bytes));
+        return put("contentSha256", sha256);
+    }
+
     public AuditEvent argsLength(int value) {
         fields.put("argsLength", Math.max(0, value));
         return this;

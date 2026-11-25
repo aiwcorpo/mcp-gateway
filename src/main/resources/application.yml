@@ -160,6 +160,8 @@ gateway:
   mcp:
     # Milliseconds one server has for the read of its tools/list when a client lists tools (CC-180); a slower server is skipped.
     tools-list-timeout: ${MCP_TOOLS_LIST_TIMEOUT:3000}
+    # The most bytes of text one resources/read may return (CC-259); a larger result is refused as result_too_large.
+    resource-max-bytes: ${MCP_RESOURCE_MAX_BYTES:1048576}
     # HMAC key of the tools/list cursor (CC-181); the same on every instance, empty only in the dev stack (random per process).
     list-cursor-key: ${MCP_LIST_CURSOR_KEY:}
     # The most MCP requests served at once; further ones wait queue-wait for a place and are then refused with 503 and Retry-After.
@@ -197,6 +199,9 @@ gateway:
     tls-name: ${MCP_BROKER_TLS_NAME}
     timeout: 5s
     max-cache-ttl: 60s
+    # The contracts version the broker runs, as the operator confirms it (CC-260): at least 8.0.0 before the gateway asks it for a credential for
+    # a resources/read. Empty keeps such reads refused.
+    confirmed-contracts-version: ${MCP_BROKER_CONTRACTS_VERSION:}
   redis:
     host: ${MCP_REDIS_HOST}
     port: ${MCP_REDIS_PORT:6379}
