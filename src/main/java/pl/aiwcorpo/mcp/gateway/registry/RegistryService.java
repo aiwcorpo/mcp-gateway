@@ -1003,7 +1003,7 @@ public final class RegistryService {
         RegisteredServer before = held.put(serverId, state);
         boolean policiesApproved = server.get().adapter() || (state.policies().approved() && !state.policies().pending());
         servers.apply(serverId, new ServerRegistry.Applied(state.version(), state.tools(), store.floors(serverId), rejections.isEmpty(),
-                policiesApproved));
+                policiesApproved, state.entries(), state.contractsVersion(), json.writeValueAsString(state.manifest().path("credential"))));
         if (!state.equals(before)) {
             // A change of entries or contractsVersion alone (the manifest holds them too) leaves the tools as they were: the last good reading of their definitions stays.
             if (before == null || !sameToolsAndPolicies(before, state)) {

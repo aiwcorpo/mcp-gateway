@@ -13,6 +13,8 @@ import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 
 import pl.aiwcorpo.mcp.cedar.entities.Caller;
+import pl.aiwcorpo.mcp.cedar.entities.PromptDescriptor;
+import pl.aiwcorpo.mcp.cedar.entities.ResourceDescriptor;
 import pl.aiwcorpo.mcp.cedar.entities.ResourceRef;
 import pl.aiwcorpo.mcp.cedar.entities.ResourceTypes;
 import pl.aiwcorpo.mcp.cedar.entities.ScopeMapping;
@@ -32,10 +34,7 @@ class CedarDecisionVectorsTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private static final List<String> CLIENTS = List.of("claude-code", "claude-ai");
 
-    /*
-     * The vectors of the levels gateway-resource and gateway-prompt (read_resource and get_prompt, CC-262) are not run here: the gateway
-     * evaluates neither action until it serves resources/read and prompts/get.
-     */
+    /** The vectors of the levels gateway-resource and gateway-prompt (read_resource and get_prompt, CC-262) run in {@link #primitiveVectors()}. */
 
     @TestFactory
     List<DynamicTest> gatewayVectors() {
@@ -97,6 +96,66 @@ class CedarDecisionVectorsTest {
             }));
         }
         assertThat(tests).hasSizeGreaterThanOrEqualTo(15);
+        return tests;
+    }
+
+    @TestFactory
+    List<DynamicTest> primitiveVectors() {
+        List<DynamicTest> tests = new ArrayList<>();
+        for (Vectors.Vector vector : Vectors.of("policy-decisions")) {
+            JsonNode document = vector.document();
+            String level = document.path("builder").path("level").asString("");
+            if (!vector.name().startsWith("gw-") || !level.equals("gateway-resource") && !level.equals("gateway-prompt")) {
+                continue;
+            }
+            if (document.path("builder").has("adjustment")) {
+                // The vector takes the entity of the resource out of the request after the builder made it, which the gateway never does: it
+                // builds the entity from the registry and never evaluates an entry that the registry does not hold (-32602 before Cedar).
+                continue;
+            }
+            Set<String> expectedPolicies = new TreeSet<>();
+            document.path("expected").path("determiningPolicies").forEach(p -> expectedPolicies.add(p.asString()));
+            tests.add(DynamicTest.dynamicTest(vector.name(), () -> {
+                JsonNode builder = document.path("builder");
+                List<ResourceTypes> declared = new ArrayList<>();
+                builder.path("resourceTypes").forEach(file -> declared.add(ResourceTypes.fromJson(Vectors.contractFile(file.asString()))));
+                ResourceTypes types = ResourceTypes.union(declared);
+                ScopeMapping mapping = ScopeMapping.fromJson(types, Vectors.contractFile(builder.path("scopeMapping").asString()), true);
+                CedarToolAuthorizer authorizer = new CedarToolAuthorizer(
+                        Snapshots.source(Snapshots.of(1, types, mapping,
+                                Map.of("step-up.cedar", Vectors.contractFile("cedar/examples/overrides/step-up.cedar"),
+                                        "block-resource.cedar", Vectors.contractFile("cedar/examples/overrides/block-resource.cedar")), CLIENTS)), JSON);
+                JsonNode input = builder.path("input");
+                JsonNode c = input.path("caller");
+                List<String> groups = new ArrayList<>();
+                c.path("grp").forEach(g -> groups.add(g.asString()));
+                Caller caller = Caller.of(c.path("sub").asString(), c.path("usr").asString(), groups, c.path("azp").asString());
+                CedarToolAuthorizer.Evaluation result;
+                if (level.equals("gateway-resource")) {
+                    JsonNode resource = input.path("resource");
+                    List<ResourceRef> variables = new ArrayList<>();
+                    resource.path("variables").forEach(v -> variables.add(new ResourceRef(v.path("name").asString(), v.path("type").asString())));
+                    ResourceDescriptor descriptor = new ResourceDescriptor(resource.path("serverId").asString(), resource.path("system").asString(),
+                            resource.path("name").asString(), resource.path("uriTemplate").asString(), variables);
+                    if (resource.has("additionalGroup")) {
+                        descriptor = descriptor.withAdditionalGroup(resource.path("additionalGroup").asString());
+                    }
+                    result = authorizer.evaluateRead(caller, descriptor, JSON.convertValue(input.path("values"), Map.class), null);
+                } else {
+                    JsonNode prompt = input.path("prompt");
+                    PromptDescriptor descriptor = new PromptDescriptor(prompt.path("serverId").asString(), prompt.path("system").asString(),
+                            prompt.path("name").asString());
+                    if (prompt.has("additionalGroup")) {
+                        descriptor = descriptor.withAdditionalGroup(prompt.path("additionalGroup").asString());
+                    }
+                    result = authorizer.evaluateGet(caller, descriptor, null);
+                }
+                assertThat(result.decision().allowed()).as(document.path("description").asString())
+                        .isEqualTo("allow".equals(document.path("expected").path("decision").asString()));
+                assertThat(new TreeSet<>(result.determiningPolicies())).as("determining policies of " + vector.name()).isEqualTo(expectedPolicies);
+            }));
+        }
+        assertThat(tests).hasSize(8);
         return tests;
     }
 }

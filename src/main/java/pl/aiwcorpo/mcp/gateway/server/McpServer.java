@@ -10,10 +10,16 @@ import java.util.Optional;
  * listed or called; a server that has no approved manifest, or whose connection or policies wait for approval, has no tools.
  *
  * @param connection the approved trust (tlsMode and fingerprint), null while none is approved
+ * @param primitives the approved resources, templates and prompts next to the tools
  */
 public record McpServer(String serverId, String system, URI internalUrl, String version, boolean enabled,
                         CredentialPolicy credential, Map<String, ToolDefinition> tools, boolean adapter,
-                        pl.aiwcorpo.mcp.gateway.registry.ServerConfig.Connection connection) {
+                        pl.aiwcorpo.mcp.gateway.registry.ServerConfig.Connection connection, Primitives primitives) {
+
+    public McpServer(String serverId, String system, URI internalUrl, String version, boolean enabled, CredentialPolicy credential,
+                     Map<String, ToolDefinition> tools, boolean adapter, pl.aiwcorpo.mcp.gateway.registry.ServerConfig.Connection connection) {
+        this(serverId, system, internalUrl, version, enabled, credential, tools, adapter, connection, Primitives.NONE);
+    }
 
     /** A server not behind an adapter, with its connection approved as {@code ca}. */
     public McpServer(String serverId, String system, URI internalUrl, String version, boolean enabled, CredentialPolicy credential,
@@ -37,6 +43,22 @@ public record McpServer(String serverId, String system, URI internalUrl, String 
 
     public String qualifiedName(ToolDefinition tool) {
         return toolPrefix() + tool.name();
+    }
+
+    /**
+     * Whether the state of the server lets its resources, templates and prompts be listed and used: it is enabled, no manifest check
+     * disabled it, and its connection and policies are approved (CC-249). A server behind a switch is judged by the caller.
+     */
+    public boolean primitivesServed() {
+        return enabled && connectionApproved() && primitives.policiesApproved();
+    }
+
+    public String qualifiedName(ResourceDefinition resource) {
+        return toolPrefix() + resource.name();
+    }
+
+    public String qualifiedName(PromptDefinition prompt) {
+        return toolPrefix() + prompt.name();
     }
 
     public Optional<ToolDefinition> tool(String serverSideName) {

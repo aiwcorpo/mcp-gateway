@@ -9,6 +9,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+import pl.aiwcorpo.mcp.gateway.registry.PrimitiveKind;
+import pl.aiwcorpo.mcp.gateway.registry.RegisteredEntry;
 import pl.aiwcorpo.mcp.gateway.registry.RegisteredTool;
 import pl.aiwcorpo.mcp.gateway.registry.ServerConfig;
 import tools.jackson.databind.JsonNode;
@@ -29,7 +31,14 @@ public final class ServerRegistry {
      * held manifest passes the checks of this instance and whether the policies of the server are the approved ones.
      */
     public record Applied(String version, Map<String, RegisteredTool> tools, Map<String, Integer> floors, boolean manifestAccepted,
-                          boolean policiesApproved) {
+                          boolean policiesApproved, Map<PrimitiveKind, Map<String, RegisteredEntry>> entries, String contractsVersion,
+                          String credentialJson) {
+
+        /** A manifest of 7.x: tools only. */
+        public Applied(String version, Map<String, RegisteredTool> tools, Map<String, Integer> floors, boolean manifestAccepted,
+                       boolean policiesApproved) {
+            this(version, tools, floors, manifestAccepted, policiesApproved, Map.of(), null, null);
+        }
     }
 
     private Map<String, ServerConfig> configs = Map.of();
@@ -97,7 +106,7 @@ public final class ServerRegistry {
             waitingByServer.put(config.serverId(), Map.copyOf(waiting));
             built.put(config.serverId(), new McpServer(config.serverId(), config.system(), config.internalUrl(),
                     state == null ? "0.0.0" : state.version(), config.enabled() && (state == null || state.manifestAccepted()),
-                    credential(config), Map.copyOf(tools), config.adapter(), config.connection()));
+                    credential(config), Map.copyOf(tools), config.adapter(), config.connection(), primitives(state)));
         });
         this.servers = Map.copyOf(built);
         this.unapproved = Map.copyOf(waitingByServer);
@@ -149,6 +158,43 @@ public final class ServerRegistry {
                     definition.path("description").asString(""), false, refs, approved.hash(), definition, approved.credentialJson(),
                     entry.path("additionalGroup").asString(null)));
         });
+    }
+
+    /**
+     * The approved entries only: a pending one is not served, and a server whose state is not served keeps them so that a read can tell it
+     * from a URI that matches nothing (the answer to the client is the same, the audit reason is not).
+     */
+    private static Primitives primitives(Applied state) {
+        if (state == null) {
+            return Primitives.NONE;
+        }
+        Map<String, ResourceDefinition> resources = new LinkedHashMap<>();
+        for (PrimitiveKind kind : List.of(PrimitiveKind.RESOURCE, PrimitiveKind.RESOURCE_TEMPLATE)) {
+            state.entries().getOrDefault(kind, Map.of()).forEach((name, registered) -> {
+                if (registered.approved() != null) {
+                    resources.put(name, resource(kind == PrimitiveKind.RESOURCE_TEMPLATE, registered.approved(), state.credentialJson(), name));
+                }
+            });
+        }
+        Map<String, PromptDefinition> prompts = new LinkedHashMap<>();
+        state.entries().getOrDefault(PrimitiveKind.PROMPT, Map.of()).forEach((name, registered) -> {
+            if (registered.approved() != null) {
+                JsonNode entry = registered.approved().entry();
+                prompts.put(name, new PromptDefinition(name, entry.path("additionalGroup").asString(null), registered.approved().hash(), entry,
+                        registered.pending() != null));
+            }
+        });
+        return new Primitives(Map.copyOf(resources), Map.copyOf(prompts), state.contractsVersion(), state.policiesApproved());
+    }
+
+    private static ResourceDefinition resource(boolean template, RegisteredEntry.Approved approved, String credentialJson, String name) {
+        JsonNode entry = approved.entry();
+        List<ResourceDefinition.UriVariable> variables = new ArrayList<>();
+        entry.path("variables").forEach(variable -> variables.add(new ResourceDefinition.UriVariable(variable.path("name").asString(),
+                variable.path("type").asString(null), variable.path("maxLength").asInt(0), variable.path("pattern").asString(null))));
+        JsonNode definition = entry.path("definition");
+        return new ResourceDefinition(name, template, definition.path(template ? "uriTemplate" : "uri").asString(), List.copyOf(variables),
+                entry.path("additionalGroup").asString(null), approved.hash(), entry, credentialJson);
     }
 
     private static List<pl.aiwcorpo.mcp.cedar.entities.ResourceRef> refs(JsonNode entry) {

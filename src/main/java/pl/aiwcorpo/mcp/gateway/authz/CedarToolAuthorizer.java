@@ -2,6 +2,8 @@ package pl.aiwcorpo.mcp.gateway.authz;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.function.Function;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,12 +18,17 @@ import pl.aiwcorpo.mcp.cedar.entities.CedarRequest;
 import pl.aiwcorpo.mcp.cedar.entities.EntityBuilder;
 import pl.aiwcorpo.mcp.cedar.entities.EntityBuilderException;
 import pl.aiwcorpo.mcp.cedar.entities.McpCedarSchema;
+import pl.aiwcorpo.mcp.cedar.entities.PromptDescriptor;
+import pl.aiwcorpo.mcp.cedar.entities.ResourceDescriptor;
+import pl.aiwcorpo.mcp.cedar.entities.ResourceRef;
 import pl.aiwcorpo.mcp.cedar.entities.ResourceTypes;
 import pl.aiwcorpo.mcp.cedar.entities.ToolDescriptor;
 import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
 import pl.aiwcorpo.mcp.gateway.policy.PolicyService;
 import pl.aiwcorpo.mcp.gateway.policy.PolicySource;
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
+import pl.aiwcorpo.mcp.gateway.server.PromptDefinition;
+import pl.aiwcorpo.mcp.gateway.server.ResourceDefinition;
 import pl.aiwcorpo.mcp.gateway.server.ToolDefinition;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -66,6 +73,22 @@ public final class CedarToolAuthorizer implements ToolAuthorizer {
             return decide(user, server, tool);
         }
         return decide(new GatewayUser(user.sub(), user.username(), clients.getFirst(), user.groups(), user.accessToken()), server, tool);
+    }
+
+    @Override
+    public ToolDecision readForCatalog(GatewayUser user, McpServer server, ResourceDefinition resource) {
+        return mayRead(asAiClient(user), server, resource, Map.of());
+    }
+
+    @Override
+    public ToolDecision getForCatalog(GatewayUser user, McpServer server, PromptDefinition prompt) {
+        return mayGet(asAiClient(user), server, prompt);
+    }
+
+    /** The caller of the catalog is the portal, whose own client name says nothing of the AI clients the user works with. */
+    private GatewayUser asAiClient(GatewayUser user) {
+        List<String> clients = policies.snapshot().allowedClients();
+        return clients.isEmpty() ? user : new GatewayUser(user.sub(), user.username(), clients.getFirst(), user.groups(), user.accessToken());
     }
 
     @Override
@@ -123,6 +146,54 @@ public final class CedarToolAuthorizer implements ToolAuthorizer {
      */
     public Evaluation evaluate(Caller caller, ToolDescriptor tool, Map<String, ?> arguments, List<String> entitlementsForAMissingPermit,
                                String credentialType) {
+        return evaluate(caller, tool.name(), credentialType, builder -> builder.forToolCall(caller, tool, arguments), entitlementsForAMissingPermit);
+    }
+
+    @Override
+    public ToolDecision mayRead(GatewayUser user, McpServer server, ResourceDefinition resource, Map<String, String> variables) {
+        Caller caller = Caller.of(user.sub(), user.username(), user.mcpGroups(), user.client()).withPrincipalType(user.principalType());
+        List<ResourceRef> typed = new java.util.ArrayList<>();
+        resource.variables().stream().filter(variable -> variable.type() != null)
+                .forEach(variable -> typed.add(new ResourceRef(variable.name(), variable.type())));
+        ResourceDescriptor descriptor;
+        try {
+            descriptor = new ResourceDescriptor(server.serverId(), server.system(), resource.name(), resource.locator(), typed,
+                    Optional.ofNullable(resource.additionalGroup()));
+        } catch (IllegalArgumentException e) {
+            return ToolDecision.deny("policy_error", List.of());
+        }
+        return evaluateRead(caller, descriptor, variables, server.credential().type()).decision();
+    }
+
+    /** The Cedar {@code read_resource} for a caller and an approved entry, with the values of the variables of the URI; deny on anything that goes wrong. */
+    public Evaluation evaluateRead(Caller caller, ResourceDescriptor resource, Map<String, ?> variables, String credentialType) {
+        return evaluate(caller, resource.name(), credentialType, builder -> builder.forResourceRead(caller, resource, variables), List.of());
+    }
+
+    /** The Cedar {@code get_prompt} for a caller and an approved prompt. */
+    public Evaluation evaluateGet(Caller caller, PromptDescriptor prompt, String credentialType) {
+        return evaluate(caller, prompt.name(), credentialType, builder -> builder.forPromptGet(caller, prompt), List.of());
+    }
+
+    @Override
+    public ToolDecision mayGet(GatewayUser user, McpServer server, PromptDefinition prompt) {
+        Caller caller = Caller.of(user.sub(), user.username(), user.mcpGroups(), user.client()).withPrincipalType(user.principalType());
+        PromptDescriptor descriptor;
+        try {
+            descriptor = new PromptDescriptor(server.serverId(), server.system(), prompt.name(), Optional.ofNullable(prompt.additionalGroup()));
+        } catch (IllegalArgumentException e) {
+            return ToolDecision.deny("policy_error", List.of());
+        }
+        return evaluateGet(caller, descriptor, server.credential().type()).decision();
+    }
+
+    @Override
+    public ResourceTypes resourceTypes() {
+        return policies.snapshot().types();
+    }
+
+    private Evaluation evaluate(Caller caller, String label, String credentialType, Function<EntityBuilder, CedarRequest> request,
+                                List<String> entitlementsForAMissingPermit) {
         PolicyService.Snapshot snapshot = policies.snapshot();
         if (snapshot.revision() == 0) {
             return new Evaluation(ToolDecision.deny("policy_unavailable", List.of()), java.util.Set.of());
@@ -139,16 +210,16 @@ public final class CedarToolAuthorizer implements ToolAuthorizer {
             if (credentialType != null) {
                 builder = builder.withCredentialType(credentialType);
             }
-            CedarRequest request = builder.forToolCall(caller, tool, arguments);
-            AuthorizationResponse response = ENGINE.isAuthorized(request.toAuthorizationRequest(SCHEMA), snapshot.gatewayPolicies(),
-                    request.cedarEntities());
-            return judge(response, tool.name(), entitlementsForAMissingPermit);
+            CedarRequest built = request.apply(builder);
+            AuthorizationResponse response = ENGINE.isAuthorized(built.toAuthorizationRequest(SCHEMA), snapshot.gatewayPolicies(),
+                    built.cedarEntities());
+            return judge(response, label, entitlementsForAMissingPermit);
         } catch (EntityBuilderException e) {
             // An argument that is not an identifier of its type never reaches Cedar; the caller sees invalid_argument.
             String reason = e.code().wireCode().equals("invalid_argument") ? "invalid_argument" : "policy_error";
             return new Evaluation(ToolDecision.deny(reason, List.of()), java.util.Set.of());
         } catch (AuthException | RuntimeException e) {
-            log.error("Cedar evaluation of {} failed: {}", tool.name(), e.getClass().getName());
+            log.error("Cedar evaluation of {} failed: {}", label, e.getClass().getName());
             return new Evaluation(ToolDecision.deny("policy_error", List.of()), java.util.Set.of());
         }
     }
