@@ -1,6 +1,7 @@
 package pl.aiwcorpo.mcp.gateway.admin;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.regex.Pattern;
 
 import org.springframework.http.CacheControl;
@@ -34,7 +35,7 @@ import tools.jackson.databind.node.ObjectNode;
 /**
  * C5 for the portal BFF on the internal TLS port: the catalog with the caller's access and the policy status.
  * "Caller" is the {@code sub} of the BFF's user token (aud mcp-gateway-admin); the mTLS client name was checked by
- * {@link AdminClientCertificateFilter}. Registry writes and approvals, activity and confirmations are not served yet.
+ * {@link AdminClientCertificateFilter}.
  */
 @RestController
 @RequestMapping("/admin/v1")
@@ -101,17 +102,17 @@ public class AdminController {
                 }
                 item.put("requiresConfirmation", tool.requiresConfirmation());
             }
-            catalogEntries(server, entry);
+            catalogEntries(user, server, entry);
         }
         return respond(HttpStatus.OK, requestId(request), body);
     }
 
     /**
-     * The approved resources, templates and prompts of a server (CC-265). Cedar does not yet evaluate {@code read_resource} and
-     * {@code get_prompt}, and the gateway serves neither method, so no user can read or get any of them: {@code access} is {@code denied}
-     * for everybody and no group is named. When the evaluation arrives these two fields come from the policy, as for tools.
+     * The approved resources, templates and prompts of a server (CC-265). {@code access} is the decision of Cedar ({@code read_resource} or
+     * {@code get_prompt}) for the user at the level of the entry, and the groups that usually grant it are the one of the system for reading
+     * and the {@code additionalGroup} of the entry, as for a tool.
      */
-    private void catalogEntries(McpServer server, ObjectNode serverNode) {
+    private void catalogEntries(GatewayUser user, McpServer server, ObjectNode serverNode) {
         registered.registered(server.serverId()).ifPresent(state -> {
             for (PrimitiveKind kind : PrimitiveKind.values()) {
                 List<RegisteredEntry> approved = state.entries(kind).values().stream().filter(e -> e.approved() != null).toList();
@@ -132,8 +133,16 @@ public class AdminController {
                     } else if (kind == PrimitiveKind.RESOURCE_TEMPLATE) {
                         item.put("uriTemplate", definition.path("uriTemplate").asString());
                     }
-                    item.put("access", "denied");
-                    item.putArray("requiredEntitlements");
+                    boolean allowed = kind == PrimitiveKind.PROMPT
+                            ? Optional.ofNullable(server.primitives().prompts().get(entry.name())).map(p -> authorizer.getForCatalog(user, server, p).allowed()).orElse(false)
+                            : Optional.ofNullable(server.primitives().resources().get(entry.name())).map(r -> authorizer.readForCatalog(user, server, r).allowed()).orElse(false);
+                    item.put("access", allowed ? "granted" : "denied");
+                    ArrayNode entitlements = item.putArray("requiredEntitlements");
+                    entitlements.add("mcp-" + server.system() + "-read");
+                    String additionalGroup = entry.approved().entry().path("additionalGroup").asString(null);
+                    if (additionalGroup != null) {
+                        entitlements.add(additionalGroup);
+                    }
                     KillSwitches.Status status = kind == PrimitiveKind.PROMPT ? killSwitches.statusOfPrompt(server.serverId(), entry.name())
                             : killSwitches.statusOfResource(server.serverId(), entry.name());
                     String disabledBy = status == KillSwitches.Status.ON ? "kill_switch" : entry.pending() != null ? "approval"
