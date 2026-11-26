@@ -1,10 +1,13 @@
 package pl.aiwcorpo.mcp.gateway.authz;
 
 import java.util.List;
+import java.util.Map;
 
 import pl.aiwcorpo.mcp.gateway.agent.AgentRegistry;
 import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
+import pl.aiwcorpo.mcp.gateway.server.PromptDefinition;
+import pl.aiwcorpo.mcp.gateway.server.ResourceDefinition;
 import pl.aiwcorpo.mcp.gateway.server.ToolDefinition;
 import tools.jackson.databind.JsonNode;
 
@@ -46,6 +49,40 @@ public final class AgentCeilingAuthorizer implements ToolAuthorizer {
         return refusal != null ? refusal : delegate.toolLevel(narrowed(user), server, tool);
     }
 
+    /** Resources and prompts are read only, so {@code maxRisk} does not limit them (CC-266); a suspended or unknown agent gets nothing. */
+    @Override
+    public ToolDecision mayRead(GatewayUser user, McpServer server, ResourceDefinition resource, Map<String, String> variables) {
+        if (!user.isAgent()) {
+            return delegate.mayRead(user, server, resource, variables);
+        }
+        ToolDecision refusal = registryRefusal(user);
+        return refusal != null ? refusal : delegate.mayRead(narrowed(user), server, resource, variables);
+    }
+
+    @Override
+    public ToolDecision mayGet(GatewayUser user, McpServer server, PromptDefinition prompt) {
+        if (!user.isAgent()) {
+            return delegate.mayGet(user, server, prompt);
+        }
+        ToolDecision refusal = registryRefusal(user);
+        return refusal != null ? refusal : delegate.mayGet(narrowed(user), server, prompt);
+    }
+
+    @Override
+    public ToolDecision readForCatalog(GatewayUser user, McpServer server, ResourceDefinition resource) {
+        return delegate.readForCatalog(user, server, resource);
+    }
+
+    @Override
+    public ToolDecision getForCatalog(GatewayUser user, McpServer server, PromptDefinition prompt) {
+        return delegate.getForCatalog(user, server, prompt);
+    }
+
+    @Override
+    public pl.aiwcorpo.mcp.cedar.entities.ResourceTypes resourceTypes() {
+        return delegate.resourceTypes();
+    }
+
     @Override
     public ToolDecision forCatalog(GatewayUser user, McpServer server, ToolDefinition tool) {
         return delegate.forCatalog(user, server, tool);
@@ -69,6 +106,15 @@ public final class AgentCeilingAuthorizer implements ToolAuthorizer {
      */
     public static boolean eligible(GatewayUser user, McpServer server, ToolDefinition tool) {
         return !user.isAgent() || !(tool.requiresConfirmation() || server.credential().required());
+    }
+
+    /** The refusal the registry gives for this agent whatever it asks for, or null when Cedar decides. */
+    private ToolDecision registryRefusal(GatewayUser user) {
+        return switch (agents.find(user.agent().clientId())) {
+            case AgentRegistry.Lookup.Unreadable unreadable -> ToolDecision.deny("policy_unavailable", List.of());
+            case AgentRegistry.Lookup.Absent absent -> ToolDecision.deny(NOT_REGISTERED, List.of());
+            case AgentRegistry.Lookup.Found found -> found.agent().suspended() ? ToolDecision.deny(SUSPENDED, List.of()) : null;
+        };
     }
 
     /** The refusal the registry gives for this agent and tool, or null when Cedar decides. */

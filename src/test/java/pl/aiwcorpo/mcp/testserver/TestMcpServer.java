@@ -212,6 +212,64 @@ public final class TestMcpServer implements AutoCloseable {
     }
 
     private volatile Map<String, String> descriptionOverrides = Map.of();
+    private volatile boolean servesPrimitives;
+    private volatile String contractsVersion = "8.0.0";
+    private volatile boolean resourcesDrifted;
+    private volatile boolean resourceReadFails;
+    private volatile ObjectNode resourceReadResult;
+    private volatile boolean resourceListsFail;
+    private volatile long resourceListDelayMillis;
+    private volatile String promptText = "Summarize the issue";
+    private volatile ObjectNode fixedToolResult;
+
+    /**
+     * From now on the manifest of this server holds a static resource ({@code runbook}), a template ({@code issue}) and a prompt
+     * ({@code summarize_issue}) under {@code contractsVersion} 8.0.0 (CC-258), and the server answers {@code resources/list},
+     * {@code resources/templates/list} and {@code resources/read} as the wrapper of the starter will.
+     */
+    public void servePrimitives(boolean value) {
+        servesPrimitives = value;
+    }
+
+    /** The {@code contractsVersion} the manifest reports; null leaves it out, as a server of 7.x does. */
+    public void reportContractsVersion(String version) {
+        contractsVersion = version;
+    }
+
+    /** {@code resources/list} and {@code resources/templates/list} present another description than the manifest: a server that drifted. */
+    public void driftResources(boolean value) {
+        resourcesDrifted = value;
+    }
+
+    /** {@code resources/read} answers an error of the server while this is on. */
+    public void failResourceRead(boolean value) {
+        resourceReadFails = value;
+    }
+
+    /** {@code resources/read} answers this result whatever the URI, or its own text when null (a blob, two items, a wrong uri). */
+    public void answerResourceReadWith(ObjectNode result) {
+        resourceReadResult = result;
+    }
+
+    /** The text before the marker in the message of the prompt: a changed text is another hash, which the manifest then carries. */
+    public void changePromptText(String text) {
+        promptText = text;
+    }
+
+    /** Every {@code tools/call} answers this result as it is (links and embedded resources included), or its own answer when null. */
+    public void answerCallsWith(ObjectNode result) {
+        fixedToolResult = result;
+    }
+
+    /** {@code resources/list} and {@code resources/templates/list} answer after this many milliseconds: a server that hangs. */
+    public void slowResourceLists(long millis) {
+        resourceListDelayMillis = millis;
+    }
+
+    /** {@code resources/list} and {@code resources/templates/list} answer 503 while this is on. */
+    public void failResourceLists(boolean value) {
+        resourceListsFail = value;
+    }
 
     /** From now on {@code tools/list} describes the tool differently while the manifest stays: a server that drifted. */
     public void describeDifferently(String tool, String description) {
@@ -500,7 +558,65 @@ public final class TestMcpServer implements AutoCloseable {
             entry.put("definitionHash", pl.aiwcorpo.mcp.manifest.DefinitionHash.compute(JSON.writeValueAsString(definition),
                     JSON.writeValueAsString(entry), system, JSON.writeValueAsString(credential)));
         }
+        if (servesPrimitives) {
+            addPrimitives(manifest, system, namespace, credential);
+        }
         return manifest;
+    }
+
+    private static final String RUNBOOK_TEXT = "Escalation runbook.";
+
+    private ObjectNode runbookDefinition(String system, boolean listing) {
+        ObjectNode definition = JSON.createObjectNode();
+        definition.put("name", "runbook");
+        definition.put("title", "Runbook");
+        definition.put("description", listing && resourcesDrifted ? "A description the manifest never had." : RUNBOOK_TEXT);
+        definition.put("uri", system + "://docs/runbook");
+        definition.put("mimeType", "text/markdown");
+        return definition;
+    }
+
+    private ObjectNode issueTemplateDefinition(String system, boolean listing) {
+        ObjectNode definition = JSON.createObjectNode();
+        definition.put("name", "issue");
+        definition.put("title", "Issue");
+        definition.put("description", listing && resourcesDrifted ? "A description the manifest never had." : "One issue of the system.");
+        definition.put("uriTemplate", system + "://issue/{issueKey}");
+        definition.put("mimeType", "text/plain");
+        return definition;
+    }
+
+    /** The entries CC-258 adds to a manifest, each with the hash of its kind. */
+    private void addPrimitives(ObjectNode manifest, String system, String namespace, ObjectNode credential) {
+        if (contractsVersion != null) {
+            manifest.put("contractsVersion", contractsVersion);
+        }
+        String credentialJson = JSON.writeValueAsString(credential);
+        ObjectNode runbook = manifest.putArray("resources").addObject();
+        runbook.put("name", "runbook");
+        runbook.set("definition", runbookDefinition(system, false));
+        runbook.put("definitionHash", pl.aiwcorpo.mcp.manifest.DefinitionHash.computePrimitive("resource", JSON.writeValueAsString(runbook.get("definition")),
+                JSON.writeValueAsString(runbook), system, credentialJson));
+
+        ObjectNode template = manifest.putArray("resourceTemplates").addObject();
+        template.put("name", "issue");
+        template.set("definition", issueTemplateDefinition(system, false));
+        template.putArray("variables").addObject().put("name", "issueKey").put("type", namespace + "::Issue");
+        template.put("definitionHash", pl.aiwcorpo.mcp.manifest.DefinitionHash.computePrimitive("resourceTemplate",
+                JSON.writeValueAsString(template.get("definition")), JSON.writeValueAsString(template), system, credentialJson));
+
+        ObjectNode prompt = manifest.putArray("prompts").addObject();
+        prompt.put("name", "summarize_issue");
+        ObjectNode definition = prompt.putObject("definition");
+        definition.put("name", "summarize_issue");
+        definition.put("title", "Summarize an issue");
+        definition.put("description", "Summarize one issue for a handover.");
+        definition.putArray("arguments").addObject().put("name", "issueKey").put("description", "Issue key, e.g. ABC-123.").put("required", true);
+        prompt.putArray("argumentRules").addObject().put("name", "issueKey").put("maxLength", 32)
+                .put("pattern", "^[A-Z][A-Z0-9]{1,7}-[0-9]{1,6}$").put("type", namespace + "::Issue");
+        prompt.putArray("messages").addObject().put("role", "user").put("text", promptText + " <issue_key>{{issueKey}}</issue_key> for a handover.");
+        prompt.put("definitionHash", pl.aiwcorpo.mcp.manifest.DefinitionHash.computePrimitive("prompt", JSON.writeValueAsString(definition),
+                JSON.writeValueAsString(prompt), system, credentialJson));
     }
 
     /**
@@ -562,8 +678,10 @@ public final class TestMcpServer implements AutoCloseable {
         String method = message.path("method").asString(null);
         String toolName = "tools/call".equals(method) ? message.path("params").path("name").asString(null) : null;
         String rid = first(headers, "x-request-id");
+        String resourceUri = "resources/read".equals(method) ? message.path("params").path("uri").asString(null) : null;
         InternalJwtVerifier.Result auth = verifier.verify(first(headers, "authorization"), rid,
-                InternalJwtVerifier.RequestRule.forJsonRpc(method == null ? "" : method, toolName));
+                resourceUri != null ? InternalJwtVerifier.RequestRule.forResourceRead(resourceUri)
+                        : InternalJwtVerifier.RequestRule.forJsonRpc(method == null ? "" : method, toolName));
         String sessionId = first(headers, "mcp-session-id");
         if (!auth.valid()) {
             record(exchange, headers, body, method, toolName, 401, auth.reason(), null, sessionId);
@@ -575,8 +693,8 @@ public final class TestMcpServer implements AutoCloseable {
         }
         String sub = (String) auth.claims().get("sub");
 
-        if ("tools/call".equals(method) && !config.adapterReceiver()) {
-            // The fail-closed gate (C14): data that is behind decides nothing, and this refusal comes before any other.
+        if (("tools/call".equals(method) || "resources/read".equals(method)) && !config.adapterReceiver()) {
+            // The fail-closed gate (C14), for a resources/read as for a tools/call (CC-259): data that is behind decides nothing, and this refusal comes before any other.
             long required = auth.claims().get("prv") instanceof Number number ? number.longValue() : 0;
             pl.aiwcorpo.mcp.manifest.PolicyDataGate.Data held = heldPolicyData;
             pl.aiwcorpo.mcp.manifest.PolicyDataGate.Decision gate = pl.aiwcorpo.mcp.manifest.PolicyDataGate.decide(ownPoliciesHash(), held,
@@ -596,9 +714,13 @@ public final class TestMcpServer implements AutoCloseable {
             }
             if (!gate.allowed()) {
                 record(exchange, headers, body, method, toolName, 200, gate.reason(), sub, sessionIdOf(headers));
-                audit(rid, auth.claims(), toolName, "error", "upstream_unavailable", started);
-                send(exchange, 200, "application/json", response(message.get("id"),
-                        toolError("upstream_unavailable", "The server cannot evaluate this call now.")));
+                if ("tools/call".equals(method)) {
+                    audit(rid, auth.claims(), toolName, "error", "upstream_unavailable", started);
+                    send(exchange, 200, "application/json", response(message.get("id"),
+                            toolError("upstream_unavailable", "The server cannot evaluate this call now.")));
+                } else {
+                    send(exchange, 200, "application/json", rpcError(message.get("id"), -32603, "Internal error", "upstream_unavailable"));
+                }
                 return;
             }
         }
@@ -697,7 +819,9 @@ public final class TestMcpServer implements AutoCloseable {
                         }
                     }
                     ObjectNode reported = reportedError;
-                    result = reported != null ? toolResult(reported, true) : callTool(toolName, message.path("params").path("arguments"), headers);
+                    ObjectNode fixed = fixedToolResult;
+                    result = fixed != null ? fixed.deepCopy() : reported != null ? toolResult(reported, true)
+                            : callTool(toolName, message.path("params").path("arguments"), headers);
                     if (fillerNumbers > 0) {
                         ArrayNode numbers = result.putArray("structuredContent");
                         for (int i = 0; i < fillerNumbers; i++) {
@@ -716,6 +840,38 @@ public final class TestMcpServer implements AutoCloseable {
                     send(exchange, 200, "application/json", response(id, result));
                 }
             }
+            case "resources/list", "resources/templates/list" -> {
+                record(exchange, headers, body, method, null, resourceListsFail ? 503 : 200, null, sub, sessionId);
+                if (resourceListDelayMillis > 0) {
+                    try {
+                        Thread.sleep(resourceListDelayMillis);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                if (resourceListsFail) {
+                    send(exchange, 503, null, null);
+                    return;
+                }
+                String system = config.serverId().replaceFirst("^mcp-", "");
+                ObjectNode result = JSON.createObjectNode();
+                if ("resources/list".equals(method)) {
+                    ArrayNode listed = result.putArray("resources");
+                    if (servesPrimitives) {
+                        listed.add(runbookDefinition(system, true));
+                    }
+                } else {
+                    ArrayNode listed = result.putArray("resourceTemplates");
+                    if (servesPrimitives) {
+                        listed.add(issueTemplateDefinition(system, true));
+                    }
+                }
+                send(exchange, 200, "application/json", response(id, result));
+            }
+            case "resources/read" -> {
+                record(exchange, headers, body, method, null, 200, null, sub, sessionId);
+                send(exchange, 200, "application/json", resourceRead(id, message.path("params").path("uri").asString("")));
+            }
             default -> {
                 record(exchange, headers, body, method, null, 200, null, sub, sessionId);
                 ObjectNode error = JSON.createObjectNode();
@@ -725,6 +881,31 @@ public final class TestMcpServer implements AutoCloseable {
                 send(exchange, 200, "application/json", JSON.writeValueAsString(error));
             }
         }
+    }
+
+    private static String rpcError(JsonNode id, int code, String message, String error) {
+        ObjectNode response = JSON.createObjectNode();
+        response.put("jsonrpc", "2.0");
+        response.set("id", id);
+        ObjectNode body = response.putObject("error");
+        body.put("code", code).put("message", message);
+        body.putObject("data").put("error", error);
+        return JSON.writeValueAsString(response);
+    }
+
+    /** The answer to a {@code resources/read}: the text of the runbook or of an issue, or whatever a test made the server answer. */
+    private String resourceRead(JsonNode id, String uri) {
+        if (resourceReadFails) {
+            return rpcError(id, -32603, "Internal error", "internal_error");
+        }
+        ObjectNode result = resourceReadResult;
+        if (result == null) {
+            result = JSON.createObjectNode();
+            String system = config.serverId().replaceFirst("^mcp-", "");
+            String text = uri.equals(system + "://docs/runbook") ? RUNBOOK_TEXT : "Issue " + uri.substring(uri.lastIndexOf('/') + 1) + ": text of the issue.";
+            result.putArray("contents").addObject().put("uri", uri).put("mimeType", "text/plain").put("text", text);
+        }
+        return response(id, result);
     }
 
     private ObjectNode callTool(String name, JsonNode arguments, Map<String, List<String>> headers) {

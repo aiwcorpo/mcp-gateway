@@ -38,6 +38,12 @@ public class CredentialService {
      */
     public Resolution resolve(GatewayUser user, String system, CredentialPolicy policy, String tool, String requestId,
                               boolean keepInCache) {
+        return resolve(user, system, policy, tool, null, requestId, keepInCache);
+    }
+
+    /** {@code resource}: the URI of a {@code resources/read} in place of the tool the broker is told the credential is for. */
+    public Resolution resolve(GatewayUser user, String system, CredentialPolicy policy, String tool, String resource, String requestId,
+                              boolean keepInCache) {
         List<String> scopes = policy.scopes().stream().sorted().toList();
         CredentialCache.Key key = new CredentialCache.Key(user.sub(), system, scopes);
         boolean cacheUsable = invalidationsLive.getAsBoolean();
@@ -60,7 +66,7 @@ public class CredentialService {
                 return record(new Resolution.Unavailable("token_exchange_failed"));
             }
         }
-        Resolution resolution = broker.resolve(user, system, scopes, subjectToken, tool, requestId);
+        Resolution resolution = broker.resolve(user, system, scopes, subjectToken, tool, resource, requestId);
         if (resolution instanceof Resolution.Granted granted) {
             if (!policy.acceptedTypes().contains(granted.credential().type())) {
                 return record(new Resolution.TypeMismatch(granted.credential().type()));

@@ -17,12 +17,16 @@ import tools.jackson.databind.node.ObjectNode;
 /**
  * The cursor of {@code tools/list} (CC-181): opaque, carries the name of the last tool of the previous page and the canonical
  * filter, authenticated by HMAC-SHA-256 over (sub, payload) with a key every instance shares, a tag of 128 bits compared in constant
- * time, valid 15 minutes. A cursor that is malformed, was changed, is stale or was issued to another user or for another filter is
- * refused, and the caller answers all of them the same way.
+ * time, valid 15 minutes. A cursor that is malformed, was changed, is stale or was issued to another user, for another filter or for
+ * another list (tools, resources, templates, prompts, CC-259) is refused, and the caller answers all of them the same way.
  */
 public final class ToolsListCursor {
 
     public static final long LIFETIME_SECONDS = 900;
+    public static final String TOOLS = "tools";
+    public static final String RESOURCES = "resources";
+    public static final String TEMPLATES = "templates";
+    public static final String PROMPTS = "prompts";
     private static final int TAG_BYTES = 16;
 
     private final byte[] key;
@@ -37,16 +41,25 @@ public final class ToolsListCursor {
     }
 
     public String issue(String sub, String canonicalFilter, String afterName, long issuedAtEpochSeconds) {
+        return issue(TOOLS, sub, canonicalFilter, afterName, issuedAtEpochSeconds);
+    }
+
+    public String issue(String kind, String sub, String canonicalFilter, String afterName, long issuedAtEpochSeconds) {
         ObjectNode payload = json.createObjectNode();
         payload.put("afterName", afterName);
         payload.put("filter", canonicalFilter);
         payload.put("iat", issuedAtEpochSeconds);
+        payload.put("kind", kind);
         String encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(json.writeValueAsString(payload).getBytes(StandardCharsets.UTF_8));
         return encoded + "." + Base64.getUrlEncoder().withoutPadding().encodeToString(tag(sub, encoded));
     }
 
     /** The name the next page starts after, or empty when the cursor must be refused. */
     public Optional<String> open(String sub, String canonicalFilter, String cursor, long nowEpochSeconds) {
+        return open(TOOLS, sub, canonicalFilter, cursor, nowEpochSeconds);
+    }
+
+    public Optional<String> open(String kind, String sub, String canonicalFilter, String cursor, long nowEpochSeconds) {
         String[] parts = cursor.split("\\.", -1);
         if (parts.length != 2 || parts[0].isEmpty() || parts[1].isEmpty()) {
             return Optional.empty();
@@ -65,6 +78,10 @@ public final class ToolsListCursor {
                 return Optional.empty();
             }
             if (!position.path("filter").isString() || !canonicalFilter.equals(position.path("filter").asString())) {
+                return Optional.empty();
+            }
+            // A cursor issued before the kind existed is a cursor of tools: it lives 15 minutes, so a rolling upgrade does not break the page in progress.
+            if (!kind.equals(position.path("kind").asString(TOOLS))) {
                 return Optional.empty();
             }
             String afterName = position.path("afterName").asString(null);

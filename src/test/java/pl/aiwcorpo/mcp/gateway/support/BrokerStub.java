@@ -29,8 +29,14 @@ import pl.aiwcorpo.mcp.testserver.AuthenticatorEndpoints;
  */
 public final class BrokerStub implements AutoCloseable {
 
-    public record Received(String method, String path, String body, String requestId, String rejectReason, String tool,
+    /** {@code resource}: the claim of a resolve for a {@code resources/read}, null for a tool (CC-261). */
+    public record Received(String method, String path, String body, String requestId, String rejectReason, String tool, String resource,
                            String traceparent, String tracestate) {
+
+        public Received(String method, String path, String body, String requestId, String rejectReason, String tool, String traceparent,
+                        String tracestate) {
+            this(method, path, body, requestId, rejectReason, tool, null, traceparent, tracestate);
+        }
     }
 
     public enum Mode { GRANT, REQUIRED, UNAVAILABLE, DROP, REJECT, BAD_BODY, EXCHANGE_DENIED, SYSTEM_NOT_CONFIGURED, EXCHANGED_WITHOUT_EXPIRY, OTHER_TYPE, UNKNOWN_TYPE }
@@ -93,6 +99,15 @@ public final class BrokerStub implements AutoCloseable {
         return server.getAddress().getPort();
     }
 
+    private static String systemOf(String body) {
+        try {
+            String system = tools.jackson.databind.json.JsonMapper.builder().build().readTree(body).path("system").asString("jira");
+            return system.matches("[a-z][a-z0-9]*") ? system : "jira";
+        } catch (RuntimeException e) {
+            return "jira";
+        }
+    }
+
     public void grant(String value, int ttlSeconds) {
         this.secret = value;
         this.cacheTtlSeconds = ttlSeconds;
@@ -136,8 +151,8 @@ public final class BrokerStub implements AutoCloseable {
             InternalJwtVerifier.Result auth = verifier.verify(exchange.getRequestHeaders().getFirst("Authorization"), rid,
                     InternalJwtVerifier.RequestRule.forHttp(method, path));
             Received entry = new Received(method, path, body, rid, auth.reason(),
-                    auth.valid() ? (String) auth.claims().get("tool") : null, exchange.getRequestHeaders().getFirst("traceparent"),
-                    exchange.getRequestHeaders().getFirst("tracestate"));
+                    auth.valid() ? (String) auth.claims().get("tool") : null, auth.valid() ? (String) auth.claims().get("resource") : null,
+                    exchange.getRequestHeaders().getFirst("traceparent"), exchange.getRequestHeaders().getFirst("tracestate"));
             received.add(entry);
             if ("/v1/systems".equals(path)) {
                 systemsCalls.add(entry);
@@ -158,8 +173,12 @@ public final class BrokerStub implements AutoCloseable {
             switch (mode) {
                 case GRANT -> send(exchange, 200, "{\"scheme\":\"Bearer\",\"value\":\"" + secret + "\",\"type\":\"user-secret\","
                         + "\"expiresAt\":null,\"cacheTtlSeconds\":" + cacheTtlSeconds + "}");
-                case REQUIRED -> send(exchange, 409, "{\"error\":\"credential_required\",\"system\":\"jira\","
-                        + "\"connectUrl\":\"http://localhost:18090/connections?system=jira\"}");
+                case REQUIRED -> {
+                    // The system the gateway asked for, so that any server of the tests can be the one without a connection.
+                    String system = systemOf(body);
+                    send(exchange, 409, "{\"error\":\"credential_required\",\"system\":\"" + system + "\","
+                            + "\"connectUrl\":\"http://localhost:18090/connections?system=" + system + "\"}");
+                }
                 case UNAVAILABLE -> send(exchange, 503, "{\"error\":\"upstream_unavailable\"}");
                 case DROP -> throw new IOException("connection dropped on purpose");
                 case REJECT -> send(exchange, 401, "{\"error\":\"unauthenticated\"}");

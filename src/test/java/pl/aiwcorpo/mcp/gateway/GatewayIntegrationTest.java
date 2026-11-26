@@ -372,7 +372,7 @@ class GatewayIntegrationTest extends GatewayTestBase {
         assertThat(error.path("code").asInt()).isEqualTo(-32022);
         assertThat(error.path("data").path("supported").toString()).contains("2026-07-28");
 
-        HttpResponse<String> unknown = sendModern(token, "resources/list", null, "{}");
+        HttpResponse<String> unknown = sendModern(token, "resources/subscribe", null, "{}");
         assertThat(unknown.statusCode()).isEqualTo(404);
         assertThat(JSON.readTree(unknown.body()).path("error").path("code").asInt()).isEqualTo(-32601);
     }

@@ -159,7 +159,7 @@ class PrimitiveAdminApiTest extends GatewayTestBase {
     }
 
     @Test
-    void approvedEntriesAreInTheCatalogAsDeniedForEveryoneBecauseNothingServesThemYet() throws Exception {
+    void approvedEntriesAreInTheCatalogWithTheDecisionOfCedarForTheCaller() throws Exception {
         assertThat(asAdmin("POST", JIRA + "/resources/escalation_guide/approve",
                 "{\"definitionHash\":\"" + hash("resources", "escalation_guide") + "\"}").statusCode()).isEqualTo(204);
         assertThat(asAdmin("POST", JIRA + "/prompts/summarize_ticket/approve",
@@ -168,12 +168,21 @@ class PrimitiveAdminApiTest extends GatewayTestBase {
         JsonNode catalog = JSON.readTree(admin("GET", "/admin/v1/catalog", ALICE_SUB, "alice", ALICE_GROUPS, null).body());
 
         assertThat(Contracts.gatewayAdminErrors("Catalog", catalog)).isEmpty();
+        JsonNode other = JSON.readTree(admin("GET", "/admin/v1/catalog", BOB_SUB, "bob", List.of("other-group"), null).body());
+        for (JsonNode server : other.path("servers")) {
+            if ("mcp-jira".equals(server.path("serverId").asString())) {
+                assertThat(server.path("resources").get(0).path("access").asString()).as("no group of the system").isEqualTo("denied");
+                assertThat(server.path("prompts").get(0).path("access").asString()).isEqualTo("denied");
+            }
+        }
         for (JsonNode server : catalog.path("servers")) {
             if ("mcp-jira".equals(server.path("serverId").asString())) {
                 assertThat(server.path("resources")).hasSize(1);
-                assertThat(server.path("resources").get(0).path("access").asString()).isEqualTo("denied");
+                assertThat(server.path("resources").get(0).path("access").asString()).as("alice holds mcp-jira-read").isEqualTo("granted");
+                assertThat(server.path("resources").get(0).path("requiredEntitlements")).extracting(JsonNode::asString).containsExactly("mcp-jira-read");
                 assertThat(server.path("resources").get(0).path("uri").asString()).isEqualTo("jira://docs/escalation_guide");
                 assertThat(server.path("prompts").get(0).path("name").asString()).isEqualTo("jira__summarize_ticket");
+                assertThat(server.path("prompts").get(0).path("access").asString()).isEqualTo("granted");
                 assertThat(server.has("resourceTemplates")).as("the template is still pending").isFalse();
             } else {
                 assertThat(server.has("resources") || server.has("prompts")).isFalse();

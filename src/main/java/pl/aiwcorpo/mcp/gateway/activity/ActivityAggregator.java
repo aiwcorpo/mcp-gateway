@@ -56,6 +56,10 @@ public final class ActivityAggregator {
         if (all.isEmpty()) {
             return null;
         }
+        String kind = all.getLast().path("event").asString();
+        if ("resource_read".equals(kind) || "prompt_get".equals(kind)) {
+            return primitiveRow(all.getLast());
+        }
         int cut = -1;
         for (int i = 0; i < all.size(); i++) {
             JsonNode e = all.get(i);
@@ -138,6 +142,59 @@ public final class ActivityAggregator {
         }
         return row;
     }
+
+    /**
+     * The row of a {@code resources/read} or {@code prompts/get} (CC-264, CC-265): one event, no tool and no confirmation. What the client was told is
+     * what the row shows: a URI that matches nothing, a variable that is not valid, a refusal of the policy or of the registry of agents are all the
+     * one answer of D5 and so one result, {@code denied_not_granted}; a switch or a changed definition is {@code tool_disabled}; the filter keeps its own.
+     * All of those are {@code not_found_or_denied} whatever the {@code errorCode} of the event says. The rest is what the client heard.
+     */
+    private ObjectNode primitiveRow(JsonNode event) {
+        boolean resource = "resource_read".equals(event.path("event").asString());
+        ObjectNode row = json.createObjectNode();
+        row.put("requestId", event.path("requestId").asString());
+        row.put("ts", event.path("ts").asString());
+        copy(event, row, "client");
+        copy(event, row, "filter");
+        row.put("kind", resource ? "resource" : "prompt");
+        if (resource) {
+            copy(event, row, "resourceTemplate");
+            copy(event, row, "resource");
+        } else if (event.has("prompt") && event.has("server")) {
+            row.put("prompt", event.path("server").asString().replaceFirst("^mcp-", "") + "__" + event.path("prompt").asString());
+        }
+        String reason = event.path("reason").asString(null);
+        String errorCode = event.path("errorCode").asString(null);
+        String result;
+        if ("ok".equals(event.path("outcome").asString())) {
+            result = "ok";
+        } else if (reason != null && PRIMITIVE_NOT_GRANTED.contains(reason)) {
+            result = "denied_not_granted";
+            errorCode = "not_found_or_denied";
+        } else if ("filter_scope".equals(reason)) {
+            result = "denied_filter_scope";
+            errorCode = "not_found_or_denied";
+        } else if ("definition_changed".equals(reason) || "kill_switch".equals(reason)) {
+            result = "tool_disabled";
+            errorCode = "not_found_or_denied";
+        } else if (reason != null && reason.startsWith("rate_limited")) {
+            result = "rate_limited";
+        } else if ("credential_required".equals(reason)) {
+            result = "credential_required";
+        } else {
+            result = "error";
+        }
+        row.put("result", result);
+        if (errorCode == null) {
+            row.putNull("errorCode");
+        } else {
+            row.put("errorCode", errorCode);
+        }
+        return row;
+    }
+
+    private static final Set<String> PRIMITIVE_NOT_GRANTED = Set.of("not_granted", "policy_forbid", "uri_no_match", "variable_invalid",
+            "exchange_denied", "agent_suspended", "agent_not_registered", "agent_max_risk", "principal_not_eligible");
 
     /**
      * A forbid at the level of the tool is answered not_found_or_denied: the row of the user does not tell it from a missing grant

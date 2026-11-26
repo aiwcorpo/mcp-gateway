@@ -79,10 +79,12 @@ public class McpEndpoint {
     private final int sessionStoreRetryAfter;
     private final int shedRetryAfter;
     private final ToolStreams streams;
+    private final PrimitiveService primitives;
 
     public McpEndpoint(ServerRegistry servers, McpGatewayService service, ClientSessionStore sessions, UpstreamSessions upstream,
                        JsonMapper json, @Qualifier("requestJson") JsonMapper requestJson, MeterRegistry meters, GatewayProperties properties,
-                       ToolStreams streams) {
+                       ToolStreams streams, PrimitiveService primitives) {
+        this.primitives = primitives;
         this.servers = servers;
         this.service = service;
         this.sessions = sessions;
@@ -169,7 +171,8 @@ public class McpEndpoint {
             streams.refreshUser(sessionId, user);
         }
         if (!"tools/call".equals(method)) {
-            Optional<RateLimiter.Limited> limited = service.limitRequest(user, filter, requestId, clientRequestId);
+            Optional<RateLimiter.Limited> limited = service.limitRequest(user, filter, requestId, clientRequestId, limitedEvent(method),
+                    target.aggregateEndpoint() ? null : target.server().serverId());
             if (limited.isPresent()) {
                 return limited.get().unavailable() ? RateLimitResponse.unavailable(requestId, limited.get().retryAfterSeconds())
                         : RateLimitResponse.of(requestId, limited.get().retryAfterSeconds());
@@ -182,6 +185,15 @@ public class McpEndpoint {
             return modern(target, filter, user, token, message, meta, request, response, requestId, clientRequestId);
         }
         return legacy(target, filter, user, message, request, session, requestId, clientRequestId, method, id);
+    }
+
+    /** The event a request over a limit leaves: resources/read and prompts/get have their own (CC-264), the rest a policy decision. */
+    private static String limitedEvent(String method) {
+        return switch (method) {
+            case "resources/read" -> "resource_read";
+            case "prompts/get" -> "prompt_get";
+            default -> "policy_decision";
+        };
     }
 
     /** JSON-RPC 2.0: the id of a request is a string, a number or null, and a notification has none. */
@@ -240,7 +252,8 @@ public class McpEndpoint {
             return limited.get().unavailable() ? RateLimitResponse.unavailable(requestId, limited.get().retryAfterSeconds())
                     : RateLimitResponse.of(requestId, limited.get().retryAfterSeconds());
         }
-        ToolStreams.Opening opening = streams.open(ToolStreams.Kind.SESSION, user, sessionId, filter, target.routeSystem(), token.getExpiresAt(), null, true);
+        ToolStreams.Opening opening = streams.open(ToolStreams.Kind.SESSION, user, sessionId, filter, target.routeSystem(), token.getExpiresAt(), null,
+                ToolStreams.Interest.ALL);
         Optional<ToolStreams.Stream> opened = opening.opened();
         if (opened.isEmpty()) {
             return refusedStream(opening.refusal(), user, filter, requestId, clientRequestId);
@@ -262,8 +275,10 @@ public class McpEndpoint {
      */
     private ResponseEntity<String> listen(HttpServletRequest request, HttpServletResponse response, Jwt token, GatewayUser user,
                                           Target target, EndpointFilter filter, JsonNode message, JsonNode id, String requestId) {
-        boolean tools = message.path("params").path("notifications").path("toolsListChanged").asBoolean(false);
-        ToolStreams.Opening opening = streams.open(ToolStreams.Kind.LISTEN, user, null, filter, target.routeSystem(), token.getExpiresAt(), id, tools);
+        JsonNode asked = message.path("params").path("notifications");
+        ToolStreams.Interest interest = new ToolStreams.Interest(asked.path("toolsListChanged").asBoolean(false),
+                asked.path("resourcesListChanged").asBoolean(false), asked.path("promptsListChanged").asBoolean(false));
+        ToolStreams.Opening opening = streams.open(ToolStreams.Kind.LISTEN, user, null, filter, target.routeSystem(), token.getExpiresAt(), id, interest);
         Optional<ToolStreams.Stream> opened = opening.opened();
         if (opened.isEmpty()) {
             return refusedStream(opening.refusal(), user, filter, requestId, request.getHeader("X-Request-Id"));
@@ -401,7 +416,7 @@ public class McpEndpoint {
         ClientSession session = sessions.create(user.sub(), user.client(), negotiated, target.route(), filter.canonical());
         ObjectNode result = json.createObjectNode();
         result.put("protocolVersion", negotiated);
-        result.putObject("capabilities").putObject("tools").put("listChanged", true);
+        declareCapabilities(result);
         result.putObject("serverInfo").put("name", name).put("version", version);
         count("initialize", false);
         return ResponseEntity.ok().header("Mcp-Session-Id", session.id()).header("X-Request-Id", requestId)
@@ -467,16 +482,25 @@ public class McpEndpoint {
                         "Header mismatch: Mcp-Name must equal params.name.", null, true);
             }
         }
+        CallContext ctx = new CallContext(requestId, clientRequestId, user, target, filter, bodyVersion,
+                "m|" + user.sub() + "|" + user.client() + "|" + target.label());
+        if ("resources/read".equals(method) && id != null) {
+            // The URI is what the claim of the call and the match are made of: the header the proxies route and log by must say the same (CC-259).
+            String uri = message.path("params").path("uri").asString(null);
+            if (uri == null || !uri.equals(decodeHeaderValue(request.getHeader("Mcp-Name")))) {
+                primitives.auditHeaderMismatch(ctx, uri);
+                return error(HttpStatus.BAD_REQUEST, requestId, id, -32020,
+                        "Header mismatch: Mcp-Name must equal params.uri.", null, true);
+            }
+        }
         if (id == null) {
             return plain(HttpStatus.ACCEPTED, requestId);
         }
-        CallContext ctx = new CallContext(requestId, clientRequestId, user, target, filter, bodyVersion,
-                "m|" + user.sub() + "|" + user.client() + "|" + target.label());
         if ("server/discover".equals(method)) {
             count(method, true);
             ObjectNode result = json.createObjectNode();
             result.set("supportedVersions", json.valueToTree(ProtocolVersions.ALL));
-            result.putObject("capabilities").putObject("tools").put("listChanged", true);
+            declareCapabilities(result);
             cacheable(result, DISCOVER_TTL_MS, "public");
             return ok(requestId, result(id, result, true));
         }
@@ -494,19 +518,49 @@ public class McpEndpoint {
                 case "ping" -> json.createObjectNode();
                 case "tools/list" -> service.listTools(ctx, message.path("params").get("cursor"));
                 case "tools/call" -> service.callTool(ctx, message.path("params"));
+                case "resources/list" -> primitives.listResources(ctx, message.path("params").get("cursor"));
+                case "resources/templates/list" -> primitives.listTemplates(ctx, message.path("params").get("cursor"));
+                case "resources/read" -> primitives.readResource(ctx, message.path("params"));
+                case "prompts/list" -> primitives.listPrompts(ctx, message.path("params").get("cursor"));
+                case "prompts/get" -> primitives.getPrompt(ctx, message.path("params"));
                 default -> null;
             };
             if (result == null) {
                 return error(modern ? HttpStatus.NOT_FOUND : HttpStatus.OK, ctx.requestId(), id, -32601,
                         "Method not found", null, modern);
             }
-            if (modern && "tools/list".equals(method)) {
-                cacheable(result, TOOLS_LIST_TTL_MS, "private");
+            if (modern) {
+                cacheFields(method, result);
             }
             return ok(ctx.requestId(), result(id, result, modern));
         } catch (RpcFailure failure) {
             HttpStatus status = modern && failure.httpStatus() == 400 ? HttpStatus.BAD_REQUEST : HttpStatus.OK;
-            return error(status, ctx.requestId(), id, failure.code(), failure.getMessage(), null, modern);
+            return error(status, ctx.requestId(), id, failure.code(), failure.getMessage(), failure.data(), modern);
+        }
+    }
+
+    /**
+     * Declared always, whatever the registry holds: an empty list is valid, and a client connected before the first entry was approved would not see
+     * the declaration until it connected again (CC-259). Subscriptions and completion are not served, so they are not declared.
+     */
+    static void declareCapabilities(ObjectNode result) {
+        ObjectNode capabilities = result.putObject("capabilities");
+        capabilities.putObject("tools").put("listChanged", true);
+        capabilities.putObject("resources").put("subscribe", false).put("listChanged", true);
+        capabilities.putObject("prompts").put("listChanged", true);
+    }
+
+    /**
+     * The fields of CacheableResult that 2026-07-28 requires, per method: the lists depend on the groups of the caller and on approvals, so they
+     * are private and short-lived (a change is also announced as list_changed); a resource is read afresh each time. {@code prompts/get} is not a
+     * CacheableResult and gets none (CC-259).
+     */
+    static void cacheFields(String method, ObjectNode result) {
+        switch (method) {
+            case "tools/list", "resources/list", "resources/templates/list", "prompts/list" -> cacheable(result, TOOLS_LIST_TTL_MS, "private");
+            case "resources/read" -> cacheable(result, 0, "private");
+            default -> {
+            }
         }
     }
 
@@ -563,7 +617,8 @@ public class McpEndpoint {
 
     private void count(String method, boolean modern) {
         String tag = switch (method) {
-            case "initialize", "ping", "tools/list", "tools/call", "server/discover", "subscriptions/listen", "GET" -> method;
+            case "initialize", "ping", "tools/list", "tools/call", "server/discover", "subscriptions/listen", "GET", "resources/list",
+                    "resources/templates/list", "resources/read", "prompts/list", "prompts/get" -> method;
             default -> "other";
         };
         meters.counter("mcp.gateway.requests", "method", tag, "era", modern ? "modern" : "legacy").increment();

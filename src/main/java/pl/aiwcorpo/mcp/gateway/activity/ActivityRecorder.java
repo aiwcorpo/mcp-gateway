@@ -18,7 +18,7 @@ import pl.aiwcorpo.mcp.gateway.audit.AuditEvent;
 public final class ActivityRecorder {
 
     private static final Logger log = LoggerFactory.getLogger(ActivityRecorder.class);
-    private static final Set<String> KEPT = Set.of("tool_call", "policy_decision", "confirmation");
+    private static final Set<String> KEPT = Set.of("tool_call", "policy_decision", "confirmation", "resource_read", "prompt_get");
 
     private final ActivityStore store;
     private final MeterRegistry meters;

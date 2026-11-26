@@ -41,6 +41,7 @@ import pl.aiwcorpo.mcp.gateway.confirm.OperationDescription;
 import pl.aiwcorpo.mcp.gateway.confirm.PendingCall;
 import pl.aiwcorpo.mcp.gateway.jwt.UuidV7;
 import pl.aiwcorpo.mcp.gateway.killswitch.KillSwitches;
+import pl.aiwcorpo.mcp.gateway.primitive.LinkBlocks;
 import pl.aiwcorpo.mcp.gateway.ratelimit.EndpointAuditThrottle;
 import pl.aiwcorpo.mcp.gateway.ratelimit.RateLimitAuditThrottle;
 import pl.aiwcorpo.mcp.gateway.ratelimit.RateLimiter;
@@ -169,11 +170,20 @@ public class McpGatewayService {
      * go on; a refusal is audited as a policy decision (at most one event per user and reason in an interval) and becomes HTTP 429.
      */
     public Optional<RateLimiter.Limited> limitRequest(GatewayUser user, EndpointFilter filter, String requestId, String clientRequestId) {
+        return limitRequest(user, filter, requestId, clientRequestId, "policy_decision", null);
+    }
+
+    /**
+     * As above for a method that has an event of its own: a {@code resources/read} or {@code prompts/get} over a limit leaves a
+     * {@code resource_read} or {@code prompt_get} (CC-264), so that the activity of the user shows the row; {@code serverId} is the one of the route, or null.
+     */
+    public Optional<RateLimiter.Limited> limitRequest(GatewayUser user, EndpointFilter filter, String requestId, String clientRequestId, String event,
+                                                      String serverId) {
         Optional<RateLimiter.Limited> limited = rateLimiter.check(user.sub(), user.client(), user.isAgent(), null, null);
         limited.ifPresent(l -> {
             meters.counter("mcp.gateway.requests.limited").increment();
             if (rateLimitAudit.due(user.sub(), l.reason())) {
-                audit.emit(AuditEvent.of("policy_decision", requestId, componentId).clientRequestId(clientRequestId).user(user)
+                audit.emit(AuditEvent.of(event, requestId, componentId).clientRequestId(clientRequestId).user(user).server(serverId)
                         .filter(filter.isEmpty() ? null : filter.canonical()).decision("deny", l.reason()).policyRevision(authorizer.policyRevision())
                         .outcome(l.unavailable() ? "error" : "denied", l.unavailable() ? "upstream_unavailable" : "rate_limited"));
             }
@@ -649,8 +659,25 @@ public class McpGatewayService {
             return finish(callKey, ctx, server, tool, credential, started, argsLength, "allow", null, null,
                     errors.error("internal_error", "The call could not be completed."));
         }
-        return finish(callKey, ctx, server, tool, credential, started, argsLength, "allow", null, null,
-                withGatewayLinks(server, (ObjectNode) result));
+        ObjectNode shaped = withGatewayLinks(server, (ObjectNode) result);
+        boolean linksRemoved = removeForeignLinks(server, shaped);
+        return finish(callKey, ctx, server, tool, credential, started, argsLength, "allow", linksRemoved ? LinkBlocks.REFUSED : null, null, shaped);
+    }
+
+    /**
+     * A block of the result that points at a URI outside the scheme of the system is dropped (CC-259): the client would otherwise be led to a
+     * resource of another system, or of the machine, by a text the server wrote. The call itself succeeded, so only the audit reason says so.
+     */
+    private boolean removeForeignLinks(McpServer server, ObjectNode result) {
+        JsonNode content = result.path("content");
+        if (!content.isArray()) {
+            return false;
+        }
+        LinkBlocks.Filtered filtered = LinkBlocks.filter(json, server.system(), server.adapter(), content);
+        if (filtered.refused()) {
+            result.set("content", filtered.blocks());
+        }
+        return filtered.refused();
     }
 
     private static final Set<String> LINK_CODES = Set.of("step_up_required", "credential_required", "confirmation_required");

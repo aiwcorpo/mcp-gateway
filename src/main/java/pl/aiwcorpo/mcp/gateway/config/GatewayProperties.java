@@ -131,7 +131,12 @@ public record GatewayProperties(
             @NotBlank String tlsName,
             @DefaultValue("5s") Duration timeout,
             @DefaultValue("60s") Duration maxCacheTtl,
-            @DefaultValue("true") boolean checkSystemsAtStartup) {
+            @DefaultValue("true") boolean checkSystemsAtStartup,
+            /*
+             * The contracts version the operator confirms the broker runs (CC-260, step 5): the broker has no manifest to say it. Only when it is at
+             * least 8.0.0 does the gateway ask it to resolve a credential for a resources/read; empty means it does not, and such a read is refused.
+             */
+            String confirmedContractsVersion) {
     }
 
     public record Redis(
@@ -198,6 +203,8 @@ public record GatewayProperties(
             @DefaultValue("15s") Duration sseHeartbeatInterval,
             /* How often every instance looks for changes made by another one: of the registry and of the emergency switches (CC-192, CC-194). */
             @DefaultValue("1s") Duration changePollInterval,
+            /* The most bytes of text one resources/read may return (CC-259); a larger result is refused as result_too_large. */
+            @DefaultValue("1048576") @Min(1) long resourceMaxBytes,
             /* The longest an instance trusts what it read of the emergency switches (CC-194, at most 5 s). */
             @DefaultValue("5s") Duration killSwitchCacheTtl,
             /* The most SSE streams open on one instance, both kinds together (decision of 2026-11-03); more are refused with 503 and Retry-After. */

@@ -53,6 +53,12 @@ public class BrokerClient implements AuthenticatorPort {
     /** {@code POST /v1/credentials/resolve}; {@code tool} is the server-side tool name (C2, CC-038). */
     public Resolution resolve(GatewayUser user, String system, List<String> scopes, String subjectToken, String tool,
                               String requestId) {
+        return resolve(user, system, scopes, subjectToken, tool, null, requestId);
+    }
+
+    /** As above for a {@code resources/read}: the token names the URI instead of a tool (CC-260, CC-261), exactly one of the two. */
+    public Resolution resolve(GatewayUser user, String system, List<String> scopes, String subjectToken, String tool, String resource,
+                              String requestId) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("system", system);
         if (!scopes.isEmpty()) {
@@ -63,7 +69,7 @@ public class BrokerClient implements AuthenticatorPort {
         }
         HttpRequest request = HttpRequest.newBuilder(baseUrl.resolve("/v1/credentials/resolve"))
                 .timeout(timeout)
-                .header("Authorization", "Bearer " + tokens.forUser(AUDIENCE, user, tool, requestId))
+                .header("Authorization", "Bearer " + tokens.forUser(AUDIENCE, user, tool, resource, requestId, null, null))
                 .header("X-Request-Id", requestId)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")

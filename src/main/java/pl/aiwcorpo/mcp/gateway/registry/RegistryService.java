@@ -442,15 +442,26 @@ public final class RegistryService {
 
     /**
      * The development stack only ({@link DevBootstrap}): approves every pending definition of a server in one step, as an administrator would one
-     * by one, except those that lower a risk and those of an adapter, which need an administrator's decision. Returns how many it approved.
+     * by one, except those that lower a risk and those of an adapter, which need an administrator's decision; the resources, templates and
+     * prompts of its manifest are approved with the tools. Returns how many it approved.
      */
     int approveAllPending(String requestId, String serverId, GatewayUser administrator) {
         java.time.Instant now = java.time.Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
         List<RegisteredTool> approvedNow = new java.util.ArrayList<>();
+        List<RegisteredEntry> entriesNow = new java.util.ArrayList<>();
         store.locked(serverId, tx -> {
             if (tx.config().isEmpty() || tx.config().get().adapter()) {
                 return null;
             }
+            // The resources, templates and prompts the manifest holds are approved on first use the same way: with no risk there is nothing to lower.
+            tx.entries().forEach((kind, byName) -> byName.forEach((name, entry) -> {
+                RegisteredEntry.Pending pending = entry.pending();
+                if (pending == null || !"manifest".equals(pending.source()) || DefinitionCheck.hidesText(pending.entry())) {
+                    return;
+                }
+                tx.saveEntry(new RegisteredEntry(kind, name, new RegisteredEntry.Approved(pending.entry(), pending.hash(), pending.version()), null));
+                entriesNow.add(entry);
+            }));
             Map<String, Integer> floors = tx.floors();
             for (RegisteredTool tool : tx.tools().values()) {
                 RegisteredTool.Pending pending = tool.pending();
@@ -469,13 +480,15 @@ public final class RegistryService {
             }
             return null;
         });
-        if (approvedNow.isEmpty()) {
+        if (approvedNow.isEmpty() && entriesNow.isEmpty()) {
             return 0;
         }
         take(serverId);
         approvedNow.forEach(tool -> audit.emit(AuditEvent.of("admin_change", requestId, componentId).userWithoutClient(administrator).server(serverId)
                 .tool(tool.name()).definitionHash(tool.pending().hash()).reason("definition_approved").outcome("ok")));
-        return approvedNow.size();
+        entriesNow.forEach(entry -> audit.emit(entryEvent(requestId, serverId, entry.kind(), entry.name()).userWithoutClient(administrator)
+                .definitionHash(entry.pending().hash()).reason("definition_approved").outcome("ok")));
+        return approvedNow.size() + entriesNow.size();
     }
 
     /** The approved and the pending entry of a resource, a template or a prompt for the diff of the portal. */
@@ -1003,7 +1016,7 @@ public final class RegistryService {
         RegisteredServer before = held.put(serverId, state);
         boolean policiesApproved = server.get().adapter() || (state.policies().approved() && !state.policies().pending());
         servers.apply(serverId, new ServerRegistry.Applied(state.version(), state.tools(), store.floors(serverId), rejections.isEmpty(),
-                policiesApproved));
+                policiesApproved, state.entries(), state.contractsVersion(), json.writeValueAsString(state.manifest().path("credential"))));
         if (!state.equals(before)) {
             // A change of entries or contractsVersion alone (the manifest holds them too) leaves the tools as they were: the last good reading of their definitions stays.
             if (before == null || !sameToolsAndPolicies(before, state)) {

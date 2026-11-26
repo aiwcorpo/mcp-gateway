@@ -2,8 +2,13 @@ package pl.aiwcorpo.mcp.gateway.authz;
 
 import java.util.List;
 
+import java.util.Map;
+
+import pl.aiwcorpo.mcp.cedar.entities.ResourceTypes;
 import pl.aiwcorpo.mcp.gateway.auth.GatewayUser;
 import pl.aiwcorpo.mcp.gateway.server.McpServer;
+import pl.aiwcorpo.mcp.gateway.server.PromptDefinition;
+import pl.aiwcorpo.mcp.gateway.server.ResourceDefinition;
 import pl.aiwcorpo.mcp.gateway.server.ToolDefinition;
 import tools.jackson.databind.JsonNode;
 
@@ -44,6 +49,35 @@ public interface ToolAuthorizer {
      */
     default ToolDecision forCatalog(GatewayUser user, McpServer server, ToolDefinition tool) {
         return decide(user, server, tool);
+    }
+
+    /**
+     * {@code mayRead} of CC-259: Cedar {@code read_resource} on the {@code McpResource} (CC-262) with the decoded values of the variables of
+     * the URI, at the level of the resource. Whether the entry is switched off or its server answers is not part of it. An implementation that
+     * does not know resources refuses (fail-closed).
+     */
+    default ToolDecision mayRead(GatewayUser user, McpServer server, ResourceDefinition resource, Map<String, String> variables) {
+        return ToolDecision.deny("policy_unavailable", List.of());
+    }
+
+    /** {@code mayGet} of CC-259: Cedar {@code get_prompt} on the {@code McpPrompt}. */
+    default ToolDecision mayGet(GatewayUser user, McpServer server, PromptDefinition prompt) {
+        return ToolDecision.deny("policy_unavailable", List.of());
+    }
+
+    /** What the catalog shows of a resource or template: whether the user may read it as the user of an AI client (as {@link #forCatalog} for a tool). */
+    default ToolDecision readForCatalog(GatewayUser user, McpServer server, ResourceDefinition resource) {
+        return mayRead(user, server, resource, Map.of());
+    }
+
+    /** What the catalog shows of a prompt. */
+    default ToolDecision getForCatalog(GatewayUser user, McpServer server, PromptDefinition prompt) {
+        return mayGet(user, server, prompt);
+    }
+
+    /** The resource types the policies in force declare: what the variables of a URI template are bound to. */
+    default ResourceTypes resourceTypes() {
+        return ResourceTypes.empty();
     }
 
     /** Groups (C9) that usually grant the tool; shown in the catalog and in access_denied. Informational: the policy decides. */

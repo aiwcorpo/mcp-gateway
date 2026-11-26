@@ -35,6 +35,7 @@ import pl.aiwcorpo.mcp.gateway.audit.AuditLog;
 import pl.aiwcorpo.mcp.gateway.admin.RegistryController;
 import pl.aiwcorpo.mcp.gateway.registry.ChangeCounter;
 import pl.aiwcorpo.mcp.gateway.stream.ToolStreams;
+import pl.aiwcorpo.mcp.gateway.stream.UserPrimitiveLists;
 import pl.aiwcorpo.mcp.gateway.stream.UserToolLists;
 import pl.aiwcorpo.mcp.gateway.registry.ChangeWatcher;
 import pl.aiwcorpo.mcp.gateway.registry.DefinitionCheck;
@@ -309,28 +310,37 @@ public class GatewayConfiguration {
         return new UserToolLists(servers, access, killSwitches, guard);
     }
 
+    @Bean
+    UserPrimitiveLists userPrimitiveLists(ServerRegistry servers, ToolAuthorizer authorizer, KillSwitches killSwitches,
+                                          pl.aiwcorpo.mcp.gateway.mcp.PrimitiveService primitives) {
+        return new UserPrimitiveLists(servers, authorizer, killSwitches, primitives::lastKnownIntact);
+    }
+
     /**
      * Whatever may change a list wakes the streams: the registry (a registration, an approval, a change made on another instance), an
      * emergency switch, the definitions a server presents, the policies (CC-192).
      */
     @Bean
-    ToolStreams toolStreams(UserToolLists lists, GatewayProperties properties, MeterRegistry meters, ClientSessionStore sessions,
+    ToolStreams toolStreams(UserToolLists lists, UserPrimitiveLists primitiveLists, GatewayProperties properties, MeterRegistry meters, ClientSessionStore sessions,
                             JsonMapper gatewayJson, RegistryService registry, KillSwitches killSwitches, DefinitionGuard guard,
-                            PolicyService policies, AgentRegistry agentRegistry) {
-        ToolStreams streams = new ToolStreams(lists, properties.mcp().sseHeartbeatInterval(), java.time.Duration.ofSeconds(1),
+                            PolicyService policies, AgentRegistry agentRegistry, pl.aiwcorpo.mcp.gateway.mcp.PrimitiveService primitives) {
+        ToolStreams streams = new ToolStreams(lists, primitiveLists, properties.mcp().sseHeartbeatInterval(), java.time.Duration.ofSeconds(1),
                 System::currentTimeMillis, meters, id -> sessions.find(id).isPresent(), gatewayJson,
                 properties.mcp().maxOpenStreams(), properties.mcp().maxOpenStreamsPerUser(), properties.mcp().streamRecomputeParallelism(),
                 java.time.Duration.ofMillis(100));
         registry.onChange(streams::changed);
         killSwitches.onChange(streams::changed);
+        primitives.onChange(streams::changed);
         // The decisions kept per identity do not know that an agent was suspended or got another ceiling, so they are made again.
         agentRegistry.onChange(() -> {
             lists.policiesChanged();
+            primitiveLists.policiesChanged();
             streams.changed();
         });
         guard.onVerdictChange(streams::changed);
         policies.onChange(() -> {
             lists.policiesChanged();
+            primitiveLists.policiesChanged();
             streams.changed();
         });
         return streams;
@@ -696,6 +706,18 @@ public class GatewayConfiguration {
         return new McpGatewayService(registry, urls, upstream, credentials, authorizer, audit, errors, gatewayJson, meters,
                 properties.componentId(), confirmations, registryService, definitionGuard, rateLimiter, rateLimitAudit, endpointAudit, listCursor,
                 killSwitches, toolAccess, properties.mcp().toolsListTimeout(), clock, agentRegistry);
+    }
+
+    @Bean
+    pl.aiwcorpo.mcp.gateway.mcp.PrimitiveService primitiveService(ServerRegistry registry, ToolAuthorizer authorizer, KillSwitches killSwitches,
+                                                                  McpGatewayService service, AuditLog audit, EndpointAuditThrottle endpointAudit,
+                                                                  UpstreamSessions upstream, CredentialService credentials, PublicUrls urls,
+                                                                  ToolsListCursor listCursor, JsonMapper gatewayJson, MeterRegistry meters, Clock clock,
+                                                                  GatewayProperties properties) {
+        pl.aiwcorpo.mcp.gateway.mcp.PrimitiveService.checkLimits(properties.mcp().resourceMaxBytes(), properties.upstream().maxResponseBytes());
+        return new pl.aiwcorpo.mcp.gateway.mcp.PrimitiveService(registry, authorizer, killSwitches, service, audit, endpointAudit, upstream, credentials,
+                urls, listCursor, gatewayJson, meters, clock, properties.componentId(), properties.mcp().toolsListTimeout(),
+                properties.registry().definitionCheckTtl(), properties.mcp().resourceMaxBytes(), properties.broker().confirmedContractsVersion());
     }
 
     @Bean

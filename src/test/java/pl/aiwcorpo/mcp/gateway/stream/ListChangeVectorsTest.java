@@ -27,6 +27,13 @@ class ListChangeVectorsTest {
         return out;
     }
 
+    private static List<ListChangeTracker.Tool> entries(JsonNode array) {
+        List<ListChangeTracker.Tool> out = new ArrayList<>();
+        array.forEach(e -> out.add(new ListChangeTracker.Tool(e.path("system").asString() + "__" + e.path("name").asString(), "",
+                e.has("definitionHash") ? e.path("definitionHash").asString() : null)));
+        return out;
+    }
+
     private static long millis(JsonNode seconds) {
         return Math.round(seconds.asDouble() * 1000);
     }
@@ -42,20 +49,10 @@ class ListChangeVectorsTest {
         return sent;
     }
 
-    /**
-     * The list-changed vectors of resources and prompts (CC-259: notifications/resources/list_changed and notifications/prompts/list_changed).
-     * The tracker follows tools only; the notifications for the other lists come with the slice that serves resources/* and prompts/* on /mcp.
-     */
-    private static final List<String> LATER_SLICE = List.of("list-changed-prompts-removed.json", "list-changed-resources-added.json",
-            "list-changed-resources-definition-changed.json", "list-changed-resources-no-change.json", "list-changed-resources-outside-filter.json");
-
     @TestFactory
     List<DynamicTest> sequencesAndStatelessStreams() {
         List<DynamicTest> tests = new ArrayList<>();
         for (Vectors.Vector vector : Vectors.of("endpoint-aggregate")) {
-            if (LATER_SLICE.contains(vector.name())) {
-                continue;
-            }
             String kind = vector.document().path("kind").asString();
             JsonNode input = vector.document().path("input");
             JsonNode expected = vector.document().path("expected");
@@ -79,14 +76,17 @@ class ListChangeVectorsTest {
                 }));
             } else if ("list-changed".equals(kind)) {
                 tests.add(DynamicTest.dynamicTest(vector.name(), () -> {
-                    ListChangeTracker tracker = new ListChangeTracker(EndpointFilter.parse(input.path("query").asString()),
-                            tools(input.path("before")), 1000);
-                    boolean notified = !tracker.observe(5000, tools(input.path("after"))).isEmpty();
+                    // The lists of resources and prompts (CC-259) are entries of a system with a hash, seen through the rules of primitivesVisible.
+                    boolean primitives = vector.document().path("primitives").asBoolean(false);
+                    EndpointFilter filter = EndpointFilter.parse(input.path("query").asString());
+                    ListChangeTracker tracker = primitives ? ListChangeTracker.ofPrimitives(filter, null, entries(input.path("before")), 1000)
+                            : new ListChangeTracker(filter, tools(input.path("before")), 1000);
+                    boolean notified = !tracker.observe(5000, primitives ? entries(input.path("after")) : tools(input.path("after"))).isEmpty();
                     assertThat(notified).as(vector.document().path("description").asString()).isEqualTo(expected.path("notify").asBoolean());
                 }));
             }
         }
-        assertThat(tests).hasSize(11 + 7 + 4);
+        assertThat(tests).hasSize(11 + 7 + 4 + 5);
         return tests;
     }
 

@@ -15,7 +15,7 @@ import tools.jackson.databind.node.ObjectNode;
 
 /**
  * The development stack only ({@code gateway.registry.bootstrap-from-server}): a server that was added and has no approved connection gets
- * the connection as the gateway proposed it, its policies and every pending tool approved, as an administrator would one by one
+ * the connection as the gateway proposed it, its policies and every pending tool, resource, template and prompt approved, as an administrator would one by one
  * (trust on first use: nobody sits in the portal of a developer's machine). Never replaces an approval that exists and never classifies
  * the tools of an adapter, which need an administrator's risk and action.
  */

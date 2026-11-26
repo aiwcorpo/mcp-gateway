@@ -20,6 +20,14 @@ public final class TextHygiene {
         return false;
     }
 
+    /**
+     * The check of a value that must be one line, a URI variable or a prompt argument: the forbidden set of CC-121 and also TAB, LF and CR
+     * (README, "Text hygiene": the identifiers and the values with a pattern are single-line).
+     */
+    public static boolean containsForbiddenInIdentifier(String text) {
+        return containsForbidden(text) || text.indexOf('\t') >= 0 || text.indexOf('\n') >= 0 || text.indexOf('\r') >= 0;
+    }
+
     /** The variation selector 16 is judged by its predecessor, so a second one in a row follows no emoji and is refused. */
     private static boolean forbiddenAt(int[] cps, int index) {
         if (cps[index] == 0xFE0F && index > 0 && Character.isExtendedPictographic(cps[index - 1])) {

@@ -92,6 +92,16 @@ public class UpstreamSessions {
     public JsonNode call(McpServer server, String conversationKey, GatewayUser user, String requestId, ObjectNode message,
                          String tool, Credential credential, boolean repeatable, String risk, String action,
                          java.util.function.BooleanSupplier admitted) throws UpstreamException {
+        return call(server, conversationKey, user, requestId, message, tool, null, credential, repeatable, risk, action, admitted);
+    }
+
+    /**
+     * {@code resource}: the URI of a {@code resources/read}, put into the token of the call as the claim {@code resource} (CC-260), and like
+     * a tool it makes the call subject to the gate of the policy data (C14).
+     */
+    public JsonNode call(McpServer server, String conversationKey, GatewayUser user, String requestId, ObjectNode message,
+                         String tool, String resource, Credential credential, boolean repeatable, String risk, String action,
+                         java.util.function.BooleanSupplier admitted) throws UpstreamException {
         sweep();
         if (!server.connectionApproved()) {
             throw new UpstreamException(UpstreamException.Kind.UNAVAILABLE, server.serverId() + " has no approved connection");
@@ -104,12 +114,12 @@ public class UpstreamSessions {
             Session session = ensure(server, client, key, user, requestId, deadline);
             // A new token for every send: the first one is spent when the server answers, whatever it answers (one-time jti).
             java.util.function.Supplier<UpstreamRequest> next = () -> new UpstreamRequest(
-                    tokens.forUser(server.serverId(), user, tool, requestId, server.adapter() ? risk : null,
+                    tokens.forUser(server.serverId(), user, tool, resource, requestId, server.adapter() ? risk : null,
                             server.adapter() ? action : null), requestId, session.sessionId(),
                     session.protocolVersion(), credential, json.writeValueAsString(message));
             admit(server, admitted);
             UpstreamResponse response = client.post(next.get(), message.get("id"), deadline);
-            if (tool != null && policyDataStale(response)) {
+            if ((tool != null || resource != null) && policyDataStale(response)) {
                 // The server holds no policy data or older than this instance's revision (C14): push the data and repeat the call once,
                 // whether or not the push was delivered (the vectors count two calls for a push that failed). It refused before it did
                 // anything, so repeating is safe whatever the tool does.

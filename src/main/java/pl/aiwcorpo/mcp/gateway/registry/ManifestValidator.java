@@ -65,6 +65,14 @@ public final class ManifestValidator {
             return out;
         }
         ManifestRules.violations(json.writeValueAsString(manifest)).forEach(rule -> out.add(new Rejection(reasonOf(rule), rule)));
+        // The rules of the contracts only ask that a prompt pattern compiles; one the engine can take exponential time or stack for is refused like an idPattern.
+        for (JsonNode prompt : manifest.path("prompts")) {
+            for (JsonNode rule : prompt.path("argumentRules")) {
+                if (pl.aiwcorpo.mcp.manifest.PatternGrammar.violation(rule.path("pattern").asString("")) != null) {
+                    out.add(new Rejection(null, "prompts-valid"));
+                }
+            }
+        }
         if (out.isEmpty() && manifest.has("policies")) {
             out.addAll(fragmentErrors(manifest));
         }

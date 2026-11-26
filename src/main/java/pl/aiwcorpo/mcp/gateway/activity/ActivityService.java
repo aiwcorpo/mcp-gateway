@@ -86,7 +86,9 @@ public final class ActivityService {
         }
         if (query.q() != null) {
             String needle = query.q().toLowerCase(Locale.ROOT);
-            return row.path("tool").asString().toLowerCase(Locale.ROOT).contains(needle)
+            return row.path("tool").asString("").toLowerCase(Locale.ROOT).contains(needle)
+                    || row.path("prompt").asString("").toLowerCase(Locale.ROOT).contains(needle)
+                    || row.path("resourceTemplate").asString("").toLowerCase(Locale.ROOT).contains(needle)
                     || row.path("resource").path("id").asString("").toLowerCase(Locale.ROOT).contains(needle);
         }
         return true;
